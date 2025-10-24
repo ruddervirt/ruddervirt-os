@@ -7,7 +7,7 @@ RudderVirt OS is a purpose-built operating system based on Fedora CoreOS that pr
 Create a bootable installer ISO with your SSH keys embedded:
 
 ```bash
-docker run -t -v "$PWD":/output ghcr.io/ruddervirt/ruddervirtvirt-os:v1.0.0 /dev/sdX username
+docker run -t -v "$PWD":/output ghcr.io/ruddervirt/ruddervirtvirt-os:latest /dev/sdX username
 ```
 
 Replace:
