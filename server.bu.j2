@@ -1,0 +1,154 @@
+variant: fcos
+version: 1.6.0
+passwd:
+  users:
+    - name: admin
+      groups: ["wheel", "sudo"]
+      ssh_authorized_keys:
+        {%- for key in ssh_keys %}
+        - "{{ key }}"
+        {%- endfor %}
+systemd:
+  units:
+    - name: "rpm-ostree-install-packages.service"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Install packages
+        Wants=network-online.target
+        After=network-online.target
+        Before=zincati.service
+        ConditionPathExists=|!/usr/share/selinux/packages/k3s.pp
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=rpm-ostree install --apply-live --allow-inactive --assumeyes k3s-selinux tailscale btop mdadm
+        ExecStartPost=ln -sf /usr/lib/systemd/system/tailscaled.service /etc/systemd/system/multi-user.target.wants/tailscaled.service
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: "purge-k3s.service"
+      enabled: false
+      contents: |
+        [Unit]
+        Description=Purge K3s
+        Wants=network-online.target
+        After=network-online.target
+
+        [Service]
+        Type=oneshot
+        ExecStartPre=-/bin/bash -c 'rm -rf /var/lib/rancher/k3s'
+        ExecStartPre=-/bin/bash -c 'rm -rf /etc/rancher/k3s'
+        ExecStart=/bin/true
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: "k3s.service"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Run K3s
+        Wants=network-online.target rpm-ostree-install-packages.service
+        After=network-online.target rpm-ostree-install-packages.service
+
+        [Service]
+        Type=notify
+        EnvironmentFile=-/etc/default/%N
+        EnvironmentFile=-/etc/sysconfig/%N
+        EnvironmentFile=-/etc/systemd/system/%N.env
+        KillMode=process
+        Delegate=yes
+        LimitNOFILE=1048576
+        LimitNPROC=infinity
+        LimitCORE=infinity
+        TasksMax=infinity
+        TimeoutStartSec=0
+        Restart=always
+        RestartSec=5s
+        ExecStartPre=-/sbin/modprobe br_netfilter
+        ExecStartPre=-/sbin/modprobe overlay
+        ExecStartPre=-/sbin/modprobe iscsi_tcp
+        ExecStartPre=-/sbin/modprobe dm_crypt
+        ExecStartPre=-/sbin/modprobe nfs
+        ExecStartPre=-/sbin/modprobe wireguard
+        ExecStartPre=-/sbin/modprobe tun
+        ExecStart=/bin/bash -c '/usr/local/bin/k3s server --flannel-backend=wireguard-native --disable=local-storage --kubelet-arg="config=/etc/kubelet.config" --cluster-cidr="10.22.0.0/16" --service-cidr="10.23.0.0/16" --cluster-dns="10.23.0.10"'
+        [Install]
+        WantedBy=multi-user.target
+storage:
+  files:
+    - path: /etc/yum.repos.d/rancher-k3s-common.repo
+      mode: 0644
+      contents:
+        inline: |
+          [rancher-k3s-common-stable]
+          name=Rancher K3s Common (stable)
+          baseurl=https://rpm.rancher.io/k3s/stable/common/centos/8/noarch
+          enabled=1
+          gpgcheck=1
+          repo_gpgcheck=0
+          gpgkey=https://rpm.rancher.io/public.key
+    - path: /etc/yum.repos.d/tailscale.repo
+      mode: 0644
+      contents:
+        inline: |
+          [tailscale-stable]
+          name=Tailscale stable
+          baseurl=https://pkgs.tailscale.com/stable/fedora/$basearch
+          enabled=1
+          gpgcheck=1
+          repo_gpgcheck=0
+          gpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg
+    - path: /etc/NetworkManager/conf.d/no-search-domains.conf
+      mode: 0644
+      contents:
+        inline: |
+          [main]
+          dns=none
+          rc-manager=unmanaged
+    - path: /usr/local/bin/k3s
+      overwrite: true
+      mode: 0755
+      contents:
+        source: "https://github.com/k3s-io/k3s/releases/download/v1.33.5%2Bk3s1/k3s"
+    - path: /etc/kubelet.config
+      mode: 0644
+      contents:
+        inline: |
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          shutdownGracePeriod: 60s
+          shutdownGracePeriodCriticalPods: 10s
+    - path: /etc/profile.d/01-custom-profile.sh
+      mode: 0777
+      contents:
+        inline: |
+          alias kubectl="k3s kubectl"
+          alias vim="vi"
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+    - path: /etc/zincati/config.d/99-disable-updates.toml
+      contents:
+        inline: |
+          [updates]
+          enabled = false
+    - path: /etc/resolv.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          nameserver 1.1.1.1
+          nameserver 8.8.8.8
+    - path: /etc/sysctl.d/98-inotify.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          fs.inotify.max_user_instances=8192
+          fs.inotify.max_user_watches=524288
+    - path: /etc/sysctl.d/99-tailscale.conf
+      mode: 0644
+      contents:
+        inline: |
+          net.ipv4.ip_forward=1
+          net.ipv6.conf.all.forwarding=1
