@@ -6,8 +6,7 @@ import subprocess
 import argparse
 import tempfile
 import glob
-import secrets
-import crypt
+from passlib.hash import sha512_crypt
 from jinja2 import Template
 from pathlib import Path
 
@@ -15,8 +14,8 @@ from pathlib import Path
 def hash_password_sha512(plaintext_password: str) -> str:
     if not plaintext_password:
         raise ValueError("Password must not be empty")
-    salt = secrets.token_hex(16)
-    return crypt.crypt(plaintext_password, f"$6${salt}$")
+    # Produces a /etc/shadow-compatible $6$ (SHA-512 crypt) hash.
+    return sha512_crypt.hash(plaintext_password)
 
 
 def template_butane(butane_file: str, *, password_hash: str, is_ruddervirt: bool) -> str:

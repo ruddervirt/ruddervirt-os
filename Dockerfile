@@ -7,6 +7,7 @@ RUN dnf update -y && \
         ignition-validate \
         python3 \
         python3-pip \
+        python3-passlib \
         python3-jinja2 && \
     dnf clean all
 
