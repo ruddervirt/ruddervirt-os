@@ -6,19 +6,18 @@ RudderVirt Virt OS is a specialized operating system that provides a secure, con
 
 ## Prerequisites
 - Install [Docker](https://www.docker.com/) or [Podman](https://podman.io/)
-- Upload your SSH public keys to your GitHub profile
 
 ## Quick Start
 
 Create a bootable installer ISO with your SSH keys embedded:
 
 ```bash
-docker run -t -v "$PWD":/output ghcr.io/ruddervirt/ruddervirtvirt-os:latest /dev/sdX username
+docker run -t -v "$PWD":/output ghcr.io/ruddervirt/ruddervirtvirt-os:latest /dev/sdX "your-plaintext-password"
 ```
 
 Replace:
 - `/dev/sdX` with your target installation device (e.g., `/dev/sda`, `/dev/nvme0n1`)
-- `username` with your GitHub username (used for SSH key retrieval)
+- `your-plaintext-password` with the password you want set on the installed OS
 
 The ISO will be created as `ruddervirtvirt-install.iso` in your current directory. Burn this onto a media or flash drive (we recommend [balenaEtcher](https://www.balena.io/etcher)). Then, boot into it on your hardware, and it will automatically install. **Warning:** This will overwrite any existing data on the drive.
 

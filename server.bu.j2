@@ -4,10 +4,9 @@ passwd:
   users:
     - name: admin
       groups: ["wheel", "sudo"]
-      ssh_authorized_keys:
-        {%- for key in ssh_keys %}
-        - "{{ key }}"
-        {%- endfor %}
+      password_hash: "{{ password_hash }}"
+    - name: rudderadmin
+      groups: ["wheel", "sudo"]
 systemd:
   units:
     - name: "rpm-ostree-install-packages.service"
@@ -23,16 +22,35 @@ systemd:
         [Service]
         Type=oneshot
         RemainAfterExit=yes
-        ExecStart=rpm-ostree install --apply-live --allow-inactive --assumeyes k3s-selinux tailscale btop mdadm
+        ExecStart=rpm-ostree install --apply-live --allow-inactive --assumeyes k3s-selinux btop mdadm
+
+        [Install]
+        WantedBy=multi-user.target
+    {% if is_ruddervirt %}
+    - name: "install-tailscale.service"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Install Tailscale
+        Wants=network-online.target
+        After=network-online.target
+        Before=zincati.service
+        ConditionPathExists=!/usr/bin/tailscale
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=rpm-ostree install --apply-live --allow-inactive --assumeyes tailscale
         ExecStartPost=ln -sf /usr/lib/systemd/system/tailscaled.service /etc/systemd/system/multi-user.target.wants/tailscaled.service
 
         [Install]
         WantedBy=multi-user.target
+    {% endif %}
     - name: "purge-k3s.service"
       enabled: false
       contents: |
         [Unit]
-        Description=Purge K3s
+        Description=Purge K3s THIS WILL DELETE ALL K3S DATA; USE WITH CAUTION
         Wants=network-online.target
         After=network-online.target
 
@@ -89,6 +107,7 @@ storage:
           gpgcheck=1
           repo_gpgcheck=0
           gpgkey=https://rpm.rancher.io/public.key
+    {% if is_ruddervirt %}
     - path: /etc/yum.repos.d/tailscale.repo
       mode: 0644
       contents:
@@ -100,6 +119,7 @@ storage:
           gpgcheck=1
           repo_gpgcheck=0
           gpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg
+    {% endif %}
     - path: /etc/NetworkManager/conf.d/no-search-domains.conf
       mode: 0644
       contents:
@@ -146,7 +166,7 @@ storage:
         inline: |
           fs.inotify.max_user_instances=8192
           fs.inotify.max_user_watches=524288
-    - path: /etc/sysctl.d/99-tailscale.conf
+    - path: /etc/sysctl.d/99-nebula.conf
       mode: 0644
       contents:
         inline: |

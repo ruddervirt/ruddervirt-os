@@ -4,61 +4,39 @@ import sys
 import os
 import subprocess
 import argparse
-import urllib.request
-import urllib.error
 import tempfile
 import glob
+import secrets
+import crypt
 from jinja2 import Template
 from pathlib import Path
 
 
-def fetch_github_ssh_keys(username):
-    url = f"https://github.com/{username}.keys"
-    try:
-        with urllib.request.urlopen(url) as response:
-            if response.getcode() == 200:
-                keys = response.read().decode('utf-8').strip().split('\n')
-                keys = [key.strip() for key in keys if key.strip()]
-                if not keys:
-                    print(f"Warning: No SSH keys found for GitHub user '{username}'")
-                    return []
-                print(f"Found {len(keys)} SSH key(s) for GitHub user '{username}'")
-                return keys
-            else:
-                print(f"Error: Unable to fetch SSH keys for user '{username}' (HTTP {response.getcode()})")
-                return []
-    except urllib.error.URLError as e:
-        print(f"Error fetching SSH keys for user '{username}': {e}")
-        return []
+def hash_password_sha512(plaintext_password: str) -> str:
+    if not plaintext_password:
+        raise ValueError("Password must not be empty")
+    salt = secrets.token_hex(16)
+    return crypt.crypt(plaintext_password, f"$6${salt}$")
 
 
-def template_ssh_keys_into_butane(butane_file, ssh_keys):
-    if not ssh_keys:
-        print("No SSH keys to template, using original Butane file")
-        return butane_file
-    
+def template_butane(butane_file: str, *, password_hash: str, is_ruddervirt: bool) -> str:
     with open(butane_file, 'r') as f:
         content = f.read()
-    
+
     template = Template(content)
-    rendered_content = template.render(ssh_keys=ssh_keys)
-    
-    temp_fd, temp_path = tempfile.mkstemp(suffix='.bu', prefix='server_with_keys_')
+    rendered_content = template.render(password_hash=password_hash, is_ruddervirt=is_ruddervirt)
+
+    temp_fd, temp_path = tempfile.mkstemp(suffix='.bu', prefix='server_rendered_')
     try:
         with os.fdopen(temp_fd, 'w') as f:
             f.write(rendered_content)
-        print(f"Created temporary Butane file with SSH keys: {temp_path}")
-        
-        lines = rendered_content.split('\n')
-        for i, line in enumerate(lines):
-            print(f"  {i+1:2d}: {line}")
-        
+        print(f"Created temporary Butane file: {temp_path}")
         return temp_path
-    except Exception as e:
+    except Exception:
         os.close(temp_fd)
         if os.path.exists(temp_path):
             os.unlink(temp_path)
-        raise e
+        raise
 
 
 def run_command(cmd, check=True):
@@ -81,27 +59,26 @@ def run_command(cmd, check=True):
 def main():
     parser = argparse.ArgumentParser(description="Create CoreOS installation ISO with embedded ignition config")
     parser.add_argument("install_disk", help="Target installation disk device")
-    parser.add_argument("github_user", help="GitHub username to fetch SSH keys from")
+    parser.add_argument("password", help="Plaintext password to set for the installed OS")
+    parser.add_argument("--not-self-hosted", action='store_true', help="Used for ruddervirt-managed servers")
     
     args = parser.parse_args()
     
     input_butane = "server.bu.j2"
     install_disk = args.install_disk
-    github_user = args.github_user
+    password = args.password
+    is_ruddervirt = args.not_self_hosted
     output_ignition = Path(input_butane).with_suffix('.ign')
     output_iso = "/output/ruddervirtvirt-install.iso"
     fedora_iso = "fedora-coreos.iso"    
     temp_butane_file = None
     
     try:
-        print(f"Fetching SSH keys for GitHub user: {github_user}")
-        ssh_keys = fetch_github_ssh_keys(github_user)
-        if ssh_keys:
-            temp_butane_file = template_ssh_keys_into_butane(input_butane, ssh_keys)
-            input_butane = temp_butane_file
-        else:
-            print("Warning: No SSH keys found, proceeding with template defaults")
-        
+        print("Hashing password")
+        password_hash = hash_password_sha512(password)
+        temp_butane_file = template_butane(input_butane, password_hash=password_hash, is_ruddervirt=is_ruddervirt)
+        input_butane = temp_butane_file
+
         print("Generating ignition")
         run_command([
             "butane", "--pretty", "--strict", input_butane, "--output", str(output_ignition)
