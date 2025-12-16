@@ -12,14 +12,14 @@ RudderVirt Virt OS is a specialized operating system that provides a secure, con
 Create a bootable installer ISO with your SSH keys embedded:
 
 ```bash
-docker run -t -v "$PWD":/output ghcr.io/ruddervirt/ruddervirtvirt-os:latest /dev/sdX "your-plaintext-password"
+docker run -t -v "$PWD":/output ghcr.io/ruddervirt/ruddervirtvirt-os:latest /dev/DRIVEX "your-plaintext-password"
 ```
 
 Replace:
-- `/dev/sdX` with your target installation device (e.g., `/dev/sda`, `/dev/nvme0n1`)
+- `/dev/DRIVEX` with your target installation device (e.g., `/dev/sda`, `/dev/nvme0n1`)
 - `your-plaintext-password` with the password you want set on the installed OS
 
-The ISO will be created as `ruddervirtvirt-install.iso` in your current directory. Burn this onto a media or flash drive (we recommend [balenaEtcher](https://www.balena.io/etcher)). Then, boot into it on your hardware, and it will automatically install. **Warning:** This will overwrite any existing data on the drive.
+The ISO will be created as `ruddervirtvirt-install.iso` in your current directory. Burn this onto a media or flash drive (we recommend [balenaEtcher](https://www.balena.io/etcher) or [rufus](https://rufus.ie/en/)). Then, boot into it on your hardware, and it will automatically install. **Warning:** This will overwrite any existing data on the drive.
 
 ### Target Hardware Requirements
 - **CPU**: 
@@ -32,6 +32,4 @@ The ISO will be created as `ruddervirtvirt-install.iso` in your current director
   - SSD required, NVME recommended 
   - External SAN can also be used in lieu of local disks
 - **Network**: 
-  - Gigabit Ethernet connection with internet
-  - A publicly resolvable DNS name
-  - Firewall allows external TCP access to port 443 
+  - Gigabit or faster Ethernet connection with internet

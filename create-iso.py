@@ -4,26 +4,56 @@ import sys
 import os
 import subprocess
 import argparse
+import urllib.request
+import urllib.error
 import tempfile
 import glob
 from passlib.hash import sha512_crypt
 from jinja2 import Template
 from pathlib import Path
 
+def fetch_github_ssh_keys(username):
+    url = f"https://github.com/{username}.keys"
+    try:
+        with urllib.request.urlopen(url) as response:
+            if response.getcode() == 200:
+                keys = response.read().decode('utf-8').strip().split('\n')
+                keys = [key.strip() for key in keys if key.strip()]
+                if not keys:
+                    print(f"Warning: No SSH keys found for GitHub user '{username}'")
+                    return []
+                print(f"Found {len(keys)} SSH key(s) for GitHub user '{username}'")
+                return keys
+            else:
+                print(f"Error: Unable to fetch SSH keys for user '{username}' (HTTP {response.getcode()})")
+                return []
+    except urllib.error.URLError as e:
+        print(f"Error fetching SSH keys for user '{username}': {e}")
+        return []
+
 
 def hash_password_sha512(plaintext_password: str) -> str:
     if not plaintext_password:
         raise ValueError("Password must not be empty")
-    # Produces a /etc/shadow-compatible $6$ (SHA-512 crypt) hash.
     return sha512_crypt.hash(plaintext_password)
 
 
-def template_butane(butane_file: str, *, password_hash: str, is_ruddervirt: bool) -> str:
+def template_butane(
+    butane_file: str,
+    *,
+    password_hash: str,
+    ssh_keys: list[str] | None = None,
+    is_ruddervirt: bool,
+) -> str:
     with open(butane_file, 'r') as f:
         content = f.read()
 
     template = Template(content)
-    rendered_content = template.render(password_hash=password_hash, is_ruddervirt=is_ruddervirt)
+    rendered_content = template.render(
+        password_hash=password_hash,
+        ssh_keys=ssh_keys or [],
+        is_ruddervirt=is_ruddervirt,
+    )
 
     temp_fd, temp_path = tempfile.mkstemp(suffix='.bu', prefix='server_rendered_')
     try:
@@ -59,6 +89,7 @@ def main():
     parser = argparse.ArgumentParser(description="Create CoreOS installation ISO with embedded ignition config")
     parser.add_argument("install_disk", help="Target installation disk device")
     parser.add_argument("password", help="Plaintext password to set for the installed OS")
+    parser.add_argument("--github-user", help="GitHub username to fetch SSH keys from (optional)")
     parser.add_argument("--not-self-hosted", action='store_true', help="Used for ruddervirt-managed servers")
     
     args = parser.parse_args()
@@ -67,6 +98,7 @@ def main():
     install_disk = args.install_disk
     password = args.password
     is_ruddervirt = args.not_self_hosted
+    github_user = args.github_user
     output_ignition = Path(input_butane).with_suffix('.ign')
     output_iso = "/output/ruddervirtvirt-install.iso"
     fedora_iso = "fedora-coreos.iso"    
@@ -75,7 +107,20 @@ def main():
     try:
         print("Hashing password")
         password_hash = hash_password_sha512(password)
-        temp_butane_file = template_butane(input_butane, password_hash=password_hash, is_ruddervirt=is_ruddervirt)
+
+        ssh_keys: list[str] = []
+        if github_user:
+            print(f"Fetching SSH keys for GitHub user: {github_user}")
+            ssh_keys = fetch_github_ssh_keys(github_user)
+            if not ssh_keys:
+                raise ValueError(f"Error: No SSH keys found for GitHub user '{github_user}'. Aborting.")
+
+        temp_butane_file = template_butane(
+            input_butane,
+            password_hash=password_hash,
+            ssh_keys=ssh_keys,
+            is_ruddervirt=is_ruddervirt,
+        )
         input_butane = temp_butane_file
 
         print("Generating ignition")

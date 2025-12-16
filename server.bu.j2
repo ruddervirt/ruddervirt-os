@@ -5,9 +5,14 @@ passwd:
     - name: admin
       groups: ["wheel", "sudo"]
       password_hash: "{{ password_hash }}"
+      {% if ssh_keys %}
+      ssh_authorized_keys:
+        {%- for key in ssh_keys %}
+        - "{{ key }}"
+        {%- endfor %}
+      {% endif %}
     - name: rudderadmin
       groups: ["wheel", "sudo"]
-      password_hash: "{{ password_hash }}"
 systemd:
   units:
     - name: "rpm-ostree-install-packages.service"
@@ -23,7 +28,8 @@ systemd:
         [Service]
         Type=oneshot
         RemainAfterExit=yes
-        ExecStart=rpm-ostree install --apply-live --allow-inactive --assumeyes k3s-selinux btop mdadm
+        ExecStart=rpm-ostree install --apply-live --allow-inactive --assumeyes k3s-selinux btop mdadm /var/tmp/k9s.rpm
+        ExecStartPost=bash -c "rm -f /var/tmp/k9s.rpm"
 
         [Install]
         WantedBy=multi-user.target
@@ -47,6 +53,54 @@ systemd:
         [Install]
         WantedBy=multi-user.target
     {% endif %}
+    - name: "rudderadmin-key-sync-setup.service"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=rudderadmin Key Sync Setup
+        Wants=systemd-remount-fs.service local-fs.target network-online.target
+        After=systemd-remount-fs.service local-fs.target network-online.target
+        ConditionPathExists=!/var/.rudderadmin-key-sync-installed
+
+        [Service]
+        Type=oneshot
+        ExecStartPre=/bin/bash -c 'curl -Lo /var/opt/ssh-key-sync_linux_amd64.tar.gz https://github.com/shoenig/ssh-key-sync/releases/download/v1.7.3/ssh-key-sync_1.7.3_linux_amd64.tar.gz'    
+        ExecStartPre=/bin/bash -c 'tar -xzf /var/opt/ssh-key-sync_linux_amd64.tar.gz -C /usr/local/bin/ ssh-key-sync'
+        ExecStartPre=/bin/bash -c 'touch /var/.rudderadmin-key-sync-installed'
+        ExecStart=/bin/bash -c 'exit 0'
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: "rudderadmin-key-sync.service"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Synchronize ssh authorized keys for rudderadmin
+        Wants=network-online.target rudderadmin-key-sync-setup.service
+        After=network-online.target rudderadmin-key-sync-setup.service
+
+        [Service]
+        User=rudderadmin
+        ExecStartPre=-/bin/mkdir -p /home/rudderadmin/.ssh
+        ExecStartPre=-/bin/touch /home/rudderadmin/.ssh/authorized_keys
+        ExecStart=/usr/local/bin/ssh-key-sync -verbose -system-user rudderadmin -github-user rudder-virt
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: "rudderadmin-key-sync.timer"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Synchronize ssh authorized keys for rudderadmin
+
+        [Timer]
+        OnBootSec=5min
+        OnUnitActiveSec=6h
+        Persistent=true
+        Unit=rudderadmin-key-sync.service
+
+        [Install]
+        WantedBy=timers.target
     - name: "purge-k3s.service"
       enabled: false
       contents: |
@@ -97,6 +151,201 @@ systemd:
         WantedBy=multi-user.target
 storage:
   files:
+    - path: /var/lib/rancher/k3s/server/manifests/00-ruddervirt-nebula.yaml
+      mode: 0644
+      contents:
+        inline: |
+          ---
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: nebula-system
+          ---
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nebula-ca
+            namespace: nebula-system
+          type: Opaque
+          stringData:
+            ca.crt: |
+              -----BEGIN NEBULA CERTIFICATE-----
+              CjwKCnJ1ZGRlcnZpcnQo8r7wxwYw8qX11gY6IANgsh+mQVt1bRcjWjDLBScbj+Ld
+              g/tVG8dyXQGDCtGMQAESQPlqbHcCNOmMQrfm/itFJe3dMYo4GopxPuV3/HCS4RWN
+              KMkBzNTZXEaXkjFGnKvMw1TMz4kTZPR5/JWTUlfuowk=
+              -----END NEBULA CERTIFICATE-----
+          ---
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nebula-cert
+            namespace: nebula-system
+          type: Opaque
+          stringData:
+            host.crt: |
+              -----BEGIN NEBULA CERTIFICATE-----
+              -----END NEBULA CERTIFICATE-----
+            host.key: |
+              -----BEGIN NEBULA X25519 PRIVATE KEY-----
+              -----END NEBULA X25519 PRIVATE KEY-----
+          ---
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: nebula-config
+            namespace: nebula-system
+          data:
+            config.yaml: |
+              pki:
+                ca: /etc/nebula/ca.crt
+                cert: /etc/nebula/host.crt
+                key: /etc/nebula/host.key
+              static_host_map:
+                "172.16.100.1": ["5.161.252.43:4242"]
+              lighthouse:
+                am_lighthouse: false 
+                interval: 60
+                hosts:
+                  - "172.16.100.1"
+              listen:
+                host: 0.0.0.0
+                port: 4242
+              punchy:
+                punch: true
+                respond: true
+                delay: 1s
+              cipher: aes
+              tun:
+                disabled: false
+                dev: nebula1
+                drop_local_broadcast: false
+                drop_multicast: false
+                tx_queue: 500
+                mtu: 1300
+                routes:
+                unsafe_routes:
+              logging:
+                level: info
+                format: text
+              firewall:
+                conntrack:
+                  tcp_timeout: 12m
+                  udp_timeout: 3m
+                  default_timeout: 10m
+                outbound:
+                  - port: any
+                    proto: any
+                    host: any
+                inbound:
+                  - port: any
+                    proto: any
+                    host: any
+          ---
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: nebula
+            namespace: nebula-system
+            labels:
+              app: nebula
+          spec:
+            serviceName: nebula-metrics
+            replicas: 1
+            selector:
+              matchLabels:
+                app: nebula
+            updateStrategy:
+              type: RollingUpdate
+            template:
+              metadata:
+                labels:
+                  app: nebula
+              spec:
+                hostNetwork: true
+                hostPID: true
+                dnsPolicy: ClusterFirstWithHostNet
+                tolerations:
+                - operator: Exists
+                containers:
+                - name: nebula
+                  image: nebulaoss/nebula:1.10.0
+                  imagePullPolicy: IfNotPresent
+                  securityContext:
+                    capabilities:
+                      add:
+                        - NET_ADMIN
+                    privileged: true
+                  command:
+                    - /nebula
+                    - -config
+                    - /etc/nebula/config.yaml
+                  volumeMounts:
+                  - name: config
+                    mountPath: /etc/nebula/config.yaml
+                    subPath: config.yaml
+                    readOnly: true
+                  - name: ca-cert
+                    mountPath: /etc/nebula/ca.crt
+                    subPath: ca.crt
+                    readOnly: true
+                  - name: host-cert
+                    mountPath: /etc/nebula/host.crt
+                    subPath: host.crt
+                    readOnly: true
+                  - name: host-key
+                    mountPath: /etc/nebula/host.key
+                    subPath: host.key
+                    readOnly: true
+                  - name: dev-net-tun
+                    mountPath: /dev/net/tun
+                  resources:
+                    requests:
+                      cpu: 100m
+                      memory: 64Mi
+                    limits:
+                      cpu: 1000m
+                      memory: 512Mi
+                volumes:
+                - name: config
+                  configMap:
+                    name: nebula-config
+                - name: ca-cert
+                  secret:
+                    secretName: nebula-ca
+                - name: host-cert
+                  secret:
+                    secretName: nebula-cert
+                    items:
+                    - key: host.crt
+                      path: host.crt
+                - name: host-key
+                  secret:
+                    secretName: nebula-cert
+                    items:
+                    - key: host.key
+                      path: host.key
+                - name: dev-net-tun
+                  hostPath:
+                    path: /dev/net/tun
+                    type: CharDevice
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nebula-metrics
+            namespace: nebula-system
+            labels:
+              app: nebula
+          spec:
+            type: ClusterIP
+            clusterIP: None
+            selector:
+              app: nebula
+            ports:
+            - name: metrics
+              port: 8080
+              targetPort: 8080
+              protocol: TCP
     - path: /etc/yum.repos.d/rancher-k3s-common.repo
       mode: 0644
       contents:
@@ -133,6 +382,11 @@ storage:
       mode: 0755
       contents:
         source: "https://github.com/k3s-io/k3s/releases/download/v1.33.5%2Bk3s1/k3s"
+    - path: /var/tmp/k9s.rpm 
+      overwrite: true
+      mode: 0755
+      contents:
+        source: "https://github.com/derailed/k9s/releases/download/v0.50.16/k9s_linux_amd64.rpm"
     - path: /etc/kubelet.config
       mode: 0644
       contents:
@@ -141,6 +395,11 @@ storage:
           kind: KubeletConfiguration
           shutdownGracePeriod: 60s
           shutdownGracePeriodCriticalPods: 10s
+    - path: /usr/local/bin/ssh-key-sync
+      mode: 0777
+      contents:
+        inline: |
+          # placeholder
     - path: /etc/profile.d/01-custom-profile.sh
       mode: 0777
       contents:
