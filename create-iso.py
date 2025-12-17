@@ -8,6 +8,7 @@ import urllib.request
 import urllib.error
 import tempfile
 import glob
+import shutil
 from passlib.hash import sha512_crypt
 from jinja2 import Template
 from pathlib import Path
@@ -32,6 +33,26 @@ def fetch_github_ssh_keys(username):
         return []
 
 
+def load_snapshotter_manifests(manifest_file: str = "snapshotter-manifests.yaml") -> str:
+    """
+    Load pre-generated external-snapshotter manifests from file.
+    The manifest file should be generated once using fetch-snapshotter-manifests.py
+    and committed to the repository.
+    """
+    if not os.path.exists(manifest_file):
+        raise FileNotFoundError(
+            f"Manifest file '{manifest_file}' not found. "
+            "Please run ./fetch-snapshotter-manifests.py first to generate it."
+        )
+    
+    with open(manifest_file, 'r') as f:
+        content = f.read()
+    
+    print(f"Loaded snapshotter manifests from: {manifest_file}")
+    return content
+
+
+
 def hash_password_sha512(plaintext_password: str) -> str:
     if not plaintext_password:
         raise ValueError("Password must not be empty")
@@ -44,6 +65,7 @@ def template_butane(
     password_hash: str,
     ssh_keys: list[str] | None = None,
     is_ruddervirt: bool,
+    snapshotter_manifest: str | None = None,
 ) -> str:
     with open(butane_file, 'r') as f:
         content = f.read()
@@ -53,6 +75,7 @@ def template_butane(
         password_hash=password_hash,
         ssh_keys=ssh_keys or [],
         is_ruddervirt=is_ruddervirt,
+        snapshotter_manifest=snapshotter_manifest or "",
     )
 
     temp_fd, temp_path = tempfile.mkstemp(suffix='.bu', prefix='server_rendered_')
@@ -115,11 +138,13 @@ def main():
             if not ssh_keys:
                 raise ValueError(f"Error: No SSH keys found for GitHub user '{github_user}'. Aborting.")
 
+        snapshotter_manifest = load_snapshotter_manifests()
         temp_butane_file = template_butane(
             input_butane,
             password_hash=password_hash,
             ssh_keys=ssh_keys,
             is_ruddervirt=is_ruddervirt,
+            snapshotter_manifest=snapshotter_manifest,
         )
         input_butane = temp_butane_file
 
@@ -129,6 +154,9 @@ def main():
         ])
         
         run_command(["ignition-validate", str(output_ignition)])
+        
+        # rendered_butane_output = "/output/server_rendered.bu"
+        # shutil.copy(input_butane, rendered_butane_output)
         
         if not os.path.exists(fedora_iso):
             print("Downloading Fedora CoreOS")

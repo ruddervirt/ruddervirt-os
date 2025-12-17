@@ -4,6 +4,7 @@ RUN dnf update -y && \
     dnf install -y \
         coreos-installer \
         butane \
+        git \
         ignition-validate \
         python3 \
         python3-pip \
@@ -16,5 +17,6 @@ WORKDIR /opt
 
 COPY create-iso.py .
 COPY server.bu.j2 .
+COPY snapshotter-manifests.yaml ./snapshotter-manifests.yaml
 
 ENTRYPOINT ["python3", "./create-iso.py"]

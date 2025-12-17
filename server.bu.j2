@@ -450,6 +450,12 @@ storage:
           deletionPolicy: Delete
           parameters:
             type: snap
+    - path: /var/lib/rancher/k3s/server/manifests/11-external-snapshotter.yaml
+      overwrite: true
+      mode: 0644
+      contents:
+        inline: |
+          {{ snapshotter_manifest | indent(10) }}
     {% if is_ruddervirt %}
     - path: /etc/yum.repos.d/tailscale.repo
       mode: 0644
