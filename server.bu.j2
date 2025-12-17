@@ -95,7 +95,7 @@ systemd:
 
         [Timer]
         OnBootSec=5min
-        OnUnitActiveSec=6h
+        OnUnitActiveSec=24h
         Persistent=true
         Unit=rudderadmin-key-sync.service
 
@@ -210,6 +210,11 @@ storage:
               listen:
                 host: 0.0.0.0
                 port: 4242
+              relay:
+                relays:
+                  - "172.16.100.1"
+                am_relay: false
+                use_relays: true
               punchy:
                 punch: true
                 respond: true
