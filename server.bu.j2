@@ -362,6 +362,94 @@ storage:
           gpgcheck=1
           repo_gpgcheck=0
           gpgkey=https://rpm.rancher.io/public.key
+    - path: /var/lib/rancher/k3s/server/manifests/01-kubevirt-crd.yaml
+      overwrite: true
+      mode: 0644
+      contents:
+        source: "https://github.com/kubevirt/kubevirt/releases/download/v1.4.0/kubevirt-cr.yaml"
+    - path: /var/lib/rancher/k3s/server/manifests/02-kubevirt-operator.yaml
+      overwrite: true
+      mode: 0644
+      contents:
+        source:  https://github.com/kubevirt/kubevirt/releases/download/v1.4.0/kubevirt-operator.yaml
+    - path: /var/lib/rancher/k3s/server/manifests/03-cdi-crd.yaml
+      overwrite: true
+      mode: 0644
+      contents:
+        source: https://github.com/kubevirt/containerized-data-importer/releases/download/v1.62.0/cdi-cr.yaml
+    - path: /var/lib/rancher/k3s/server/manifests/04-cdi-operator.yaml
+      overwrite: true
+      mode: 0644
+      contents:
+        source: https://github.com/kubevirt/containerized-data-importer/releases/download/v1.62.0/cdi-operator.yaml
+    - path: /var/lib/rancher/k3s/server/manifests/05-kubevirt-patches.yaml
+      overwrite: true
+      mode: 0644
+      contents:
+        inline: |
+          apiVersion: kubevirt.io/v1
+          kind: KubeVirt
+          metadata:
+            name: kubevirt
+            namespace: kubevirt
+          spec:
+            configuration:
+              developerConfiguration:
+                featureGates:
+                  - DataVolumes
+                  - Sidecar
+                  - VMPersistentState
+                  - Snapshot
+          ---
+          apiVersion: cdi.kubevirt.io/v1beta1
+          kind: CDI
+          metadata:
+            name: cdi
+          spec:
+            config:
+              podResourceRequirements:
+                limits:
+                  cpu: "4"
+                  memory: "2Gi"
+                requests:
+                  cpu: "2"
+                  memory: "1Gi"
+              featureGates: []
+    - path: /var/lib/rancher/k3s/server/manifests/10-longhorn.yaml
+      overwrite: true
+      mode: 0644
+      contents:
+        inline: |
+          apiVersion: helm.cattle.io/v1
+          kind: HelmChart
+          metadata:
+            annotations:
+              helmcharts.cattle.io/managed-by: helm-controller
+            finalizers:
+            - wrangler.cattle.io/on-helm-chart-remove
+            generation: 1
+            name: longhorn-install
+            namespace: default
+          spec:
+            version: v1.10.0
+            chart: longhorn
+            repo: https://charts.longhorn.io
+            failurePolicy: abort
+            targetNamespace: longhorn-system
+            createNamespace: true
+            valuesContent: |-
+              persistence:
+                defaultClass: true
+                defaultClassReplicaCount: 1
+          ---
+          kind: VolumeSnapshotClass
+          apiVersion: snapshot.storage.k8s.io/v1
+          metadata:
+            name: longhorn
+          driver: driver.longhorn.io
+          deletionPolicy: Delete
+          parameters:
+            type: snap
     {% if is_ruddervirt %}
     - path: /etc/yum.repos.d/tailscale.repo
       mode: 0644
