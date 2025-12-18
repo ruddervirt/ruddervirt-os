@@ -151,6 +151,35 @@ systemd:
         WantedBy=multi-user.target
 storage:
   files:
+    - path: /var/lib/rancher/k3s/server/manifests/nebula-cert.yaml
+      mode: 0644
+      contents:
+        inline: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: nebula-cert
+            namespace: nebula-system
+          type: Opaque
+          stringData:
+            host.crt: |
+              -----BEGIN NEBULA CERTIFICATE-----
+              -----END NEBULA CERTIFICATE-----
+            host.key: |
+              -----BEGIN NEBULA X25519 PRIVATE KEY-----
+              -----END NEBULA X25519 PRIVATE KEY-----
+    - path: /var/lib/rancher/k3s/server/manifests/module-token.yaml
+      mode: 0644
+      contents:
+        inline: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: modules-auth
+            namespace: default
+          type: Opaque
+          stringData:
+            authorization: factorydefault
     - path: /var/lib/rancher/k3s/server/manifests/00-ruddervirt-nebula.yaml
       mode: 0644
       contents:
@@ -174,20 +203,6 @@ storage:
               g/tVG8dyXQGDCtGMQAESQPlqbHcCNOmMQrfm/itFJe3dMYo4GopxPuV3/HCS4RWN
               KMkBzNTZXEaXkjFGnKvMw1TMz4kTZPR5/JWTUlfuowk=
               -----END NEBULA CERTIFICATE-----
-          ---
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: nebula-cert
-            namespace: nebula-system
-          type: Opaque
-          stringData:
-            host.crt: |
-              -----BEGIN NEBULA CERTIFICATE-----
-              -----END NEBULA CERTIFICATE-----
-            host.key: |
-              -----BEGIN NEBULA X25519 PRIVATE KEY-----
-              -----END NEBULA X25519 PRIVATE KEY-----
           ---
           apiVersion: v1
           kind: ConfigMap
