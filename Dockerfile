@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 FROM fedora:latest
 
 RUN dnf update -y && \
@@ -17,6 +18,6 @@ WORKDIR /opt
 
 COPY create-iso.py .
 COPY server.bu.j2 .
-COPY snapshotter-manifests.yaml ./snapshotter-manifests.yaml
+COPY manifests ./manifests
 
 ENTRYPOINT ["python3", "./create-iso.py"]

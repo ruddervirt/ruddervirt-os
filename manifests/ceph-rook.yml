@@ -1,0 +1,268 @@
+# Snapshot Controller (installs CRDs for VolumeSnapshots)
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: snapshot-controller
+  namespace: kube-system
+spec:
+  repo: https://piraeus.io/helm-charts
+  chart: snapshot-controller
+  targetNamespace: kube-system
+  version: 3.0.6
+  valuesContent: |-
+    controller:
+      replicas: 1
+
+---
+# Rook Ceph Operator
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: rook-ceph
+  namespace: kube-system
+spec:
+  repo: https://charts.rook.io/release
+  chart: rook-ceph
+  targetNamespace: rook-ceph
+  createNamespace: true
+  version: v1.18.8
+  valuesContent: |-
+    # Disable ceph-csi-operator integration (uses traditional CSI deployment)
+    useCSIOperator: false
+
+    # Only enable RBD (block storage) - disable CephFS and NFS
+    csi:
+      enableRbdDriver: true
+      enableCephfsDriver: false
+      enableNFSDriver: false
+      provisionerReplicas: 1
+      # Enable topology-aware provisioning for local-first storage
+      topology:
+        enabled: true
+        domainLabels:
+          - kubernetes.io/hostname
+      # Only run CSI nodeplugin on nodes labeled ruddervirt=metal
+      csiRBDPluginNodeAffinity:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: ruddervirt
+                operator: In
+                values:
+                  - metal
+
+    # Disable discovery daemon
+    enableDiscoveryDaemon: false
+
+    # Resource limits for operator
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
+
+---
+# Rook Ceph Cluster
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: rook-ceph-cluster
+  namespace: kube-system
+spec:
+  repo: https://charts.rook.io/release
+  chart: rook-ceph-cluster
+  targetNamespace: rook-ceph
+  createNamespace: true
+  version: v1.18.8
+  valuesContent: |-
+    # Cluster name
+    clusterName: rook-ceph
+
+    # Ceph version - Squid stable
+    cephClusterSpec:
+      cephVersion:
+        image: quay.io/ceph/ceph:v19.2.3
+        allowUnsupported: false
+
+      dataDirHostPath: /var/lib/rook
+
+      mon:
+        count: 1
+        allowMultiplePerNode: true
+
+      mgr:
+        count: 1
+        allowMultiplePerNode: true
+        modules:
+          - name: dashboard
+            enabled: true
+          - name: prometheus
+            enabled: false
+
+      dashboard:
+        enabled: true
+        ssl: false
+
+      crashCollector:
+        disable: true
+
+      monitoring:
+        enabled: false
+
+      # Network optimizations for 1GbE environments
+      # Throttle recovery to avoid saturating network during rebalancing
+      cephConfig:
+        global:
+          osd_recovery_max_active: "1"
+          osd_recovery_sleep: "0.5"
+          osd_max_backfills: "1"
+          # Lower recovery priority to favor client IO
+          osd_recovery_op_priority: "1"
+          osd_client_op_priority: "63"
+          # BlueStore cache tuning for improved performance
+          bluestore_cache_autotune: "true"
+          bluestore_cache_size_ssd: "4294967296"
+          # OSD threading for better IOPS during snapshot restore
+          osd_op_num_threads_per_shard: "2"
+          osd_op_num_shards: "8"
+          # Async messenger threads
+          ms_async_op_threads: "5"
+          # Larger max write size (default 90MB, increase to 128MB)
+          osd_max_write_size: "128"
+          # RBD performance tuning
+          # Readahead still helps for sequential reads
+          rbd_readahead_max_bytes: "4194304"
+          # Disable RBD client cache - with many concurrent VMs, shared cache thrashes
+          # Let each VM use QEMU writeback cache instead (per-VM isolation)
+          rbd_cache: "false"
+          rbd_concurrent_management_ops: "20"
+          # Read affinity - prefer reading from local OSD replica when available
+          # With replica size 2, ~66% of reads can be served locally
+          rbd_read_from_replica_policy: "balance"
+          rbd_localize_snap_reads: "true"
+          rbd_localize_parent_reads: "true"
+
+      # Storage configuration - per-node device selection
+      # Supports full disks and partitions
+      storage:
+        useAllNodes: true
+        useAllDevices: true
+        config:
+          osdsPerDevice: "1"
+        # Define nodes and their devices explicitly
+        # Uncomment and customize for your cluster
+        nodes:
+          # Example: Node with dedicated NVMe disk
+          # - name: "node-1"
+          #   devices:
+          #     - name: "nvme1n1"
+          #
+          # Example: Node with partition on root disk
+          # - name: "node-2"
+          #   devices:
+          #     - name: "nvme0n1p4"
+          #
+          # Example: Node with both full disk and partition
+          # - name: "node-3"
+          #   devices:
+          #     - name: "nvme1n1"      # Full disk
+          #     - name: "nvme0n1p3"    # Partition
+          #
+      resources:
+        mgr:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
+        mon:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
+        osd:
+          requests:
+            cpu: 500m
+            memory: 6Gi
+          limits:
+            memory: 10Gi
+
+      placement:
+        all:
+          tolerations:
+            - operator: Exists
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    # Only run Ceph components on nodes labeled ruddervirt=metal
+                    - key: ruddervirt
+                      operator: In
+                      values:
+                        - metal
+
+      priorityClassNames:
+        mon: system-node-critical
+        osd: system-node-critical
+        mgr: system-cluster-critical
+
+    # Block pool for VMs - replica 2 for read affinity (local reads, network writes)
+    # With size 2, data exists on 2 nodes. Ceph reads from local replica when available.
+    cephBlockPools:
+      - name: vm-pool
+        spec:
+          failureDomain: host
+          replicated:
+            size: 2
+            requireSafeReplicaSize: false
+          parameters:
+            # Compression disabled - adds CPU overhead during snapshot restore without benefit
+            compression_mode: none
+            pg_autoscale_mode: "on"
+        storageClass:
+          enabled: true
+          name: rook-ceph-block
+          isDefault: true
+          reclaimPolicy: Delete
+          allowVolumeExpansion: true
+          volumeBindingMode: Immediate
+          parameters:
+            imageFormat: "2"
+            imageFeatures: layering,exclusive-lock,object-map,fast-diff
+            csi.storage.k8s.io/provisioner-secret-name: rook-csi-rbd-provisioner
+            csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+            csi.storage.k8s.io/controller-expand-secret-name: rook-csi-rbd-provisioner
+            csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+            csi.storage.k8s.io/node-stage-secret-name: rook-csi-rbd-node
+            csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+            csi.storage.k8s.io/fstype: ext4
+
+    # Disable CephFS
+    cephFileSystems: []
+
+    # Disable Object Store
+    cephObjectStores: []
+
+    # Toolbox for debugging
+    toolbox:
+      enabled: true
+      image: quay.io/ceph/ceph:v19.2.3
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
+
+    # # Dashboard ingress
+    # ingress: 
+    #   dashboard:
+    #     ingressClassName: tailscale
+    #     host:
+    #       name: rudderusa-ceph
+    #     tls:
+    #       - hosts:
+    #           - rudderusa-ceph
+    #     annotations:
+    #       tailscale.com/funnel: "false"

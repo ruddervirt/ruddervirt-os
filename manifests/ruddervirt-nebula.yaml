@@ -1,0 +1,182 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nebula-system
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nebula-ca
+  namespace: nebula-system
+type: Opaque
+stringData:
+  ca.crt: |
+    -----BEGIN NEBULA CERTIFICATE-----
+    CjwKCnJ1ZGRlcnZpcnQo8r7wxwYw8qX11gY6IANgsh+mQVt1bRcjWjDLBScbj+Ld
+    g/tVG8dyXQGDCtGMQAESQPlqbHcCNOmMQrfm/itFJe3dMYo4GopxPuV3/HCS4RWN
+    KMkBzNTZXEaXkjFGnKvMw1TMz4kTZPR5/JWTUlfuowk=
+    -----END NEBULA CERTIFICATE-----
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nebula-config
+  namespace: nebula-system
+data:
+  config.yaml: |
+    pki:
+      ca: /etc/nebula/ca.crt
+      cert: /etc/nebula/host.crt
+      key: /etc/nebula/host.key
+    static_host_map:
+      "172.16.100.1": ["5.161.252.43:4242"]
+    lighthouse:
+      am_lighthouse: false 
+      interval: 60
+      hosts:
+        - "172.16.100.1"
+    listen:
+      host: 0.0.0.0
+      port: 4242
+    relay:
+      relays:
+        - "172.16.100.1"
+      am_relay: false
+      use_relays: true
+    punchy:
+      punch: true
+      respond: true
+      delay: 1s
+    cipher: aes
+    tun:
+      disabled: false
+      dev: nebula1
+      drop_local_broadcast: false
+      drop_multicast: false
+      tx_queue: 500
+      mtu: 1300
+      routes:
+      unsafe_routes:
+    logging:
+      level: info
+      format: text
+    firewall:
+      conntrack:
+        tcp_timeout: 12m
+        udp_timeout: 3m
+        default_timeout: 10m
+      outbound:
+        - port: any
+          proto: any
+          host: any
+      inbound:
+        - port: any
+          proto: any
+          host: any
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nebula
+  namespace: nebula-system
+  labels:
+    app: nebula
+spec:
+  serviceName: nebula-metrics
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nebula
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: nebula
+    spec:
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+      - operator: Exists
+      containers:
+      - name: nebula
+        image: nebulaoss/nebula:1.10.0
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          capabilities:
+            add:
+              - NET_ADMIN
+          privileged: true
+        command:
+          - /nebula
+          - -config
+          - /etc/nebula/config.yaml
+        volumeMounts:
+        - name: config
+          mountPath: /etc/nebula/config.yaml
+          subPath: config.yaml
+          readOnly: true
+        - name: ca-cert
+          mountPath: /etc/nebula/ca.crt
+          subPath: ca.crt
+          readOnly: true
+        - name: host-cert
+          mountPath: /etc/nebula/host.crt
+          subPath: host.crt
+          readOnly: true
+        - name: host-key
+          mountPath: /etc/nebula/host.key
+          subPath: host.key
+          readOnly: true
+        - name: dev-net-tun
+          mountPath: /dev/net/tun
+        resources:
+          requests:
+            cpu: 100m
+            memory: 64Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+      volumes:
+      - name: config
+        configMap:
+          name: nebula-config
+      - name: ca-cert
+        secret:
+          secretName: nebula-ca
+      - name: host-cert
+        secret:
+          secretName: nebula-cert
+          items:
+          - key: host.crt
+            path: host.crt
+      - name: host-key
+        secret:
+          secretName: nebula-cert
+          items:
+          - key: host.key
+            path: host.key
+      - name: dev-net-tun
+        hostPath:
+          path: /dev/net/tun
+          type: CharDevice
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nebula-metrics
+  namespace: nebula-system
+  labels:
+    app: nebula
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: nebula
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: 8080
+    protocol: TCP

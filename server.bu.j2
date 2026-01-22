@@ -1,10 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-only
 variant: fcos
 version: 1.6.0
 passwd:
   users:
     - name: admin
       groups: ["wheel", "sudo"]
+      {% if password_hash %}
       password_hash: "{{ password_hash }}"
+      {% endif %}
       {% if ssh_keys %}
       ssh_authorized_keys:
         {%- for key in ssh_keys %}
@@ -33,26 +36,6 @@ systemd:
 
         [Install]
         WantedBy=multi-user.target
-    {% if is_ruddervirt %}
-    - name: "install-tailscale.service"
-      enabled: true
-      contents: |
-        [Unit]
-        Description=Install Tailscale
-        Wants=network-online.target
-        After=network-online.target
-        Before=zincati.service
-        ConditionPathExists=!/usr/bin/tailscale
-
-        [Service]
-        Type=oneshot
-        RemainAfterExit=yes
-        ExecStart=rpm-ostree install --apply-live --allow-inactive --assumeyes tailscale
-        ExecStartPost=ln -sf /usr/lib/systemd/system/tailscaled.service /etc/systemd/system/multi-user.target.wants/tailscaled.service
-
-        [Install]
-        WantedBy=multi-user.target
-    {% endif %}
     - name: "rudderadmin-key-sync-setup.service"
       enabled: true
       contents: |
@@ -146,226 +129,11 @@ systemd:
         ExecStartPre=-/sbin/modprobe nfs
         ExecStartPre=-/sbin/modprobe wireguard
         ExecStartPre=-/sbin/modprobe tun
-        ExecStart=/bin/bash -c '/usr/local/bin/k3s server --flannel-backend=wireguard-native --disable=local-storage --kubelet-arg="config=/etc/kubelet.config" --cluster-cidr="10.22.0.0/16" --service-cidr="10.23.0.0/16" --cluster-dns="10.23.0.10"'
+        ExecStart=/bin/bash -c '/usr/local/bin/k3s server --cluster-init --disable=local-storage --kubelet-arg="config=/etc/kubelet.config"'
         [Install]
         WantedBy=multi-user.target
 storage:
   files:
-    - path: /var/lib/rancher/k3s/server/manifests/nebula-cert.yaml
-      mode: 0644
-      contents:
-        inline: |
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: nebula-cert
-            namespace: nebula-system
-          type: Opaque
-          stringData:
-            host.crt: |
-              -----BEGIN NEBULA CERTIFICATE-----
-              -----END NEBULA CERTIFICATE-----
-            host.key: |
-              -----BEGIN NEBULA X25519 PRIVATE KEY-----
-              -----END NEBULA X25519 PRIVATE KEY-----
-    - path: /var/lib/rancher/k3s/server/manifests/module-token.yaml
-      mode: 0644
-      contents:
-        inline: |
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: modules-auth
-            namespace: default
-          type: Opaque
-          stringData:
-            authorization: factorydefault
-    - path: /var/lib/rancher/k3s/server/manifests/00-ruddervirt-nebula.yaml
-      mode: 0644
-      contents:
-        inline: |
-          ---
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: nebula-system
-          ---
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: nebula-ca
-            namespace: nebula-system
-          type: Opaque
-          stringData:
-            ca.crt: |
-              -----BEGIN NEBULA CERTIFICATE-----
-              CjwKCnJ1ZGRlcnZpcnQo8r7wxwYw8qX11gY6IANgsh+mQVt1bRcjWjDLBScbj+Ld
-              g/tVG8dyXQGDCtGMQAESQPlqbHcCNOmMQrfm/itFJe3dMYo4GopxPuV3/HCS4RWN
-              KMkBzNTZXEaXkjFGnKvMw1TMz4kTZPR5/JWTUlfuowk=
-              -----END NEBULA CERTIFICATE-----
-          ---
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: nebula-config
-            namespace: nebula-system
-          data:
-            config.yaml: |
-              pki:
-                ca: /etc/nebula/ca.crt
-                cert: /etc/nebula/host.crt
-                key: /etc/nebula/host.key
-              static_host_map:
-                "172.16.100.1": ["5.161.252.43:4242"]
-              lighthouse:
-                am_lighthouse: false 
-                interval: 60
-                hosts:
-                  - "172.16.100.1"
-              listen:
-                host: 0.0.0.0
-                port: 4242
-              relay:
-                relays:
-                  - "172.16.100.1"
-                am_relay: false
-                use_relays: true
-              punchy:
-                punch: true
-                respond: true
-                delay: 1s
-              cipher: aes
-              tun:
-                disabled: false
-                dev: nebula1
-                drop_local_broadcast: false
-                drop_multicast: false
-                tx_queue: 500
-                mtu: 1300
-                routes:
-                unsafe_routes:
-              logging:
-                level: info
-                format: text
-              firewall:
-                conntrack:
-                  tcp_timeout: 12m
-                  udp_timeout: 3m
-                  default_timeout: 10m
-                outbound:
-                  - port: any
-                    proto: any
-                    host: any
-                inbound:
-                  - port: any
-                    proto: any
-                    host: any
-          ---
-          apiVersion: apps/v1
-          kind: StatefulSet
-          metadata:
-            name: nebula
-            namespace: nebula-system
-            labels:
-              app: nebula
-          spec:
-            serviceName: nebula-metrics
-            replicas: 1
-            selector:
-              matchLabels:
-                app: nebula
-            updateStrategy:
-              type: RollingUpdate
-            template:
-              metadata:
-                labels:
-                  app: nebula
-              spec:
-                hostNetwork: true
-                hostPID: true
-                dnsPolicy: ClusterFirstWithHostNet
-                tolerations:
-                - operator: Exists
-                containers:
-                - name: nebula
-                  image: nebulaoss/nebula:1.10.0
-                  imagePullPolicy: IfNotPresent
-                  securityContext:
-                    capabilities:
-                      add:
-                        - NET_ADMIN
-                    privileged: true
-                  command:
-                    - /nebula
-                    - -config
-                    - /etc/nebula/config.yaml
-                  volumeMounts:
-                  - name: config
-                    mountPath: /etc/nebula/config.yaml
-                    subPath: config.yaml
-                    readOnly: true
-                  - name: ca-cert
-                    mountPath: /etc/nebula/ca.crt
-                    subPath: ca.crt
-                    readOnly: true
-                  - name: host-cert
-                    mountPath: /etc/nebula/host.crt
-                    subPath: host.crt
-                    readOnly: true
-                  - name: host-key
-                    mountPath: /etc/nebula/host.key
-                    subPath: host.key
-                    readOnly: true
-                  - name: dev-net-tun
-                    mountPath: /dev/net/tun
-                  resources:
-                    requests:
-                      cpu: 100m
-                      memory: 64Mi
-                    limits:
-                      cpu: 1000m
-                      memory: 512Mi
-                volumes:
-                - name: config
-                  configMap:
-                    name: nebula-config
-                - name: ca-cert
-                  secret:
-                    secretName: nebula-ca
-                - name: host-cert
-                  secret:
-                    secretName: nebula-cert
-                    items:
-                    - key: host.crt
-                      path: host.crt
-                - name: host-key
-                  secret:
-                    secretName: nebula-cert
-                    items:
-                    - key: host.key
-                      path: host.key
-                - name: dev-net-tun
-                  hostPath:
-                    path: /dev/net/tun
-                    type: CharDevice
-          ---
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: nebula-metrics
-            namespace: nebula-system
-            labels:
-              app: nebula
-          spec:
-            type: ClusterIP
-            clusterIP: None
-            selector:
-              app: nebula
-            ports:
-            - name: metrics
-              port: 8080
-              targetPort: 8080
-              protocol: TCP
     - path: /etc/yum.repos.d/rancher-k3s-common.repo
       mode: 0644
       contents:
@@ -377,113 +145,34 @@ storage:
           gpgcheck=1
           repo_gpgcheck=0
           gpgkey=https://rpm.rancher.io/public.key
-    - path: /var/lib/rancher/k3s/server/manifests/01-kubevirt-crd.yaml
+    {% for name in manifest_files("manifests") %}
+    - path: /var/lib/rancher/k3s/server/manifests/{{ name }}
+      overwrite: true
+      mode: 0644
+      contents:
+        inline: |
+          {{ slurp("manifests/" ~ name) | indent(10) }}
+    {% endfor %}
+    - path: /var/lib/rancher/k3s/server/manifests/kubevirt-crd.yaml
       overwrite: true
       mode: 0644
       contents:
         source: "https://github.com/kubevirt/kubevirt/releases/download/v1.4.0/kubevirt-cr.yaml"
-    - path: /var/lib/rancher/k3s/server/manifests/02-kubevirt-operator.yaml
+    - path: /var/lib/rancher/k3s/server/manifests/kubevirt-operator.yaml
       overwrite: true
       mode: 0644
       contents:
         source:  https://github.com/kubevirt/kubevirt/releases/download/v1.4.0/kubevirt-operator.yaml
-    - path: /var/lib/rancher/k3s/server/manifests/03-cdi-crd.yaml
+    - path: /var/lib/rancher/k3s/server/manifests/cdi-crd.yaml
       overwrite: true
       mode: 0644
       contents:
         source: https://github.com/kubevirt/containerized-data-importer/releases/download/v1.62.0/cdi-cr.yaml
-    - path: /var/lib/rancher/k3s/server/manifests/04-cdi-operator.yaml
+    - path: /var/lib/rancher/k3s/server/manifests/cdi-operator.yaml
       overwrite: true
       mode: 0644
       contents:
         source: https://github.com/kubevirt/containerized-data-importer/releases/download/v1.62.0/cdi-operator.yaml
-    - path: /var/lib/rancher/k3s/server/manifests/05-kubevirt-patches.yaml
-      overwrite: true
-      mode: 0644
-      contents:
-        inline: |
-          apiVersion: kubevirt.io/v1
-          kind: KubeVirt
-          metadata:
-            name: kubevirt
-            namespace: kubevirt
-          spec:
-            configuration:
-              developerConfiguration:
-                featureGates:
-                  - DataVolumes
-                  - Sidecar
-                  - VMPersistentState
-                  - Snapshot
-          ---
-          apiVersion: cdi.kubevirt.io/v1beta1
-          kind: CDI
-          metadata:
-            name: cdi
-          spec:
-            config:
-              podResourceRequirements:
-                limits:
-                  cpu: "4"
-                  memory: "2Gi"
-                requests:
-                  cpu: "2"
-                  memory: "1Gi"
-              featureGates: []
-    - path: /var/lib/rancher/k3s/server/manifests/10-longhorn.yaml
-      overwrite: true
-      mode: 0644
-      contents:
-        inline: |
-          apiVersion: helm.cattle.io/v1
-          kind: HelmChart
-          metadata:
-            annotations:
-              helmcharts.cattle.io/managed-by: helm-controller
-            finalizers:
-            - wrangler.cattle.io/on-helm-chart-remove
-            generation: 1
-            name: longhorn-install
-            namespace: default
-          spec:
-            version: v1.10.0
-            chart: longhorn
-            repo: https://charts.longhorn.io
-            failurePolicy: abort
-            targetNamespace: longhorn-system
-            createNamespace: true
-            valuesContent: |-
-              persistence:
-                defaultClass: true
-                defaultClassReplicaCount: 1
-          ---
-          kind: VolumeSnapshotClass
-          apiVersion: snapshot.storage.k8s.io/v1
-          metadata:
-            name: longhorn
-          driver: driver.longhorn.io
-          deletionPolicy: Delete
-          parameters:
-            type: snap
-    - path: /var/lib/rancher/k3s/server/manifests/11-external-snapshotter.yaml
-      overwrite: true
-      mode: 0644
-      contents:
-        inline: |
-          {{ snapshotter_manifest | indent(10) }}
-    {% if is_ruddervirt %}
-    - path: /etc/yum.repos.d/tailscale.repo
-      mode: 0644
-      contents:
-        inline: |
-          [tailscale-stable]
-          name=Tailscale stable
-          baseurl=https://pkgs.tailscale.com/stable/fedora/$basearch
-          enabled=1
-          gpgcheck=1
-          repo_gpgcheck=0
-          gpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg
-    {% endif %}
     - path: /etc/NetworkManager/conf.d/no-search-domains.conf
       mode: 0644
       contents:
@@ -521,7 +210,27 @@ storage:
           alias kubectl="k3s kubectl"
           alias vim="vi"
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-    - path: /etc/zincati/config.d/99-disable-updates.toml
+    {% set _zincati_disable_prefix = "99" if disable_autoupdate else "50" %}
+    {% set _zincati_periodic_prefix = "50" if disable_autoupdate else "99" %}
+    - path: /etc/zincati/config.d/{{ _zincati_periodic_prefix }}-periodic-sat-midnight-us-eastern.toml
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          [updates]
+          enabled = true
+          strategy = "periodic"
+
+          [updates.periodic]
+          time_zone = "US/Eastern"
+
+          [[updates.periodic.window]]
+          days = [ "Sat" ]
+          start_time = "00:00"
+          length_minutes = 60
+    - path: /etc/zincati/config.d/{{ _zincati_disable_prefix }}-disable-updates.toml
+      mode: 0644
+      overwrite: true
       contents:
         inline: |
           [updates]
@@ -546,3 +255,8 @@ storage:
         inline: |
           net.ipv4.ip_forward=1
           net.ipv6.conf.all.forwarding=1
+    - path: /etc/hostname
+      mode: 0644
+      contents:
+        inline: |
+          ruddervirtvirtos-default

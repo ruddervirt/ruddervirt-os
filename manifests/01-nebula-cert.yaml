@@ -1,0 +1,15 @@
+# These values are placeholders. Contact selfhosted@ruddervirt.com for your actual nebula certificate.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nebula-cert
+  namespace: nebula-system
+type: Opaque
+stringData:
+  host.crt: |
+    -----BEGIN NEBULA CERTIFICATE-----
+    -----END NEBULA CERTIFICATE-----
+  host.key: |
+    -----BEGIN NEBULA X25519 PRIVATE KEY-----
+    -----END NEBULA X25519 PRIVATE KEY-----
+  ipAddress: "127.0.0.1"
