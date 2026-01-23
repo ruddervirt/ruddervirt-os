@@ -16,6 +16,9 @@ passwd:
       {% endif %}
     - name: rudderadmin
       groups: ["wheel", "sudo"]
+kernel_arguments:
+  should_exist:
+    - ixgbe.allow_unsupported_sfp=1
 systemd:
   units:
     - name: "rpm-ostree-install-packages.service"
@@ -134,6 +137,11 @@ systemd:
         WantedBy=multi-user.target
 storage:
   files:
+    - path: /etc/modprobe.d/ixgbe.conf
+      mode: 0644
+      contents:
+        inline: |
+          options ixgbe allow_unsupported_sfp=1
     - path: /etc/yum.repos.d/rancher-k3s-common.repo
       mode: 0644
       contents:
