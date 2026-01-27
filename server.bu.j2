@@ -16,9 +16,6 @@ passwd:
       {% endif %}
     - name: rudderadmin
       groups: ["wheel", "sudo"]
-kernel_arguments:
-  should_exist:
-    - ixgbe.allow_unsupported_sfp=1
 systemd:
   units:
     - name: "rpm-ostree-install-packages.service"
@@ -34,7 +31,7 @@ systemd:
         [Service]
         Type=oneshot
         RemainAfterExit=yes
-        ExecStart=rpm-ostree install --apply-live --allow-inactive --assumeyes k3s-selinux btop mdadm /var/tmp/k9s.rpm
+        ExecStart=rpm-ostree install --apply-live --allow-inactive --assumeyes k3s-selinux btop mdadm iperf3 /var/tmp/k9s.rpm
         ExecStartPost=bash -c "rm -f /var/tmp/k9s.rpm"
 
         [Install]
@@ -87,6 +84,27 @@ systemd:
 
         [Install]
         WantedBy=timers.target
+    - name: "install-etcdctl.service"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Install etcdctl binary
+        ConditionPathExists=!/opt/bin/etcdctl
+        After=network-online.target
+        Wants=network-online.target
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        Environment=ETCD_VERSION=v3.5.21
+        ExecStartPre=/usr/bin/mkdir -p /opt/bin
+        ExecStart=/bin/bash -c '\
+          curl -fsSL https://github.com/etcd-io/etcd/releases/download/${ETCD_VERSION}/etcd-${ETCD_VERSION}-linux-amd64.tar.gz \
+          | tar xz --strip-components=1 -C /opt/bin etcd-${ETCD_VERSION}-linux-amd64/etcdctl'
+        ExecStartPost=/usr/bin/chmod +x /opt/bin/etcdctl
+
+        [Install]
+        WantedBy=multi-user.target
     - name: "purge-k3s.service"
       enabled: false
       contents: |
@@ -125,6 +143,8 @@ systemd:
         TimeoutStartSec=0
         Restart=always
         RestartSec=5s
+        ExecStartPre=/bin/mkdir -p /etc/rancher/k3s
+        ExecStartPre=/bin/ln -sf /etc/ruddervirt/k3s-config.yaml /etc/rancher/k3s/config.yaml
         ExecStartPre=-/sbin/modprobe br_netfilter
         ExecStartPre=-/sbin/modprobe overlay
         ExecStartPre=-/sbin/modprobe iscsi_tcp
@@ -132,7 +152,8 @@ systemd:
         ExecStartPre=-/sbin/modprobe nfs
         ExecStartPre=-/sbin/modprobe wireguard
         ExecStartPre=-/sbin/modprobe tun
-        ExecStart=/bin/bash -c '/usr/local/bin/k3s server --cluster-init --disable=local-storage --kubelet-arg="config=/etc/kubelet.config"'
+        ExecStart=/bin/bash -c '/usr/local/bin/k3s server'
+        #ExecStart=/bin/bash -c '/usr/local/bin/k3s agent'
         [Install]
         WantedBy=multi-user.target
 storage:
@@ -236,6 +257,41 @@ storage:
           days = [ "Sat" ]
           start_time = "00:00"
           length_minutes = 60
+    - path: /etc/ruddervirt/k3s-config.yaml
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          # connecting to another server
+          #server: https://192.168.103.2:6443
+          #token: MYTOKEN
+          
+          # initialize the cluster; only on first server
+          #cluster-init: true
+          # backup the cluster
+          #etcd-s3: true
+          #etcd-s3-config-secret: k3s-etcd-snapshot-s3-config
+          
+          # this requires the local ip address
+          bind-address: 192.168.103.1
+          advertise-address: 192.168.103.1
+          node-ip: 192.168.103.1
+          tls-san:
+            - "192.168.103.1"
+          
+          # cluster networking settings; only matters when tailscale operator exists
+          cluster-cidr: 10.32.0.0/16
+          service-cidr: 10.33.0.0/16
+          cluster-dns: 10.33.0.10
+
+          # generic settings; shouldn't ever change
+          kubelet-arg:
+            - "config=/etc/kubelet.config"
+          node-label:
+            - "ruddervirt=metal"
+          resolv-conf: /etc/resolv.conf
+          disable: 
+            - "local-storage"
     - path: /etc/zincati/config.d/{{ _zincati_disable_prefix }}-disable-updates.toml
       mode: 0644
       overwrite: true
