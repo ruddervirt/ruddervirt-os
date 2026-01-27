@@ -7,6 +7,7 @@ import argparse
 import urllib.request
 import urllib.error
 import json
+from datetime import datetime
 import tempfile
 import glob
 from passlib.hash import sha512_crypt
@@ -209,7 +210,9 @@ def main():
     stream = "stable"
     arch = "x86_64"
     output_ignition = Path(input_butane).with_suffix('.ign')
-    output_iso = "/output/ruddervirtvirt-install.iso"
+    disk_name = os.path.basename(install_disk).replace("/", "-")
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_iso = f"/output/ruddervirtvirt-install-dev-{disk_name}-{timestamp}.iso"
     fedora_iso = "fedora-coreos.iso"    
     temp_butane_file = None
     
