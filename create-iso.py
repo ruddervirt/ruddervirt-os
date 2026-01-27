@@ -53,6 +53,7 @@ def template_butane(
     password_hash: str | None,
     ssh_keys: list[str] | None = None,
     disable_autoupdate: bool = False,
+    disk_path: str | None = None,
 ) -> str:
     template_path = Path(butane_file).resolve()
     template_dir = template_path.parent
@@ -93,6 +94,7 @@ def template_butane(
         password_hash=password_hash,
         ssh_keys=ssh_keys or [],
         disable_autoupdate=disable_autoupdate,
+        disk_path=disk_path,
     )
 
     temp_fd, temp_path = tempfile.mkstemp(suffix='.bu', prefix='server_rendered_')
@@ -230,6 +232,7 @@ def main():
             password_hash=password_hash,
             ssh_keys=sorted(ssh_keys),
             disable_autoupdate=args.disable_autoupdate,
+            disk_path=install_disk,
         )
         input_butane = temp_butane_file
 

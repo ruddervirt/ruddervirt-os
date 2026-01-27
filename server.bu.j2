@@ -157,6 +157,15 @@ systemd:
         [Install]
         WantedBy=multi-user.target
 storage:
+  disks:
+    - device: {{ disk_path }}
+      wipe_table: false
+      partitions:
+        - number: 4
+          resize: true
+          size_mib: 51200 # root at 50GB
+        - number: 5
+          size_mib: 0
   files:
     - path: /etc/modprobe.d/ixgbe.conf
       mode: 0644
