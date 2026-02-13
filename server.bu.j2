@@ -152,6 +152,10 @@ systemd:
         ExecStartPre=-/sbin/modprobe nfs
         ExecStartPre=-/sbin/modprobe wireguard
         ExecStartPre=-/sbin/modprobe tun
+        ExecStartPre=-/sbin/modprobe geneve
+        ExecStartPre=-/sbin/modprobe openvswitch
+        ExecStartPre=-/sbin/modprobe ip_tables
+        ExecStartPre=-/sbin/modprobe iptable_nat
         ExecStart=/bin/bash -c '/usr/local/bin/k3s server'
         #ExecStart=/bin/bash -c '/usr/local/bin/k3s agent'
         [Install]
@@ -284,11 +288,16 @@ storage:
               exit 0
               ;;
           esac
+    - path: /usr/local/bin/kubectl
+      mode: 0777
+      contents:
+        inline: |
+          #!/bin/sh
+          exec k3s kubectl "$@"
     - path: /etc/profile.d/01-custom-profile.sh
       mode: 0777
       contents:
         inline: |
-          alias kubectl="k3s kubectl"
           alias vim="vi"
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
     {% set _zincati_disable_prefix = "99" if disable_autoupdate else "50" %}
