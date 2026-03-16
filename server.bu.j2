@@ -160,6 +160,23 @@ systemd:
         #ExecStart=/bin/bash -c '/usr/local/bin/k3s agent'
         [Install]
         WantedBy=multi-user.target
+    - name: "prepare-k3s.service"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Prepare K3s manifests in order
+        Wants=network-online.target k3s.service
+        After=network-online.target k3s.service
+        ConditionPathExists=/etc/ruddervirt/manifests
+        ConditionPathExists=!/var/lib/ruddervirt/prepare-k3s.done
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/bin/prepare-k3s
+        RemainAfterExit=yes
+
+        [Install]
+        WantedBy=multi-user.target
 storage:
   disks:
     - device: {{ disk_path }}
@@ -188,29 +205,29 @@ storage:
           repo_gpgcheck=0
           gpgkey=https://rpm.rancher.io/public.key
     {% for name in manifest_files("manifests") %}
-    - path: /var/lib/rancher/k3s/server/manifests/{{ name }}
+    - path: /etc/ruddervirt/manifests/{{ name }}
       overwrite: true
       mode: 0644
       contents:
         inline: |
           {{ slurp("manifests/" ~ name) | indent(10) }}
     {% endfor %}
-    - path: /var/lib/rancher/k3s/server/manifests/kubevirt-crd.yaml
+    - path: /etc/ruddervirt/manifests/kubevirt-crd.yaml
       overwrite: true
       mode: 0644
       contents:
         source: "https://github.com/kubevirt/kubevirt/releases/download/v1.4.0/kubevirt-cr.yaml"
-    - path: /var/lib/rancher/k3s/server/manifests/kubevirt-operator.yaml
+    - path: /etc/ruddervirt/manifests/kubevirt-operator.yaml
       overwrite: true
       mode: 0644
       contents:
         source:  https://github.com/kubevirt/kubevirt/releases/download/v1.4.0/kubevirt-operator.yaml
-    - path: /var/lib/rancher/k3s/server/manifests/cdi-crd.yaml
+    - path: /etc/ruddervirt/manifests/cdi-crd.yaml
       overwrite: true
       mode: 0644
       contents:
         source: https://github.com/kubevirt/containerized-data-importer/releases/download/v1.62.0/cdi-cr.yaml
-    - path: /var/lib/rancher/k3s/server/manifests/cdi-operator.yaml
+    - path: /etc/ruddervirt/manifests/cdi-operator.yaml
       overwrite: true
       mode: 0644
       contents:
@@ -298,6 +315,66 @@ storage:
         inline: |
           #!/bin/sh
           exec k3s kubectl "$@"
+    - path: /usr/local/bin/prepare-k3s
+      mode: 0755
+      contents:
+        inline: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
+          if [[ ! -f "${KUBECONFIG}" ]]; then
+            echo "Kubeconfig not found at ${KUBECONFIG}" >&2
+            exit 1
+          fi
+
+          for _ in {1..60}; do
+            if /usr/local/bin/kubectl get --raw=/readyz >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
+          if ! /usr/local/bin/kubectl get --raw=/readyz >/dev/null 2>&1; then
+            echo "K3s API did not become ready" >&2
+            exit 1
+          fi
+
+          if ! /usr/local/bin/kubectl wait --for=condition=Ready node --all --timeout=300s; then
+            echo "K3s nodes did not become Ready" >&2
+            exit 1
+          fi
+
+          if [[ -x "/opt/bin/install-kube-ovn.sh" ]]; then
+            echo "Running /opt/bin/install-kube-ovn.sh"
+            /opt/bin/install-kube-ovn.sh
+          else
+            echo "Missing executable /opt/bin/install-kube-ovn.sh" >&2
+            exit 1
+          fi
+
+          manifests=(
+          {% for name in manifest_files("manifests") %}
+            "/etc/ruddervirt/manifests/{{ name }}"
+          {% endfor %}
+            "/etc/ruddervirt/manifests/kubevirt-operator.yaml"
+            "/etc/ruddervirt/manifests/kubevirt-crd.yaml"
+            "/etc/ruddervirt/manifests/cdi-operator.yaml"
+            "/etc/ruddervirt/manifests/cdi-crd.yaml"
+          )
+
+          for manifest in "${manifests[@]}"; do
+            if [[ -f "${manifest}" ]]; then
+              echo "Applying ${manifest}"
+              /usr/local/bin/kubectl apply -f "${manifest}"
+            else
+              echo "Skipping missing manifest ${manifest}" >&2
+            fi
+          done
+
+          /usr/bin/mkdir -p /var/lib/ruddervirt
+          /usr/bin/touch /var/lib/ruddervirt/prepare-k3s.done
     - path: /etc/profile.d/01-custom-profile.sh
       mode: 0777
       contents:
