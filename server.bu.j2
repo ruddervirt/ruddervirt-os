@@ -354,6 +354,49 @@ storage:
             exit 1
           fi
 
+          ceph_manifest=""
+          if [[ -f "/etc/ruddervirt/manifests/ceph-rook.yml" ]]; then
+            ceph_manifest="/etc/ruddervirt/manifests/ceph-rook.yml"
+          elif [[ -f "/etc/ruddervirt/manifests/ceph-rook.yaml" ]]; then
+            ceph_manifest="/etc/ruddervirt/manifests/ceph-rook.yaml"
+          fi
+
+          if [[ -n "${ceph_manifest}" ]]; then
+            echo "Applying ${ceph_manifest}"
+            /usr/local/bin/kubectl apply -f "${ceph_manifest}"
+
+            for _ in {1..60}; do
+              if /usr/local/bin/kubectl -n rook-ceph get deployment/rook-ceph-operator >/dev/null 2>&1; then
+                break
+              fi
+              sleep 5
+            done
+
+            if ! /usr/local/bin/kubectl -n rook-ceph get deployment/rook-ceph-operator >/dev/null 2>&1; then
+              echo "rook-ceph-operator deployment not found" >&2
+              exit 1
+            fi
+
+            /usr/local/bin/kubectl -n rook-ceph rollout status deployment/rook-ceph-operator --timeout=900s
+
+            for _ in {1..60}; do
+              if /usr/local/bin/kubectl -n rook-ceph get cephcluster/rook-ceph >/dev/null 2>&1; then
+                break
+              fi
+              sleep 10
+            done
+
+            if ! /usr/local/bin/kubectl -n rook-ceph get cephcluster/rook-ceph >/dev/null 2>&1; then
+              echo "cephcluster/rook-ceph not found" >&2
+              exit 1
+            fi
+
+            /usr/local/bin/kubectl -n rook-ceph wait --for=condition=Ready cephcluster/rook-ceph --timeout=1800s
+          else
+            echo "ceph-rook manifest not found" >&2
+            exit 1
+          fi
+
           manifests=(
           {% for name in manifest_files("manifests") %}
             "/etc/ruddervirt/manifests/{{ name }}"
@@ -365,6 +408,12 @@ storage:
           )
 
           for manifest in "${manifests[@]}"; do
+            case "${manifest}" in
+              */ceph-rook.yml|*/ceph-rook.yaml)
+                continue
+                ;;
+            esac
+
             if [[ -f "${manifest}" ]]; then
               echo "Applying ${manifest}"
               /usr/local/bin/kubectl apply -f "${manifest}"
