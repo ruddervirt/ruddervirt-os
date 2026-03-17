@@ -64,23 +64,60 @@ if [[ -x "/opt/bin/install-kube-ovn.sh" ]]; then
   /usr/bin/sed -i -E "s|^(export[[:space:]]+)?SVC_CIDR=.*$|SVC_CIDR=${SVC_CIDR}|" /opt/bin/install-kube-ovn.sh
   /usr/bin/sed -i -E "s|^(export[[:space:]]+)?POD_GATEWAY=.*$|POD_GATEWAY=${POD_GATEWAY}|" /opt/bin/install-kube-ovn.sh
 
+  kube_ovn_output=""
   kube_ovn_rc=0
-  /opt/bin/install-kube-ovn.sh || kube_ovn_rc=$?
-  if [[ ${kube_ovn_rc} -ne 0 && ${kube_ovn_rc} -ne 7 ]]; then
-    echo "install-kube-ovn.sh failed with exit code ${kube_ovn_rc}" >&2
-    exit ${kube_ovn_rc}
+  kube_ovn_output="$(/opt/bin/install-kube-ovn.sh 2>&1)" || kube_ovn_rc=$?
+  if [[ -n "${kube_ovn_output}" ]]; then
+    echo "${kube_ovn_output}"
   fi
   if [[ ${kube_ovn_rc} -eq 7 ]]; then
     echo "install-kube-ovn.sh exited with 7; continuing"
+  elif [[ ${kube_ovn_rc} -eq 1 ]]; then
+    if ! echo "${kube_ovn_output}" | grep -q "command terminated with exit code 7"; then
+      echo "install-kube-ovn.sh failed with exit code ${kube_ovn_rc}" >&2
+      exit ${kube_ovn_rc}
+    fi
+    echo "install-kube-ovn.sh exited with 1 after a command terminated with exit code 7; continuing"
+  elif [[ ${kube_ovn_rc} -ne 0 ]]; then
+    echo "install-kube-ovn.sh failed with exit code ${kube_ovn_rc}" >&2
+    exit ${kube_ovn_rc}
   fi
 else
   echo "Missing executable /opt/bin/install-kube-ovn.sh" >&2
   exit 1
 fi
 
-/usr/local/bin/kubectl kustomize https://github.com/kubernetes-csi/external-snapshotter/client/config/crd | /usr/local/bin/kubectl apply -f -
-/usr/local/bin/kubectl -n kube-system kustomize https://github.com/kubernetes-csi/external-snapshotter/deploy/kubernetes/snapshot-controller | /usr/local/bin/kubectl apply -f -
 /usr/local/bin/kubectl apply -k "/etc/ruddervirt/manifests/rook-ceph/overlays/ruddervirtvirt"
+
+for _ in {1..60}; do
+  if /usr/local/bin/kubectl get crd cephclusters.ceph.rook.io >/dev/null 2>&1; then
+    break
+  fi
+  sleep 5
+done
+
+if ! /usr/local/bin/kubectl get crd cephclusters.ceph.rook.io >/dev/null 2>&1; then
+  echo "cephcluster CRD not found" >&2
+  exit 1
+fi
+
+if ! /usr/local/bin/kubectl wait --for=condition=Established crd/cephclusters.ceph.rook.io --timeout=300s; then
+  echo "cephcluster CRD did not become Established" >&2
+  exit 1
+fi
+
+for _ in {1..60}; do
+  if /usr/local/bin/kubectl -n rook-ceph get cephcluster/rook-ceph >/dev/null 2>&1; then
+    break
+  fi
+  sleep 5
+done
+
+if ! /usr/local/bin/kubectl -n rook-ceph get cephcluster/rook-ceph >/dev/null 2>&1; then
+  echo "cephcluster/rook-ceph not found" >&2
+  exit 1
+fi
+
 /usr/local/bin/kubectl -n rook-ceph wait --for=condition=Ready cephcluster/rook-ceph --timeout=1800s
 
 /usr/local/bin/kubectl apply -f "/etc/ruddervirt/manifests/kubevirt-operator.yaml"
