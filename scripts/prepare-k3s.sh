@@ -20,6 +20,21 @@ if ! /usr/local/bin/kubectl get --raw=/readyz >/dev/null 2>&1; then
   exit 1
 fi
 
+for _ in {1..60}; do
+  if [[ $(/usr/local/bin/kubectl get nodes -l node-role.kubernetes.io/control-plane -o name 2>/dev/null | wc -l) -ne 0 ]]; then
+    break
+  fi
+  if [[ $(/usr/local/bin/kubectl get nodes -l node-role.kubernetes.io/master -o name 2>/dev/null | wc -l) -ne 0 ]]; then
+    break
+  fi
+  sleep 1
+done
+
+if [[ $(/usr/local/bin/kubectl get nodes -l node-role.kubernetes.io/control-plane -o name 2>/dev/null | wc -l) -eq 0 && $(/usr/local/bin/kubectl get nodes -l node-role.kubernetes.io/master -o name 2>/dev/null | wc -l) -eq 0 ]]; then
+  echo "No nodes found with control-plane or master role" >&2
+  exit 1
+fi
+
 if [[ -f "/etc/ruddervirt/ruddervirt-networking.env" ]]; then
   # shellcheck disable=SC1091
   source /etc/ruddervirt/ruddervirt-networking.env
@@ -63,34 +78,9 @@ else
   exit 1
 fi
 
-/usr/local/bin/kubectl apply -f "/etc/ruddervirt/manifests/ceph-rook.yml"
-
-for _ in {1..60}; do
-  if /usr/local/bin/kubectl -n rook-ceph get deployment/rook-ceph-operator >/dev/null 2>&1; then
-    break
-  fi
-  sleep 5
-done
-
-if ! /usr/local/bin/kubectl -n rook-ceph get deployment/rook-ceph-operator >/dev/null 2>&1; then
-  echo "rook-ceph-operator deployment not found" >&2
-  exit 1
-fi
-
-/usr/local/bin/kubectl -n rook-ceph rollout status deployment/rook-ceph-operator --timeout=900s
-
-for _ in {1..60}; do
-  if /usr/local/bin/kubectl -n rook-ceph get cephcluster/rook-ceph >/dev/null 2>&1; then
-    break
-  fi
-  sleep 10
-done
-
-if ! /usr/local/bin/kubectl -n rook-ceph get cephcluster/rook-ceph >/dev/null 2>&1; then
-  echo "cephcluster/rook-ceph not found" >&2
-  exit 1
-fi
-
+/usr/local/bin/kubectl kustomize https://github.com/kubernetes-csi/external-snapshotter/client/config/crd | /usr/local/bin/kubectl apply -f -
+/usr/local/bin/kubectl -n kube-system kustomize https://github.com/kubernetes-csi/external-snapshotter/deploy/kubernetes/snapshot-controller | /usr/local/bin/kubectl apply -f -
+/usr/local/bin/kubectl apply -k "/etc/ruddervirt/manifests/rook-ceph/overlays/ruddervirtvirt"
 /usr/local/bin/kubectl -n rook-ceph wait --for=condition=Ready cephcluster/rook-ceph --timeout=1800s
 
 /usr/local/bin/kubectl apply -f "/etc/ruddervirt/manifests/kubevirt-operator.yaml"
@@ -99,7 +89,7 @@ fi
 /usr/local/bin/kubectl apply -f "/etc/ruddervirt/manifests/cdi-crd.yaml"
 /usr/local/bin/kubectl apply -f "/etc/ruddervirt/manifests/multus.yaml"
 /usr/local/bin/kubectl apply -f "/etc/ruddervirt/manifests/kubevirt-patches.yaml"
-/usr/local/bin/kubectl apply -f "/etc/ruddervirt/manifests/snapshot-class.yaml"
+/usr/local/bin/kubectl apply -f "/etc/ruddervirt/manifests/rook-ceph/snapshot-class.yaml"
 
 /usr/local/bin/kubectl apply -f "/etc/ruddervirt/manifests/ruddervirt-nebula.yaml"
 /usr/local/bin/kubectl apply -f "/etc/ruddervirt/manifests/user-nebula-cert.yaml" || true

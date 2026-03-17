@@ -1,0 +1,14 @@
+# Snapshot Controller (installs CRDs for VolumeSnapshots)
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: snapshot-controller
+  namespace: kube-system
+spec:
+  repo: https://piraeus.io/helm-charts
+  chart: snapshot-controller
+  targetNamespace: kube-system
+  version: 3.0.6
+  valuesContent: |-
+    controller:
+      replicas: 1

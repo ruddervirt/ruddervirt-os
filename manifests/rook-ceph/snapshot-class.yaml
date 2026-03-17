@@ -1,3 +1,5 @@
+# Apply after cluster is healthy:
+#   kubectl apply -f infra/rook-ceph/snapshot-class.yaml
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:

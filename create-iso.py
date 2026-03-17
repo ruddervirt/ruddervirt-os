@@ -89,8 +89,27 @@ def template_butane(
 
         return sorted(names)
 
+    def tree_files(rel_dir: str) -> list[str]:
+        base = (template_dir / rel_dir).resolve()
+        if not base.exists():
+            return []
+        if not base.is_dir():
+            raise ValueError(f"{rel_dir} must be a directory")
+
+        names: list[str] = []
+        for entry in base.rglob("*"):
+            if not entry.is_file():
+                continue
+            rel_path = entry.relative_to(base)
+            if any(part.startswith(".") for part in rel_path.parts):
+                continue
+            names.append(str(rel_path).replace(os.sep, "/"))
+
+        return sorted(names)
+
     env.globals["slurp"] = slurp
     env.globals["manifest_files"] = manifest_files
+    env.globals["tree_files"] = tree_files
 
     template = env.get_template(template_path.name)
     render_args = {

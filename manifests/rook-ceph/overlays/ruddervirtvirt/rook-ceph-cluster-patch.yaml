@@ -1,0 +1,31 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: rook-ceph-cluster
+  namespace: kube-system
+spec:
+  set:
+    # Single node - only 1 MON needed
+    cephClusterSpec.mon.count: 1
+    cephClusterSpec.mon.allowMultiplePerNode: "true"
+
+    # Storage - explicit NVMe devices only
+    cephClusterSpec.storage.useAllNodes: "true"
+    cephClusterSpec.storage.useAllDevices: "true"
+
+    # cephClusterSpec.storage.nodes[0].name: "your-k3s-node-name"
+    # cephClusterSpec.storage.nodes[0].devices[0].name: "nvme0n1"
+    # cephClusterSpec.storage.nodes[0].devices[1].name: "nvme1n1"
+    # cephClusterSpec.storage.nodes[0].devices[2].name: "nvme2n1"
+    # cephClusterSpec.storage.nodes[0].devices[3].name: "nvme3n1"
+
+    # Lower OSD resources for single node with many OSDs
+    cephClusterSpec.resources.osd.requests.memory: "1Gi"
+    cephClusterSpec.resources.osd.limits.memory: "2Gi"
+
+    # Block pool - use OSD failure domain for single node (base uses host)
+    cephBlockPools[0].spec.failureDomain: "osd"
+
+    # Dashboard ingress
+    # ingress.dashboard.host.name: "your-k3s-cluster-name-ceph"
+    # ingress.dashboard.tls[0].hosts[0]: "your-k3s-cluster-name-ceph"

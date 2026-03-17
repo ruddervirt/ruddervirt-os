@@ -14,7 +14,12 @@ SVC_CIDR="${SVC_CIDR:-10.43.0.0/16}"
 LOCAL_IP="${LOCAL_IP:-}"
 
 svc_base="${SVC_CIDR%%/*}"
+svc_prefix="${SVC_CIDR##*/}"
 IFS='.' read -r svc_a svc_b svc_c svc_d <<< "${svc_base}"
+if [[ "${svc_prefix}" != "16" ]]; then
+  echo "SVC_CIDR must be /16: ${SVC_CIDR}" >&2
+  exit 1
+fi
 if [[ -z "${svc_a}" || -z "${svc_b}" ]]; then
   echo "Invalid SVC_CIDR: ${SVC_CIDR}" >&2
   exit 1

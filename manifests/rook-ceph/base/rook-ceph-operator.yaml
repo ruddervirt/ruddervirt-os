@@ -1,0 +1,46 @@
+# Rook Ceph Operator
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: rook-ceph
+  namespace: kube-system
+spec:
+  repo: https://charts.rook.io/release
+  chart: rook-ceph
+  targetNamespace: rook-ceph
+  createNamespace: true
+  version: v1.18.8
+  valuesContent: |-
+    # Disable ceph-csi-operator integration (uses traditional CSI deployment)
+    useCSIOperator: false
+
+    # Only enable RBD (block storage) - disable CephFS and NFS
+    csi:
+      enableRbdDriver: true
+      enableCephfsDriver: false
+      enableNFSDriver: false
+      provisionerReplicas: 1
+      # Enable topology-aware provisioning for local-first storage
+      topology:
+        enabled: true
+        domainLabels:
+          - kubernetes.io/hostname
+      # Only run CSI nodeplugin on nodes labeled ruddervirt=metal
+      csiRBDPluginNodeAffinity:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: ruddervirt
+                operator: In
+                values:
+                  - metal
+
+    # Disable discovery daemon
+    enableDiscoveryDaemon: false
+
+    # Resource limits for operator
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi

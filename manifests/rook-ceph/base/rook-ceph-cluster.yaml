@@ -1,0 +1,199 @@
+# Rook Ceph Cluster
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: rook-ceph-cluster
+  namespace: kube-system
+spec:
+  repo: https://charts.rook.io/release
+  chart: rook-ceph-cluster
+  targetNamespace: rook-ceph
+  createNamespace: true
+  version: v1.18.8
+  # Cluster-specific values are set via spec.set in overlays
+  valuesContent: |-
+    # Cluster name
+    clusterName: rook-ceph
+
+    # Ceph version - Squid stable
+    cephClusterSpec:
+      cephVersion:
+        image: quay.io/ceph/ceph:v19.2.3
+        allowUnsupported: false
+
+      dataDirHostPath: /var/lib/rook
+
+      # Use host networking - addresses set via overlay
+      network:
+        provider: host
+        addressRanges:
+          public: []
+          cluster: []
+
+      mon:
+        count: 3
+        allowMultiplePerNode: false
+
+      mgr:
+        count: 1
+        allowMultiplePerNode: true
+        modules:
+          - name: dashboard
+            enabled: true
+          - name: prometheus
+            enabled: false
+          - name: rook
+            enabled: true
+
+      dashboard:
+        enabled: true
+        ssl: false
+
+      crashCollector:
+        disable: true
+
+      monitoring:
+        enabled: false
+
+      # Performance optimizations for 10GbE + mixed SATA SSD/NVMe environment
+      cephConfig:
+        global:
+          # Recovery tuning - higher values safe with 10Gbps
+          osd_recovery_max_active: "3"
+          osd_recovery_sleep: "0"
+          osd_max_backfills: "2"
+          # Lower recovery priority to favor client IO
+          osd_recovery_op_priority: "1"
+          osd_client_op_priority: "63"
+          # BlueStore cache tuning - 8GB per OSD (plenty of RAM available)
+          bluestore_cache_autotune: "true"
+          bluestore_cache_size_ssd: "8589934592"
+          # BlueStore allocation size for SSDs
+          bluestore_min_alloc_size_ssd: "4096"
+          # OSD threading - increased for 44-core Xeon systems and NVMe
+          osd_op_num_threads_per_shard: "4"
+          osd_op_num_threads_per_shard_ssd: "16"
+          osd_op_num_shards: "32"
+          # Use WPQ scheduler for lower latency (vs mclock)
+          osd_op_queue: "wpq"
+          osd_op_thread_timeout: "30"
+          # mclock profile prioritizing client ops
+          osd_mclock_profile: "high_client_ops"
+          # Async messenger threads - increased for 10Gbps and NVMe
+          ms_async_op_threads: "16"
+          # TCP buffer size for better throughput
+          ms_tcp_rcvbuf: "4194304"
+          # Larger max write size (default 90MB, increase to 128MB)
+          osd_max_write_size: "128"
+          # RBD performance tuning
+          rbd_readahead_max_bytes: "4194304"
+          # Disable RBD client cache - let each VM use QEMU writeback cache
+          rbd_cache: "false"
+          rbd_concurrent_management_ops: "20"
+          # Read affinity - prefer reading from local OSD when available
+          rbd_read_from_replica_policy: "balance"
+          rbd_localize_snap_reads: "true"
+          rbd_localize_parent_reads: "true"
+
+      # Storage configuration - nodes set via overlay
+      storage:
+        useAllNodes: false
+        useAllDevices: false
+        config:
+          osdsPerDevice: "1"
+        nodes: []
+
+      resources:
+        mgr:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
+        mon:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
+        osd:
+          requests:
+            cpu: 500m
+            memory: 4Gi
+          limits:
+            memory: 6Gi
+
+      placement:
+        all:
+          tolerations:
+            - operator: Exists
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    # Only run Ceph components on nodes labeled ruddervirt=metal
+                    - key: ruddervirt
+                      operator: In
+                      values:
+                        - metal
+
+      priorityClassNames:
+        mon: system-node-critical
+        osd: system-node-critical
+        mgr: system-cluster-critical
+
+    # Block pool for VMs - replica 2 for redundancy
+    cephBlockPools:
+      - name: vm-pool
+        spec:
+          failureDomain: host
+          replicated:
+            size: 2
+          parameters:
+            # Compression disabled - adds CPU overhead during snapshot restore without benefit
+            compression_mode: none
+            pg_autoscale_mode: "on"
+        storageClass:
+          enabled: true
+          name: rook-ceph-block
+          isDefault: true
+          reclaimPolicy: Delete
+          allowVolumeExpansion: true
+          volumeBindingMode: Immediate
+          parameters:
+            imageFormat: "2"
+            imageFeatures: layering,exclusive-lock,object-map,fast-diff
+            csi.storage.k8s.io/provisioner-secret-name: rook-csi-rbd-provisioner
+            csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+            csi.storage.k8s.io/controller-expand-secret-name: rook-csi-rbd-provisioner
+            csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+            csi.storage.k8s.io/node-stage-secret-name: rook-csi-rbd-node
+            csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+            csi.storage.k8s.io/fstype: ext4
+
+    # Disable CephFS
+    cephFileSystems: []
+
+    # Disable Object Store
+    cephObjectStores: []
+
+    # Toolbox for debugging
+    toolbox:
+      enabled: true
+      image: quay.io/ceph/ceph:v19.2.3
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
+
+    # Dashboard ingress - host set via overlay
+    ingress:
+      dashboard:
+        ingressClassName: tailscale
+        host:
+          name: ""
+        tls: []
+        annotations:
+          tailscale.com/funnel: "false"

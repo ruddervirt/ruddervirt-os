@@ -188,6 +188,7 @@ systemd:
 
         [Service]
         Type=oneshot
+        WorkingDirectory=/opt
         ExecStart=/usr/local/bin/prepare-k3s
         RemainAfterExit=yes
 
@@ -227,6 +228,14 @@ storage:
       contents:
         inline: |
           {{ slurp("manifests/" ~ name) | indent(10) }}
+    {% endfor %}
+    {% for name in tree_files("manifests/rook-ceph") %}
+    - path: /etc/ruddervirt/manifests/rook-ceph/{{ name }}
+      overwrite: true
+      mode: 0644
+      contents:
+        inline: |
+          {{ slurp("manifests/rook-ceph/" ~ name) | indent(10) }}
     {% endfor %}
     - path: /etc/ruddervirt/manifests/kubevirt-crd.yaml
       overwrite: true
