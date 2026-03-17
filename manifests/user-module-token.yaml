@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: modules-auth
+  namespace: default
+type: Opaque
+stringData:
+  authorization: factorydefault # This is placeholder content. Contact selfhosted@ruddervirt.com to obtain your credentials

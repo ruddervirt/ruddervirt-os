@@ -19,7 +19,21 @@ Replace:
 - `/dev/DRIVEX` with your target installation device (e.g., `/dev/sda`, `/dev/nvme0n1`)
 - `your-plaintext-password` with the password you want set on the installed OS
 
-The ISO will be created as `ruddervirtvirt-install.iso` in your current directory. Burn this onto a media or flash drive (we recommend [balenaEtcher](https://www.balena.io/etcher) or [rufus](https://rufus.ie/en/)). Then, boot into it on your hardware, and it will automatically install. **Warning:** This will overwrite any existing data on the drive.
+The ISO will be created in your current directory. Burn this onto a media or flash drive (we recommend [balenaEtcher](https://www.balena.io/etcher) or [rufus](https://rufus.ie/en/)). Then, boot into it on your hardware, and it will automatically install. **Warning:** This will overwrite any existing data on the drive.
+
+### Install Flags
+
+Required arguments:
+- `install_disk`: Target installation disk device (e.g., `/dev/sda`, `/dev/nvme0n1`)
+
+Optional arguments:
+- `password`: Plaintext password to set for the installed OS (required unless `--github-ssh-user` is provided)
+- `--github-ssh-user USERNAME`: Fetch SSH public keys from GitHub (can be specified multiple times)
+- `--disable-autoupdate`: Disable OS-level auto-updates and restarts (through zincati)
+- `--show-butane`: Print the rendered Butane config to stdout
+- `--show-ignition`: Print the generated Ignition config to stdout
+- `--pod-cidr CIDR`: Override pod CIDR (default: `10.42.0.0/16`)
+- `--svc-cidr CIDR`: Override service CIDR (default: `10.43.0.0/16`)
 
 ### Target Hardware Requirements
 - **CPU**: 

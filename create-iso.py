@@ -55,6 +55,8 @@ def template_butane(
     ssh_keys: list[str] | None = None,
     disable_autoupdate: bool = False,
     disk_path: str | None = None,
+    pod_cidr: str | None = None,
+    svc_cidr: str | None = None,
 ) -> str:
     template_path = Path(butane_file).resolve()
     template_dir = template_path.parent
@@ -91,12 +93,17 @@ def template_butane(
     env.globals["manifest_files"] = manifest_files
 
     template = env.get_template(template_path.name)
-    rendered_content = template.render(
-        password_hash=password_hash,
-        ssh_keys=ssh_keys or [],
-        disable_autoupdate=disable_autoupdate,
-        disk_path=disk_path,
-    )
+    render_args = {
+        "password_hash": password_hash,
+        "ssh_keys": ssh_keys or [],
+        "disable_autoupdate": disable_autoupdate,
+        "disk_path": disk_path,
+    }
+    if pod_cidr:
+        render_args["pod_cidr"] = pod_cidr
+    if svc_cidr:
+        render_args["svc_cidr"] = svc_cidr
+    rendered_content = template.render(**render_args)
 
     temp_fd, temp_path = tempfile.mkstemp(suffix='.bu', prefix='server_rendered_')
     try:
@@ -201,6 +208,14 @@ def main():
         action="store_true",
         help="Print the generated Ignition config to stdout.",
     )
+    parser.add_argument(
+        "--pod-cidr",
+        help="Override the pod CIDR (default: 10.42.0.0/16).",
+    )
+    parser.add_argument(
+        "--svc-cidr",
+        help="Override the service CIDR (default: 10.43.0.0/16).",
+    )
     
     args = parser.parse_args()
     
@@ -236,6 +251,8 @@ def main():
             ssh_keys=sorted(ssh_keys),
             disable_autoupdate=args.disable_autoupdate,
             disk_path=install_disk,
+            pod_cidr=args.pod_cidr,
+            svc_cidr=args.svc_cidr,
         )
         input_butane = temp_butane_file
 

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 variant: fcos
 version: 1.6.0
+{% set pod_cidr = pod_cidr | default("10.42.0.0/16") %}
+{% set svc_cidr = svc_cidr | default("10.43.0.0/16") %}
 passwd:
   users:
     - name: admin
@@ -121,13 +123,28 @@ systemd:
 
         [Install]
         WantedBy=multi-user.target
+    - name: "render-k3s-config.service"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Render K3s config from networking defaults
+        Wants=network-online.target
+        After=network-online.target
+        ConditionPathExists=/etc/ruddervirt/k3s-config.yaml
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/bin/render-k3s-config
+
+        [Install]
+        WantedBy=multi-user.target
     - name: "k3s.service"
       enabled: true
       contents: |
         [Unit]
         Description=Run K3s
-        Wants=network-online.target rpm-ostree-install-packages.service
-        After=network-online.target rpm-ostree-install-packages.service
+        Wants=network-online.target rpm-ostree-install-packages.service render-k3s-config.service
+        After=network-online.target rpm-ostree-install-packages.service render-k3s-config.service
 
         [Service]
         Type=notify
@@ -144,7 +161,6 @@ systemd:
         Restart=always
         RestartSec=5s
         ExecStartPre=/bin/mkdir -p /etc/rancher/k3s
-        ExecStartPre=/bin/ln -sf /etc/ruddervirt/k3s-config.yaml /etc/rancher/k3s/config.yaml
         ExecStartPre=-/sbin/modprobe br_netfilter
         ExecStartPre=-/sbin/modprobe overlay
         ExecStartPre=-/sbin/modprobe iscsi_tcp
@@ -315,121 +331,67 @@ storage:
         inline: |
           #!/bin/sh
           exec k3s kubectl "$@"
+    - path: /usr/local/bin/render-k3s-config
+      mode: 0755
+      contents:
+        inline: |
+          {{ slurp("render-k3s-config.sh") | indent(10) }}
     - path: /usr/local/bin/prepare-k3s
       mode: 0755
       contents:
         inline: |
-          #!/usr/bin/env bash
-          set -euo pipefail
-
-          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-
-          if [[ ! -f "${KUBECONFIG}" ]]; then
-            echo "Kubeconfig not found at ${KUBECONFIG}" >&2
-            exit 1
-          fi
-
-          for _ in {1..60}; do
-            if /usr/local/bin/kubectl get --raw=/readyz >/dev/null 2>&1; then
-              break
-            fi
-            sleep 2
-          done
-
-          if ! /usr/local/bin/kubectl get --raw=/readyz >/dev/null 2>&1; then
-            echo "K3s API did not become ready" >&2
-            exit 1
-          fi
-
-          if ! /usr/local/bin/kubectl wait --for=condition=Ready node --all --timeout=300s; then
-            echo "K3s nodes did not become Ready" >&2
-            exit 1
-          fi
-
-          if [[ -x "/opt/bin/install-kube-ovn.sh" ]]; then
-            echo "Running /opt/bin/install-kube-ovn.sh"
-            /opt/bin/install-kube-ovn.sh
-          else
-            echo "Missing executable /opt/bin/install-kube-ovn.sh" >&2
-            exit 1
-          fi
-
-          ceph_manifest=""
-          if [[ -f "/etc/ruddervirt/manifests/ceph-rook.yml" ]]; then
-            ceph_manifest="/etc/ruddervirt/manifests/ceph-rook.yml"
-          elif [[ -f "/etc/ruddervirt/manifests/ceph-rook.yaml" ]]; then
-            ceph_manifest="/etc/ruddervirt/manifests/ceph-rook.yaml"
-          fi
-
-          if [[ -n "${ceph_manifest}" ]]; then
-            echo "Applying ${ceph_manifest}"
-            /usr/local/bin/kubectl apply -f "${ceph_manifest}"
-
-            for _ in {1..60}; do
-              if /usr/local/bin/kubectl -n rook-ceph get deployment/rook-ceph-operator >/dev/null 2>&1; then
-                break
-              fi
-              sleep 5
-            done
-
-            if ! /usr/local/bin/kubectl -n rook-ceph get deployment/rook-ceph-operator >/dev/null 2>&1; then
-              echo "rook-ceph-operator deployment not found" >&2
-              exit 1
-            fi
-
-            /usr/local/bin/kubectl -n rook-ceph rollout status deployment/rook-ceph-operator --timeout=900s
-
-            for _ in {1..60}; do
-              if /usr/local/bin/kubectl -n rook-ceph get cephcluster/rook-ceph >/dev/null 2>&1; then
-                break
-              fi
-              sleep 10
-            done
-
-            if ! /usr/local/bin/kubectl -n rook-ceph get cephcluster/rook-ceph >/dev/null 2>&1; then
-              echo "cephcluster/rook-ceph not found" >&2
-              exit 1
-            fi
-
-            /usr/local/bin/kubectl -n rook-ceph wait --for=condition=Ready cephcluster/rook-ceph --timeout=1800s
-          else
-            echo "ceph-rook manifest not found" >&2
-            exit 1
-          fi
-
-          manifests=(
-          {% for name in manifest_files("manifests") %}
-            "/etc/ruddervirt/manifests/{{ name }}"
-          {% endfor %}
-            "/etc/ruddervirt/manifests/kubevirt-operator.yaml"
-            "/etc/ruddervirt/manifests/kubevirt-crd.yaml"
-            "/etc/ruddervirt/manifests/cdi-operator.yaml"
-            "/etc/ruddervirt/manifests/cdi-crd.yaml"
-          )
-
-          for manifest in "${manifests[@]}"; do
-            case "${manifest}" in
-              */ceph-rook.yml|*/ceph-rook.yaml)
-                continue
-                ;;
-            esac
-
-            if [[ -f "${manifest}" ]]; then
-              echo "Applying ${manifest}"
-              /usr/local/bin/kubectl apply -f "${manifest}"
-            else
-              echo "Skipping missing manifest ${manifest}" >&2
-            fi
-          done
-
-          /usr/bin/mkdir -p /var/lib/ruddervirt
-          /usr/bin/touch /var/lib/ruddervirt/prepare-k3s.done
+          {{ slurp("prepare-k3s.sh") | indent(10) }}
     - path: /etc/profile.d/01-custom-profile.sh
       mode: 0777
       contents:
         inline: |
           alias vim="vi"
+          export EDITOR="vi"
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+    - path: /etc/ruddervirt/ruddervirt-networking.env
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          POD_CIDR={{ pod_cidr }}
+          SVC_CIDR={{ svc_cidr }}
+          LOCAL_IP={{ local_ip }}
+    - path: /etc/ruddervirt/k3s-config.yaml
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          # connecting to another server
+          # server: https://192.168.1.5:6443
+          # token: MYTOKEN
+
+          # initialize the cluster; only on first server
+          # cluster-init: true
+          # backup the cluster
+          # etcd-s3: true
+          # etcd-s3-config-secret: k3s-etcd-snapshot-s3-config
+
+          # bind-address: __LOCAL_IP__
+          # advertise-address: __LOCAL_IP__
+          # node-ip: __LOCAL_IP__
+          # tls-san:
+          #   - "__LOCAL_IP__"
+
+          # cluster networking settings; only matters when tailscale operator exists
+          # cluster-cidr: __POD_CIDR__
+          # service-cidr: __SVC_CIDR__
+          # cluster-dns: __CLUSTER_DNS__
+
+          # generic settings; shouldn't ever change
+          flannel-backend: none
+          kubelet-arg:
+            - "config=/etc/kubelet.config"
+          node-label:
+            - "ruddervirt=metal"
+          resolv-conf: /etc/resolv.conf
+          disable:
+            - "local-storage"
+            - "network-policy"
     {% set _zincati_disable_prefix = "99" if disable_autoupdate else "50" %}
     {% set _zincati_periodic_prefix = "50" if disable_autoupdate else "99" %}
     - path: /etc/zincati/config.d/{{ _zincati_periodic_prefix }}-periodic-sat-midnight-us-eastern.toml
@@ -448,45 +410,6 @@ storage:
           days = [ "Sat" ]
           start_time = "00:00"
           length_minutes = 60
-    - path: /etc/ruddervirt/k3s-config.yaml
-      mode: 0644
-      overwrite: true
-      contents:
-        inline: |
-          # connecting to another server
-          #server: https://192.168.103.2:6443
-          #token: MYTOKEN
-          
-          # initialize the cluster; only on first server
-          #cluster-init: true
-          # backup the cluster
-          #etcd-s3: true
-          #etcd-s3-config-secret: k3s-etcd-snapshot-s3-config
-
-          # allow kube-ovn to do networking
-          flannel-backend: none
-          
-          # this requires the local ip address
-          #bind-address: 192.168.103.1
-          #advertise-address: 192.168.103.1
-          #node-ip: 192.168.103.1
-          #tls-san:
-          #  - "192.168.103.1"
-          
-          # cluster networking settings; only matters when tailscale operator exists
-          #cluster-cidr: 10.32.0.0/16
-          #service-cidr: 10.33.0.0/16
-          #cluster-dns: 10.33.0.10
-
-          # generic settings; shouldn't ever change
-          kubelet-arg:
-            - "config=/etc/kubelet.config"
-          node-label:
-            - "ruddervirt=metal"
-          resolv-conf: /etc/resolv.conf
-          disable: 
-            - "local-storage"
-            - "network-policy"
     - path: /etc/zincati/config.d/{{ _zincati_disable_prefix }}-disable-updates.toml
       mode: 0644
       overwrite: true
