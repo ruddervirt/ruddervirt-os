@@ -335,12 +335,12 @@ storage:
       mode: 0755
       contents:
         inline: |
-          {{ slurp("render-k3s-config.sh") | indent(10) }}
+          {{ slurp("scripts/render-k3s-config.sh") | indent(10) }}
     - path: /usr/local/bin/prepare-k3s
       mode: 0755
       contents:
         inline: |
-          {{ slurp("prepare-k3s.sh") | indent(10) }}
+          {{ slurp("scripts/prepare-k3s.sh") | indent(10) }}
     - path: /etc/profile.d/01-custom-profile.sh
       mode: 0777
       contents:
