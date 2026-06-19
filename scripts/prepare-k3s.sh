@@ -87,7 +87,7 @@ else
   exit 1
 fi
 
-/usr/local/bin/kubectl apply -k "/etc/ruddervirt/manifests/rook-ceph/overlays/ruddervirtvirt"
+/usr/local/bin/kubectl apply -k "/etc/ruddervirt/manifests/rook-ceph/overlays/ruddervirt"
 
 for _ in {1..60}; do
   if /usr/local/bin/kubectl get crd cephclusters.ceph.rook.io >/dev/null 2>&1; then

@@ -1,0 +1,32 @@
+name: Build and Release ISO
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-iso:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build the builder image
+        run: docker build -t ruddervirt-os-builder .
+
+      - name: Build the installer ISO
+        run: |
+          mkdir -p out
+          docker run --rm -v "${PWD}/out:/output" ruddervirt-os-builder --version "${GITHUB_REF_NAME}"
+
+      - name: Publish ISO to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/ruddervirt-install-${{ github.ref_name }}.iso
+          fail_on_unmatched_files: true
+          generate_release_notes: true

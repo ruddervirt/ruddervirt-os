@@ -4,50 +4,41 @@ RudderVirt Virt OS is a specialized operating system that provides a secure, con
 
 **Important**: This operating system is the foundation for running a private VM Deployment Zone on ruddervirt.com. However, it cannot be connected or used without coordination with Rudder Virt. Please contact us at [selfhosted@ruddervirt.com](mailto:selfhosted@ruddervirt.com) for more information.
 
-## Prerequisites
-- Install [Docker](https://www.docker.com/) or [Podman](https://podman.io/)
-
 ## Quick Start
 
-Create a bootable installer ISO
+Download the latest installer ISO from the [Releases page](../../releases). Burn it onto a USB flash drive (we recommend [balenaEtcher](https://www.balena.io/etcher) or [rufus](https://rufus.ie/en/)). Then, boot into it on your hardware. The installer presents an interactive menu on the console to choose the target disk, asks you to confirm, and then installs onto it. **Warning:** This will erase all existing data on the selected drive.
 
-```bash
-docker run --rm -t -v "$PWD":/output ghcr.io/ruddervirt/ruddervirtvirt-os:latest /dev/DRIVEX "your-plaintext-password"
+The installed system ships with a default password `ruddervirt` for the `root` and `admin` users. **Change it immediately after first login.**
+
+The OS image is a minimal base: it boots, but the RudderVirt solution (k3s, Rook-Ceph, KubeVirt, CDI, Kube-OVN) is **not** installed automatically. After first boot, log in as `admin` (password `ruddervirt`) — on the console or over SSH, the `ruddervirt-setup` menu launches automatically in place of a shell:
+
+```
+  1) install   Install the solution on this node
+  2) update    Re-apply the solution after an OS image update
+  3) network   Configure a private network interface
+  4) purge     Stop k3s and delete all cluster data (DESTRUCTIVE)
+  5) shell     Drop to a bash shell
+  6) logout    End this session
 ```
 
-Replace:
-- `/dev/DRIVEX` with your target installation device (e.g., `/dev/sda`, `/dev/nvme0n1`)
-- `your-plaintext-password` with the password you want set on the installed OS
+Pick `install` to set up the node (privileged actions prompt for the `admin` password via `sudo`). Pick `shell` to drop to a normal bash prompt; run `ruddervirt-setup` again to return to the menu. `ruddervirt-setup` is the sole entrypoint for the solution and can also be run non-interactively, e.g. `sudo ruddervirt-setup install`.
 
-The ISO will be created in your current directory. Burn this onto a media or flash drive (we recommend [balenaEtcher](https://www.balena.io/etcher) or [rufus](https://rufus.ie/en/)). Then, boot into it on your hardware, and it will automatically install. **Warning:** This will overwrite any existing data on the drive.
+### Building the ISO locally (development)
 
-### Install Flags
-
-Required arguments:
-- `install_disk`: Target installation disk device (e.g., `/dev/sda`, `/dev/nvme0n1`)
-
-Optional arguments:
-- `password`: Plaintext password to set for the installed OS (required unless `--github-ssh-user` is provided)
-- `--github-ssh-user USERNAME`: Fetch SSH public keys from GitHub (can be specified multiple times)
-- `--disable-autoupdate`: Disable OS-level auto-updates and restarts (through zincati)
-- `--show-butane`: Print the rendered Butane config to stdout
-- `--show-ignition`: Print the generated Ignition config to stdout
-- `--pod-cidr CIDR`: Override pod CIDR (default: `10.42.0.0/16`)
-- `--svc-cidr CIDR`: Override service CIDR (default: `10.43.0.0/16`)
+Releases are built by CI and published to the [Releases page](../../releases). For local development, run `./local-build.sh` (requires Docker or Podman).
 
 ### Target Hardware Requirements
-- **CPU**: 
-  - Bare metal x86_64 processor with VT-x/AMD-V support
-  - Nested virtualization is not supported
-- **Memory**:
-  - Minimum 128GB RAM (more recommended)
-- **Storage**: 
-  - Minimum 500GB (more recommended)
-  - SSD required, NVME recommended 
-  - External SAN can also be used in lieu of local disks
-- **Network**: 
-  - Gigabit or faster Ethernet connection with internet
-  - 10Gbps private network for multi-node setups
+
+| Component | Minimum | Recommended |
+| --- | --- | --- |
+| **CPU** | Bare-metal x86_64 with VT-x/AMD-V | Modern multi-core x86_64 server CPU with VT-x/AMD-V |
+| **Memory** | 8 GB RAM | 128 GB RAM or more |
+| **Storage** | 100 GB SSD | 1 TB+ NVMe |
+| **Network** | 1 GbE with internet access | 10 GbE private network (multi-node setups) |
+
+Notes:
+- Nested virtualization is not supported.
+- An external SAN can be used in lieu of local disks.
 
 ## License
 
