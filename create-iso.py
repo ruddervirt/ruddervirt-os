@@ -5,13 +5,8 @@ import os
 import subprocess
 import argparse
 import urllib.request
-import urllib.error
 import json
-from datetime import datetime
-import tempfile
 import glob
-from passlib.hash import sha512_crypt
-from jinja2 import Environment, FileSystemLoader
 from pathlib import Path
 
 
@@ -21,121 +16,6 @@ def print_file_to_console(label: str, path: str | Path) -> None:
     print(f"\n===== BEGIN {label}: {p} =====\n")
     print(content, end="" if content.endswith("\n") else "\n")
     print(f"\n===== END {label}: {p} =====\n")
-
-def fetch_github_ssh_keys(username):
-    url = f"https://github.com/{username}.keys"
-    try:
-        with urllib.request.urlopen(url) as response:
-            if response.getcode() == 200:
-                keys = response.read().decode('utf-8').strip().split('\n')
-                keys = [key.strip() for key in keys if key.strip()]
-                if not keys:
-                    print(f"Warning: No SSH keys found for GitHub user '{username}'")
-                    return []
-                print(f"Found {len(keys)} SSH key(s) for GitHub user '{username}'")
-                return keys
-            else:
-                print(f"Error: Unable to fetch SSH keys for user '{username}' (HTTP {response.getcode()})")
-                return []
-    except urllib.error.URLError as e:
-        print(f"Error fetching SSH keys for user '{username}': {e}")
-        return []
-
-
-
-def hash_password_sha512(plaintext_password: str) -> str:
-    if not plaintext_password:
-        raise ValueError("Password must not be empty")
-    return sha512_crypt.hash(plaintext_password)
-
-
-def template_butane(
-    butane_file: str,
-    password_hash: str | None,
-    ssh_keys: list[str] | None = None,
-    disable_autoupdate: bool = False,
-    disk_path: str | None = None,
-    pod_cidr: str | None = None,
-    svc_cidr: str | None = None,
-) -> str:
-    template_path = Path(butane_file).resolve()
-    template_dir = template_path.parent
-
-    env = Environment(
-        loader=FileSystemLoader(str(template_dir)),
-        autoescape=False,
-        keep_trailing_newline=True,
-    )
-
-    def slurp(rel_path: str) -> str:
-        return (template_dir / rel_path).read_text(encoding="utf-8")
-
-    def manifest_files(rel_dir: str = "manifests") -> list[str]:
-        base = (template_dir / rel_dir).resolve()
-        if not base.exists():
-            return []
-        if not base.is_dir():
-            raise ValueError(f"{rel_dir} must be a directory")
-
-        names: list[str] = []
-        for entry in base.iterdir():
-            if not entry.is_file():
-                continue
-            if entry.name.startswith("."):
-                continue
-            if entry.suffix.lower() not in (".yaml", ".yml"):
-                continue
-            names.append(entry.name)
-
-        return sorted(names)
-
-    def tree_files(rel_dir: str) -> list[str]:
-        base = (template_dir / rel_dir).resolve()
-        if not base.exists():
-            return []
-        if not base.is_dir():
-            raise ValueError(f"{rel_dir} must be a directory")
-
-        names: list[str] = []
-        for entry in base.rglob("*"):
-            if not entry.is_file():
-                continue
-            rel_path = entry.relative_to(base)
-            if any(part.startswith(".") for part in rel_path.parts):
-                continue
-            names.append(str(rel_path).replace(os.sep, "/"))
-
-        return sorted(names)
-
-    env.globals["slurp"] = slurp
-    env.globals["manifest_files"] = manifest_files
-    env.globals["tree_files"] = tree_files
-
-    template = env.get_template(template_path.name)
-    render_args = {
-        "password_hash": password_hash,
-        "ssh_keys": ssh_keys or [],
-        "disable_autoupdate": disable_autoupdate,
-        "disk_path": disk_path,
-    }
-    if pod_cidr:
-        render_args["pod_cidr"] = pod_cidr
-    if svc_cidr:
-        render_args["svc_cidr"] = svc_cidr
-    rendered_content = template.render(**render_args)
-
-    temp_fd, temp_path = tempfile.mkstemp(suffix='.bu', prefix='server_rendered_')
-    try:
-        with os.fdopen(temp_fd, 'w') as f:
-            f.write(rendered_content)
-        print(f"Created temporary Butane file: {temp_path}")
-        return temp_path
-    except Exception:
-        os.close(temp_fd)
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
-        raise
-
 
 def run_command(cmd, check=True):
     print(f"Running: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
@@ -155,7 +35,7 @@ def run_command(cmd, check=True):
 
 
 def fetch_json(url: str, timeout: int = 20) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": "ruddervirtvirt-os/create-iso"})
+    req = urllib.request.Request(url, headers={"User-Agent": "ruddervirt-os/create-iso"})
     with urllib.request.urlopen(req, timeout=timeout) as response:
         if response.getcode() != 200:
             raise RuntimeError(f"Failed to fetch JSON: {url} (HTTP {response.getcode()})")
@@ -183,6 +63,25 @@ def resolve_latest_fcos_release(stream: str, arch: str) -> str:
     return release
 
 
+def rebrand_iso_boot_menu(iso_path: str, old: bytes = b"Fedora CoreOS", new: bytes = b"RudderVirt OS") -> None:
+    """Rebrand the live ISO's boot-menu title in place.
+
+    `old` and `new` are the same length, so the bytes are replaced directly in
+    the ISO without repacking. This preserves the ISO9660 layout and, crucially,
+    coreos-installer's embed area — repacking the ISO (e.g. with xorriso) drops
+    that area and breaks `coreos-installer iso customize`. Only uncompressed
+    plaintext regions (grub.cfg / isolinux.cfg) hold the literal string, so
+    compressed payloads in the ISO are left untouched.
+    """
+    if len(old) != len(new):
+        raise ValueError("rebrand strings must be the same length to preserve ISO layout")
+    data = Path(iso_path).read_bytes()
+    count = data.count(old)
+    if count:
+        Path(iso_path).write_bytes(data.replace(old, new))
+    print(f"Boot-menu rebrand: replaced {count} occurrence(s) of {old.decode()!r} with {new.decode()!r}")
+
+
 def build_live_rootfs_url(stream: str, arch: str, release: str) -> str:
     fcos_prod_stream_build_url_template = (
         "https://builds.coreos.fedoraproject.org/prod/streams/{stream}/builds/{release}/{arch}/{filename}"
@@ -199,88 +98,31 @@ def build_live_rootfs_url(stream: str, arch: str, release: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description="Create CoreOS installation ISO with embedded ignition config")
-    parser.add_argument("install_disk", help="Target installation disk device")
     parser.add_argument(
-        "password",
-        nargs="?",
-        help="Plaintext password to set for the installed OS (optional if --github-ssh-user is provided).",
-    )
-    parser.add_argument(
-        "--github-ssh-user",
-        action="append",
-        default=[],
-        metavar="USERNAME",
-        help="GitHub username to fetch SSH public keys from (can be specified multiple times).",
-    )
-    parser.add_argument(
-        "--disable-autoupdate",
-        action="store_true",
-        help="Disable Zincati auto-updates (takes priority over any periodic schedule).",
-    )
-    parser.add_argument(
-        "--show-butane",
-        action="store_true",
-        help="Print the rendered Butane config to stdout.",
+        "--version",
+        default="dev",
+        metavar="VERSION",
+        help="Version string used in the output ISO filename (default: dev).",
     )
     parser.add_argument(
         "--show-ignition",
         action="store_true",
         help="Print the generated Ignition config to stdout.",
     )
-    parser.add_argument(
-        "--pod-cidr",
-        help="Override the pod CIDR (default: 10.42.0.0/16).",
-    )
-    parser.add_argument(
-        "--svc-cidr",
-        help="Override the service CIDR (default: 10.43.0.0/16).",
-    )
-    
+
     args = parser.parse_args()
-    
-    input_butane = "server.bu.j2"
-    install_disk = args.install_disk
-    password = args.password
+
+    input_butane = "server.bu"
     stream = "stable"
     arch = "x86_64"
     output_ignition = Path(input_butane).with_suffix('.ign')
-    disk_name = os.path.basename(install_disk).replace("/", "-")
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    output_iso = f"/output/ruddervirtvirt-install-dev-{disk_name}-{timestamp}.iso"
-    fedora_iso = "fedora-coreos.iso"    
-    temp_butane_file = None
-    
+    output_iso = f"/output/ruddervirt-install-{args.version}.iso"
+    fedora_iso = "fedora-coreos.iso"
+
     try:
-        ssh_keys: list[str] = []
-        for username in args.github_ssh_user:
-            ssh_keys.extend(fetch_github_ssh_keys(username=username))
-
-        ssh_keys = set(ssh_keys)
-
-        if password:
-            password_hash: str | None = hash_password_sha512(plaintext_password=password)
-        elif ssh_keys:
-            password_hash = None
-        else:
-            raise ValueError("Password is required unless --github-ssh-user provides at least one SSH key")
-
-        temp_butane_file = template_butane(
-            butane_file=input_butane,
-            password_hash=password_hash,
-            ssh_keys=sorted(ssh_keys),
-            disable_autoupdate=args.disable_autoupdate,
-            disk_path=install_disk,
-            pod_cidr=args.pod_cidr,
-            svc_cidr=args.svc_cidr,
-        )
-        input_butane = temp_butane_file
-
-        if args.show_butane:
-            print_file_to_console(label="BUTANE", path=input_butane)
-
         print("Generating ignition")
         run_command(
-            cmd=["butane", "--pretty", "--strict", input_butane, "--output", str(output_ignition)]
+            cmd=["butane", "--files-dir", ".", "--pretty", "--strict", input_butane, "--output", str(output_ignition)]
         )
 
         if args.show_ignition:
@@ -337,14 +179,20 @@ def main():
             ]
         )
 
+        print("Rebranding live ISO boot menu")
+        try:
+            rebrand_iso_boot_menu(minimal_iso)
+        except Exception as e:
+            print(f"Warning: boot-menu rebrand failed ({e}); continuing with unbranded menu")
+
         run_command(
             cmd=[
                 "coreos-installer",
                 "iso",
                 "customize",
                 "-f",
-                "--dest-device",
-                install_disk,
+                "--pre-install",
+                "scripts/install-menu.sh",
                 "--dest-ignition",
                 str(output_ignition),
                 "-o",
@@ -355,10 +203,20 @@ def main():
 
         if os.path.exists(minimal_iso):
             os.remove(minimal_iso)
-        
+
         if os.path.exists(fedora_iso):
             os.remove(fedora_iso)
-        
+
+        # The container runs as root, so the ISO lands root-owned on the bind
+        # mount. Make it world-readable and hand ownership to whoever owns the
+        # mounted output directory, so the host user can use it without sudo.
+        os.chmod(output_iso, 0o644)
+        try:
+            out_dir_stat = os.stat(os.path.dirname(output_iso))
+            os.chown(output_iso, out_dir_stat.st_uid, out_dir_stat.st_gid)
+        except OSError as e:
+            print(f"Warning: could not chown {output_iso} to the output dir owner: {e}")
+
         print(f"Created {output_iso}")
         
     except KeyboardInterrupt:
@@ -367,10 +225,6 @@ def main():
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
-    finally:
-        if temp_butane_file and os.path.exists(temp_butane_file):
-            os.unlink(temp_butane_file)
-            print(f"Cleaned up temporary file: {temp_butane_file}")
 
 
 if __name__ == "__main__":

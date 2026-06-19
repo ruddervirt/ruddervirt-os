@@ -1,43 +1,22 @@
 # SPDX-License-Identifier: GPL-3.0-only
 variant: fcos
 version: 1.6.0
-{% set pod_cidr = pod_cidr | default("10.42.0.0/16") %}
-{% set svc_cidr = svc_cidr | default("10.43.0.0/16") %}
 passwd:
   users:
+    # Default password is "ruddervirt" for both root and admin. This is a
+    # well-known default meant to be changed by the post-install setup script.
+    - name: root
+      password_hash: "$6$ruddervirt0$hVyBGZxUjDrV7kW.cEWoJxBLIWzCDxPDRjE3NgDEmeAMoNEpXoJa2fR6PGEKu5dnI78I22zK5z1cC.IEDOnAZ/"
     - name: admin
       groups: ["wheel", "sudo"]
-      {% if password_hash %}
-      password_hash: "{{ password_hash }}"
-      {% endif %}
-      {% if ssh_keys %}
-      ssh_authorized_keys:
-        {%- for key in ssh_keys %}
-        - "{{ key }}"
-        {%- endfor %}
-      {% endif %}
+      password_hash: "$6$ruddervirt0$hVyBGZxUjDrV7kW.cEWoJxBLIWzCDxPDRjE3NgDEmeAMoNEpXoJa2fR6PGEKu5dnI78I22zK5z1cC.IEDOnAZ/"
+      # Login shell launches the ruddervirt-setup menu (console and SSH) and
+      # falls back to bash for non-interactive use and the menu's shell escape.
+      shell: /usr/local/bin/ruddervirt-shell
     - name: rudderadmin
       groups: ["wheel", "sudo"]
 systemd:
   units:
-    - name: "rpm-ostree-install-packages.service"
-      enabled: true
-      contents: |
-        [Unit]
-        Description=Install packages
-        Wants=network-online.target
-        After=network-online.target
-        Before=zincati.service
-        ConditionPathExists=|!/usr/share/selinux/packages/k3s.pp
-
-        [Service]
-        Type=oneshot
-        RemainAfterExit=yes
-        ExecStart=rpm-ostree install --apply-live --allow-inactive --assumeyes k3s-selinux btop mdadm iperf3 /var/tmp/k9s.rpm
-        ExecStartPost=bash -c "rm -f /var/tmp/k9s.rpm"
-
-        [Install]
-        WantedBy=multi-user.target
     - name: "rudderadmin-key-sync-setup.service"
       enabled: true
       contents: |
@@ -86,117 +65,29 @@ systemd:
 
         [Install]
         WantedBy=timers.target
-    - name: "install-etcdctl.service"
+    - name: "brand-ruddervirt.service"
       enabled: true
       contents: |
         [Unit]
-        Description=Install etcdctl binary
-        ConditionPathExists=!/opt/bin/etcdctl
-        After=network-online.target
-        Wants=network-online.target
+        Description=Apply RudderVirt OS branding (os-release, boot menu)
+        After=local-fs.target
+        RequiresMountsFor=/boot
+        Before=systemd-user-sessions.service
 
         [Service]
         Type=oneshot
         RemainAfterExit=yes
-        Environment=ETCD_VERSION=v3.5.21
-        ExecStartPre=/usr/bin/mkdir -p /opt/bin
-        ExecStart=/bin/bash -c '\
-          curl -fsSL https://github.com/etcd-io/etcd/releases/download/${ETCD_VERSION}/etcd-${ETCD_VERSION}-linux-amd64.tar.gz \
-          | tar xz --strip-components=1 -C /opt/bin etcd-${ETCD_VERSION}-linux-amd64/etcdctl'
-        ExecStartPost=/usr/bin/chmod +x /opt/bin/etcdctl
+        ExecStart=/usr/local/bin/brand-ruddervirt
 
         [Install]
         WantedBy=multi-user.target
-    - name: "purge-k3s.service"
-      enabled: false
-      contents: |
-        [Unit]
-        Description=Purge K3s THIS WILL DELETE ALL K3S DATA; USE WITH CAUTION
-        Wants=network-online.target
-        After=network-online.target
-
-        [Service]
-        Type=oneshot
-        ExecStartPre=-/bin/bash -c 'rm -rf /var/lib/rancher/k3s'
-        ExecStartPre=-/bin/bash -c 'rm -rf /etc/rancher/k3s'
-        ExecStart=/bin/true
-
-        [Install]
-        WantedBy=multi-user.target
-    - name: "render-k3s-config.service"
-      enabled: true
-      contents: |
-        [Unit]
-        Description=Render K3s config from networking defaults
-        Wants=network-online.target
-        After=network-online.target
-        ConditionPathExists=/etc/ruddervirt/k3s-config.yaml
-
-        [Service]
-        Type=oneshot
-        ExecStart=/usr/local/bin/render-k3s-config
-
-        [Install]
-        WantedBy=multi-user.target
-    - name: "k3s.service"
-      enabled: true
-      contents: |
-        [Unit]
-        Description=Run K3s
-        Wants=network-online.target rpm-ostree-install-packages.service render-k3s-config.service
-        After=network-online.target rpm-ostree-install-packages.service render-k3s-config.service
-
-        [Service]
-        Type=notify
-        EnvironmentFile=-/etc/default/%N
-        EnvironmentFile=-/etc/sysconfig/%N
-        EnvironmentFile=-/etc/systemd/system/%N.env
-        KillMode=process
-        Delegate=yes
-        LimitNOFILE=1048576
-        LimitNPROC=infinity
-        LimitCORE=infinity
-        TasksMax=infinity
-        TimeoutStartSec=0
-        Restart=always
-        RestartSec=5s
-        ExecStartPre=/bin/mkdir -p /etc/rancher/k3s
-        ExecStartPre=-/sbin/modprobe br_netfilter
-        ExecStartPre=-/sbin/modprobe overlay
-        ExecStartPre=-/sbin/modprobe iscsi_tcp
-        ExecStartPre=-/sbin/modprobe dm_crypt
-        ExecStartPre=-/sbin/modprobe nfs
-        ExecStartPre=-/sbin/modprobe wireguard
-        ExecStartPre=-/sbin/modprobe tun
-        ExecStartPre=-/sbin/modprobe geneve
-        ExecStartPre=-/sbin/modprobe openvswitch
-        ExecStartPre=-/sbin/modprobe ip_tables
-        ExecStartPre=-/sbin/modprobe iptable_nat
-        ExecStart=/bin/bash -c '/usr/local/bin/k3s server'
-        #ExecStart=/bin/bash -c '/usr/local/bin/k3s agent'
-        [Install]
-        WantedBy=multi-user.target
-    - name: "prepare-k3s.service"
-      enabled: true
-      contents: |
-        [Unit]
-        Description=Prepare K3s manifests in order
-        Wants=network-online.target k3s.service
-        After=network-online.target k3s.service
-        ConditionPathExists=/etc/ruddervirt/manifests
-        ConditionPathExists=!/var/lib/ruddervirt/prepare-k3s.done
-
-        [Service]
-        Type=oneshot
-        WorkingDirectory=/opt
-        ExecStart=/usr/local/bin/prepare-k3s
-        RemainAfterExit=yes
-
-        [Install]
-        WantedBy=multi-user.target
+    # Suppress the colored "Fedora CoreOS <version>" OS-release line that
+    # console-login-helper-messages prints in the motd after login.
+    - name: "console-login-helper-messages-gensnippet-os-release.service"
+      mask: true
 storage:
   disks:
-    - device: {{ disk_path }}
+    - device: /dev/disk/by-id/coreos-boot-disk
       wipe_table: false
       partitions:
         - number: 4
@@ -204,6 +95,11 @@ storage:
           size_mib: 51200 # root at 50GB
         - number: 5
           size_mib: 0
+  trees:
+    # The bundled solution manifests, embedded wholesale from the repo's
+    # manifests/ directory (resolved via `butane --files-dir`).
+    - local: manifests
+      path: /etc/ruddervirt/manifests
   files:
     - path: /etc/modprobe.d/ixgbe.conf
       mode: 0644
@@ -221,22 +117,6 @@ storage:
           gpgcheck=1
           repo_gpgcheck=0
           gpgkey=https://rpm.rancher.io/public.key
-    {% for name in manifest_files("manifests") %}
-    - path: /etc/ruddervirt/manifests/{{ name }}
-      overwrite: true
-      mode: 0644
-      contents:
-        inline: |
-          {{ slurp("manifests/" ~ name) | indent(10) }}
-    {% endfor %}
-    {% for name in tree_files("manifests/rook-ceph") %}
-    - path: /etc/ruddervirt/manifests/rook-ceph/{{ name }}
-      overwrite: true
-      mode: 0644
-      contents:
-        inline: |
-          {{ slurp("manifests/rook-ceph/" ~ name) | indent(10) }}
-    {% endfor %}
     - path: /etc/ruddervirt/manifests/kubevirt-crd.yaml
       overwrite: true
       mode: 0644
@@ -291,49 +171,6 @@ storage:
       mode: 0755
       contents:
         source: https://raw.githubusercontent.com/kubeovn/kube-ovn/release-1.15/dist/images/install.sh
-    - path: /opt/bin/setup-private-network
-      mode: 0755
-      contents:
-        inline: |
-          #!/usr/bin/env bash
-          set -euo pipefail
-          DESIRED_MTU=8950
-          read -r -p "Interface name (e.g. eno1): " IFNAME
-          read -r -p "IPv4 address (e.g. 192.168.10.2): " IPADDR
-
-          if [[ -z "${IFNAME}" || -z "${IPADDR}" ]]; then
-            echo "Interface name and IP address are required." >&2
-            exit 1
-          fi
-
-          if ! ip link show "${IFNAME}" >/dev/null 2>&1; then
-            echo "Interface '${IFNAME}' does not exist." >&2
-            exit 1
-          fi
-
-          if nmcli -t -f NAME connection show | grep -Fxq "${IFNAME}"; then
-            echo "A NetworkManager connection named '${IFNAME}' already exists." >&2
-            exit 1
-          fi
-
-          echo ""
-          echo "About to configure interface:"
-          echo "  IFNAME: ${IFNAME}"
-          echo "  IPADDR: ${IPADDR}/24"
-          echo "  MTU: ${DESIRED_MTU}"
-          read -r -p "Proceed? [y/N]: " CONFIRM
-
-          case "${CONFIRM}" in
-            y|Y|yes|YES)
-              sudo nmcli connection add type ethernet con-name "${IFNAME}" ifname "${IFNAME}" ipv4.method manual ipv4.addresses "${IPADDR}/24"
-              sudo nmcli connection modify "${IFNAME}" 802-3-ethernet.mtu "${DESIRED_MTU}"
-              sudo nmcli connection up "${IFNAME}"
-              ;;
-            *)
-              echo "Aborted."
-              exit 0
-              ;;
-          esac
     - path: /usr/local/bin/kubectl
       mode: 0777
       contents:
@@ -343,13 +180,23 @@ storage:
     - path: /usr/local/bin/render-k3s-config
       mode: 0755
       contents:
-        inline: |
-          {{ slurp("scripts/render-k3s-config.sh") | indent(10) }}
+        local: scripts/render-k3s-config.sh
     - path: /usr/local/bin/prepare-k3s
       mode: 0755
       contents:
-        inline: |
-          {{ slurp("scripts/prepare-k3s.sh") | indent(10) }}
+        local: scripts/prepare-k3s.sh
+    - path: /usr/local/bin/ruddervirt-setup
+      mode: 0755
+      contents:
+        local: scripts/ruddervirt-setup.sh
+    - path: /usr/local/bin/ruddervirt-shell
+      mode: 0755
+      contents:
+        local: scripts/ruddervirt-shell.sh
+    - path: /usr/local/bin/brand-ruddervirt
+      mode: 0755
+      contents:
+        local: scripts/brand-ruddervirt.sh
     - path: /etc/profile.d/01-custom-profile.sh
       mode: 0777
       contents:
@@ -362,9 +209,9 @@ storage:
       overwrite: true
       contents:
         inline: |
-          POD_CIDR={{ pod_cidr }}
-          SVC_CIDR={{ svc_cidr }}
-          LOCAL_IP={{ local_ip }}
+          POD_CIDR=10.42.0.0/16
+          SVC_CIDR=10.43.0.0/16
+          LOCAL_IP=
     - path: /etc/ruddervirt/k3s-config.yaml
       mode: 0644
       overwrite: true
@@ -401,9 +248,7 @@ storage:
           disable:
             - "local-storage"
             - "network-policy"
-    {% set _zincati_disable_prefix = "99" if disable_autoupdate else "50" %}
-    {% set _zincati_periodic_prefix = "50" if disable_autoupdate else "99" %}
-    - path: /etc/zincati/config.d/{{ _zincati_periodic_prefix }}-periodic-sat-midnight-us-eastern.toml
+    - path: /etc/zincati/config.d/99-periodic-sat-midnight-us-eastern.toml
       mode: 0644
       overwrite: true
       contents:
@@ -419,13 +264,6 @@ storage:
           days = [ "Sat" ]
           start_time = "00:00"
           length_minutes = 60
-    - path: /etc/zincati/config.d/{{ _zincati_disable_prefix }}-disable-updates.toml
-      mode: 0644
-      overwrite: true
-      contents:
-        inline: |
-          [updates]
-          enabled = false
     - path: /etc/resolv.conf
       mode: 0644
       overwrite: true
@@ -450,4 +288,12 @@ storage:
       mode: 0644
       contents:
         inline: |
-          ruddervirtvirtos-default
+          ruddervirtos-default
+    - path: /etc/issue.d/30_ruddervirt-credentials.issue
+      mode: 0644
+      contents:
+        inline: |
+          -----------------------------------------------------
+          Default RudderVirt OS Credentials: admin / ruddervirt
+          -----------------------------------------------------
+          
