@@ -25,7 +25,9 @@ Pick `install` to set up the node (privileged actions prompt for the `admin` pas
 
 ### Building the ISO locally (development)
 
-Releases are built by CI and published to the [Releases page](../../releases). For local development, run `./local-build.sh` (requires Docker or Podman).
+Releases are built by CI and published to the [Releases page](../../releases). For local development, run `make iso` (requires Docker or Podman) to produce `out/ruddervirt-install-dev.iso`. `make boot` then boots the result in QEMU (needs `qemu` and a host with `/dev/kvm`), and `make show-ignition` prints the generated Ignition config. Run `make` on its own for the full list of targets.
+
+You can also develop in the browser with [GitHub Codespaces](https://github.com/features/codespaces): the repo ships a dev container with Docker and the Go toolchain preconfigured. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev/test workflow and for how to add a Go binary to the ISO.
 
 ### Target Hardware Requirements
 

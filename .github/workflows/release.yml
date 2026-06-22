@@ -16,13 +16,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build the builder image
-        run: docker build -t ruddervirt-os-builder .
-
       - name: Build the installer ISO
-        run: |
-          mkdir -p out
-          docker run --rm -v "${PWD}/out:/output" ruddervirt-os-builder --version "${GITHUB_REF_NAME}"
+        run: make iso VERSION="${GITHUB_REF_NAME}"
 
       - name: Publish ISO to GitHub Release
         uses: softprops/action-gh-release@v2
