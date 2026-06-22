@@ -4,3 +4,6 @@ __pycache__
 *.ign
 .vscode
 out
+/bin/
+*.test
+.vscode

@@ -1,0 +1,14 @@
+# Keep the builder image's context to just what create-iso.py needs.
+.git
+.github
+.devcontainer
+.vscode
+out
+bin
+__pycache__
+scripts/dev
+*.md
+*.iso
+*.ign
+LICENSE
+Makefile

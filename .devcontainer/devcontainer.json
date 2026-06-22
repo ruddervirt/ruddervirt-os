@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Codespaces / Dev Container for RudderVirt OS.
+//
+// Based on the prebuilt Go dev container image (Go preinstalled and on PATH), plus
+// Docker-in-Docker so `make iso` builds the installer ISO right inside Codespaces.
+// Docker-IN-docker (not docker-outside-of-docker) is used on purpose: the inner
+// daemon shares this container's filesystem, so the `-v out:/output` bind mount in
+// `make iso` resolves correctly.
+//
+// The dev container's distro is independent of what we build: the ISO is always built
+// in the fedora:latest builder (see Dockerfile) and tests run against the canonical
+// Fedora CoreOS image (see Makefile), regardless of this base.
+//
+// Note: testing the ISO by *booting* it (`make boot`) needs /dev/kvm, which Codespaces
+// does not provide — do full boot tests on a KVM host. See CONTRIBUTING.md.
+{
+  "name": "ruddervirt-os",
+  "image": "mcr.microsoft.com/devcontainers/go:1-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "redhat.vscode-yaml",
+        "ms-azuretools.vscode-docker",
+        "ms-python.python"
+      ]
+    }
+  },
+  // make drives the Makefile; python3 runs the ignition render script. Both are apt
+  // packages on this Debian-based image.
+  "onCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends make python3",
+  "postCreateCommand": "go version && docker --version",
+  "remoteUser": "vscode"
+}
