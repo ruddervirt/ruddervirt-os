@@ -15,6 +15,7 @@
 # Usage: render-ignition-rootfs.py <ignition.json> <output-dir>
 
 import base64
+import gzip
 import json
 import os
 import sys
@@ -29,6 +30,16 @@ def decode_data_url(url: str) -> bytes:
     if ";base64" in header:
         return base64.b64decode(data)
     return urllib.parse.unquote_to_bytes(data)
+
+
+def decompress(data: bytes, compression: str | None) -> bytes:
+    # Butane gzip-compresses inline/local contents by default and records it in
+    # `contents.compression`; Ignition decompresses on boot
+    if compression == "gzip":
+        return gzip.decompress(data)
+    if compression:
+        raise ValueError(f"unsupported compression: {compression!r}")
+    return data
 
 
 def main() -> int:
@@ -47,7 +58,8 @@ def main() -> int:
 
     written, skipped = 0, []
     for f in storage.get("files", []):
-        source = (f.get("contents") or {}).get("source")
+        contents = f.get("contents") or {}
+        source = contents.get("source")
         if not source:
             continue
         if source.startswith("data:"):
@@ -61,6 +73,7 @@ def main() -> int:
         else:
             skipped.append(f["path"])
             continue
+        data = decompress(data, contents.get("compression"))
         dest = out_dir / f["path"].lstrip("/")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
