@@ -188,7 +188,7 @@ storage:
     - path: /usr/local/bin/ruddervirt-setup
       mode: 0755
       contents:
-        local: golang-tui/tea-test
+        local: tui/tea-test
     - path: /usr/local/bin/ruddervirt-shell
       mode: 0755
       contents:
