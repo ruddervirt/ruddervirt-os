@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -14,7 +17,14 @@ const (
 	screenMenu screen = iota
 	screenResult
 	screenNetwork
+	screenInstall
 )
+
+type stepOutputMsg string
+type stepDoneMsg struct {
+	label string
+	err   error
+}
 
 type model struct {
 	input         string
@@ -23,6 +33,12 @@ type model struct {
 	networkInputs [2]textinput.Model
 	networkFocus  int
 	resultSource  string
+
+	installStepIdx int
+	installLogs    []string
+	installDone    bool
+	installFailed  bool
+	installCh      chan tea.Msg
 }
 
 var menuOptions = map[string]string{
@@ -32,6 +48,228 @@ var menuOptions = map[string]string{
 	"4": "purge",
 	"5": "shell",
 	"6": "logout",
+}
+
+const k3sUnitContent = `[Unit]
+Description=Run K3s
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+EnvironmentFile=-/etc/default/%N
+EnvironmentFile=-/etc/sysconfig/%N
+EnvironmentFile=-/etc/systemd/system/%N.env
+KillMode=process
+Delegate=yes
+LimitNOFILE=1048576
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+TimeoutStartSec=0
+Restart=always
+RestartSec=5s
+ExecStartPre=/bin/mkdir -p /etc/rancher/k3s
+ExecStartPre=-/sbin/modprobe br_netfilter
+ExecStartPre=-/sbin/modprobe overlay
+ExecStartPre=-/sbin/modprobe iscsi_tcp
+ExecStartPre=-/sbin/modprobe dm_crypt
+ExecStartPre=-/sbin/modprobe nfs
+ExecStartPre=-/sbin/modprobe wireguard
+ExecStartPre=-/sbin/modprobe tun
+ExecStartPre=-/sbin/modprobe geneve
+ExecStartPre=-/sbin/modprobe openvswitch
+ExecStartPre=-/sbin/modprobe ip_tables
+ExecStartPre=-/sbin/modprobe iptable_nat
+ExecStart=/bin/bash -c '/usr/local/bin/k3s server'
+
+[Install]
+WantedBy=multi-user.target
+`
+
+type installStep struct {
+	label string
+	run   func(ch chan<- tea.Msg)
+}
+
+// streamExec runs a single command and sends each output line to ch,
+// followed by a stepDoneMsg when the command finishes.
+func streamExec(label, name string, args ...string) func(ch chan<- tea.Msg) {
+	return func(ch chan<- tea.Msg) {
+		cmd := exec.Command(name, args...)
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			ch <- stepDoneMsg{label: label, err: err}
+			return
+		}
+		cmd.Stdout = pw
+		cmd.Stderr = pw
+		if err := cmd.Start(); err != nil {
+			pw.Close()
+			pr.Close()
+			ch <- stepDoneMsg{label: label, err: err}
+			return
+		}
+		pw.Close()
+		scanner := bufio.NewScanner(pr)
+		for scanner.Scan() {
+			ch <- stepOutputMsg(scanner.Text())
+		}
+		pr.Close()
+		ch <- stepDoneMsg{label: label, err: cmd.Wait()}
+	}
+}
+
+var installSteps = []installStep{
+	{
+		label: "Installing packages",
+		run: func(ch chan<- tea.Msg) {
+			label := "Installing packages"
+			pkgs := []string{"btop", "mdadm", "iperf3", "k3s-selinux"}
+			var missing []string
+			for _, p := range pkgs {
+				if err := exec.Command("/usr/bin/rpm", "-q", p).Run(); err != nil {
+					missing = append(missing, p)
+				}
+			}
+			if _, err := exec.LookPath("k9s"); err != nil {
+				if _, statErr := os.Stat("/var/tmp/k9s.rpm"); statErr == nil {
+					missing = append(missing, "/var/tmp/k9s.rpm")
+				}
+			}
+			if len(missing) == 0 {
+				ch <- stepOutputMsg("All packages already installed")
+				ch <- stepDoneMsg{label: label}
+				return
+			}
+			ch <- stepOutputMsg(fmt.Sprintf("Installing: %s", strings.Join(missing, ", ")))
+			args := append([]string{"install", "--apply-live", "--allow-inactive", "--assumeyes"}, missing...)
+			cmd := exec.Command("/usr/bin/rpm-ostree", args...)
+			pr, pw, err := os.Pipe()
+			if err != nil {
+				ch <- stepDoneMsg{label: label, err: err}
+				return
+			}
+			cmd.Stdout = pw
+			cmd.Stderr = pw
+			if err := cmd.Start(); err != nil {
+				pw.Close()
+				pr.Close()
+				ch <- stepDoneMsg{label: label, err: err}
+				return
+			}
+			pw.Close()
+			scanner := bufio.NewScanner(pr)
+			for scanner.Scan() {
+				ch <- stepOutputMsg(scanner.Text())
+			}
+			pr.Close()
+			ch <- stepDoneMsg{label: label, err: cmd.Wait()}
+		},
+	},
+	{
+		label: "Installing etcdctl",
+		run: func(ch chan<- tea.Msg) {
+			label := "Installing etcdctl"
+			const etcdVersion = "v3.5.21"
+			if _, err := os.Stat("/opt/bin/etcdctl"); err == nil {
+				ch <- stepOutputMsg("etcdctl already installed")
+				ch <- stepDoneMsg{label: label}
+				return
+			}
+			if err := os.MkdirAll("/opt/bin", 0755); err != nil {
+				ch <- stepDoneMsg{label: label, err: err}
+				return
+			}
+			ch <- stepOutputMsg(fmt.Sprintf("Downloading etcdctl %s...", etcdVersion))
+			url := fmt.Sprintf(
+				"https://github.com/etcd-io/etcd/releases/download/%s/etcd-%s-linux-amd64.tar.gz",
+				etcdVersion, etcdVersion,
+			)
+			curlCmd := exec.Command("/usr/bin/curl", "-fsSL", url)
+			tarCmd := exec.Command(
+				"/usr/bin/tar", "xz", "--strip-components=1", "-C", "/opt/bin",
+				fmt.Sprintf("etcd-%s-linux-amd64/etcdctl", etcdVersion),
+			)
+			pipe, err := curlCmd.StdoutPipe()
+			if err != nil {
+				ch <- stepDoneMsg{label: label, err: err}
+				return
+			}
+			tarCmd.Stdin = pipe
+			var errBuf strings.Builder
+			curlCmd.Stderr = &errBuf
+			tarCmd.Stderr = &errBuf
+			if err := curlCmd.Start(); err != nil {
+				ch <- stepDoneMsg{label: label, err: err}
+				return
+			}
+			if err := tarCmd.Start(); err != nil {
+				ch <- stepDoneMsg{label: label, err: err}
+				return
+			}
+			if err := curlCmd.Wait(); err != nil {
+				if s := errBuf.String(); s != "" {
+					ch <- stepOutputMsg(s)
+				}
+				ch <- stepDoneMsg{label: label, err: err}
+				return
+			}
+			if err := tarCmd.Wait(); err != nil {
+				if s := errBuf.String(); s != "" {
+					ch <- stepOutputMsg(s)
+				}
+				ch <- stepDoneMsg{label: label, err: err}
+				return
+			}
+			if err := os.Chmod("/opt/bin/etcdctl", 0755); err != nil {
+				ch <- stepDoneMsg{label: label, err: err}
+				return
+			}
+			ch <- stepOutputMsg("etcdctl installed successfully")
+			ch <- stepDoneMsg{label: label}
+		},
+	},
+	{
+		label: "Rendering k3s config",
+		run:   streamExec("Rendering k3s config", "/usr/local/bin/render-k3s-config"),
+	},
+	{
+		label: "Writing k3s systemd unit",
+		run: func(ch chan<- tea.Msg) {
+			label := "Writing k3s systemd unit"
+			const unitPath = "/etc/systemd/system/k3s.service"
+			ch <- stepOutputMsg(fmt.Sprintf("Writing %s...", unitPath))
+			if err := os.WriteFile(unitPath, []byte(k3sUnitContent), 0644); err != nil {
+				ch <- stepDoneMsg{label: label, err: err}
+				return
+			}
+			ch <- stepOutputMsg("Running systemctl daemon-reload...")
+			out, err := exec.Command("/usr/bin/systemctl", "daemon-reload").CombinedOutput()
+			if s := strings.TrimSpace(string(out)); s != "" {
+				ch <- stepOutputMsg(s)
+			}
+			ch <- stepDoneMsg{label: label, err: err}
+		},
+	},
+	{
+		label: "Enabling and starting k3s",
+		run:   streamExec("Enabling and starting k3s", "/usr/bin/systemctl", "enable", "--now", "k3s.service"),
+	},
+	{
+		label: "Applying manifests",
+		run:   streamExec("Applying manifests", "/usr/local/bin/prepare-k3s"),
+	},
+}
+
+func launchStep(step installStep) (chan tea.Msg, tea.Cmd) {
+	ch := make(chan tea.Msg, 100)
+	go step.run(ch)
+	return ch, func() tea.Msg { return <-ch }
+}
+
+func readFromCh(ch chan tea.Msg) tea.Cmd {
+	return func() tea.Msg { return <-ch }
 }
 
 func initialModel() model {
@@ -45,7 +283,6 @@ func initialModel() model {
 	return model{
 		current:       screenMenu,
 		networkInputs: [2]textinput.Model{ifaceInput, ipInput},
-		networkFocus:  0,
 	}
 }
 
@@ -68,6 +305,27 @@ func resolveInput(input string) (string, bool) {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+
+	case stepOutputMsg:
+		m.installLogs = append(m.installLogs, string(msg))
+		return m, readFromCh(m.installCh)
+
+	case stepDoneMsg:
+		if msg.err != nil {
+			m.installLogs = append(m.installLogs, fmt.Sprintf("✗ %s: %s", msg.label, msg.err.Error()))
+			m.installFailed = true
+			return m, nil
+		}
+		m.installLogs = append(m.installLogs, fmt.Sprintf("✓ %s", msg.label))
+		m.installStepIdx++
+		if m.installStepIdx >= len(installSteps) {
+			m.installDone = true
+			return m, nil
+		}
+		ch, cmd := launchStep(installSteps[m.installStepIdx])
+		m.installCh = ch
+		return m, cmd
+
 	case tea.KeyMsg:
 		switch msg.Type {
 
@@ -75,6 +333,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case tea.KeyEsc:
+			if m.current == screenInstall && !m.installDone && !m.installFailed {
+				return m, nil
+			}
 			m.current = screenMenu
 			m.input = ""
 			m.result = ""
@@ -84,6 +345,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.networkInputs[1].SetValue("")
 			m.networkInputs[0].Focus()
 			m.networkInputs[1].Blur()
+			m.installStepIdx = 0
+			m.installLogs = nil
+			m.installDone = false
+			m.installFailed = false
+			m.installCh = nil
 			return m, nil
 
 		case tea.KeyTab:
@@ -102,25 +368,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			if m.current == screenMenu {
 				if label, ok := resolveInput(m.input); ok {
-					if label == "logout" {
+					m.input = ""
+					switch label {
+					case "logout":
 						return m, tea.Quit
-					}
-					if label == "network" {
+					case "network":
 						m.current = screenNetwork
-						m.input = ""
 						return m, nil
+					case "install":
+						if os.Getuid() != 0 {
+							m.result = "Error: install must be run as root (try: sudo ruddervirt-setup)"
+							m.current = screenResult
+							return m, nil
+						}
+						m.current = screenInstall
+						m.installStepIdx = 0
+						m.installLogs = nil
+						m.installDone = false
+						m.installFailed = false
+						ch, cmd := launchStep(installSteps[0])
+						m.installCh = ch
+						return m, cmd
+					default:
+						m.result = label
+						m.current = screenResult
 					}
-					m.result = label
-					m.current = screenResult
+				} else {
+					m.input = ""
 				}
-				m.input = ""
 			} else if m.current == screenNetwork {
 				iface := m.networkInputs[0].Value()
 				ip := m.networkInputs[1].Value()
 				if iface == "" || ip == "" {
 					return m, nil
 				}
-
 				m.result = fmt.Sprintf("network: interface=%s ip=%s", iface, ip)
 				m.resultSource = "network"
 				m.current = screenResult
@@ -154,6 +435,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	switch m.current {
+
+	case screenInstall:
+		s := "\nInstalling RudderVirt...\n\n"
+		for _, line := range m.installLogs {
+			s += line + "\n"
+		}
+		if m.installDone {
+			s += "\nInstall complete. Press Esc to return to menu.\n"
+		} else if m.installFailed {
+			s += "\nInstall failed. Press Esc to return to menu.\n"
+		} else if m.installStepIdx < len(installSteps) {
+			s += fmt.Sprintf("\nRunning: %s...\n", installSteps[m.installStepIdx].label)
+		}
+		return s
+
 	case screenNetwork:
 		s := "\nNetwork Configuration\n\n"
 		s += fmt.Sprintf("  Interface name: %s\n", m.networkInputs[0].View())
