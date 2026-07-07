@@ -177,7 +177,7 @@ var installSteps = []installStep{
 				ch <- stepDoneMsg{label: label}
 				return
 			}
-			if err := os.MkdirAll("/opt/bin", 0755); err != nil {
+			if err := os.MkdirAll("/opt/bin", 0755); err != nil && !os.IsExist(err) {
 				ch <- stepDoneMsg{label: label, err: err}
 				return
 			}
@@ -186,6 +186,7 @@ var installSteps = []installStep{
 				"https://github.com/etcd-io/etcd/releases/download/%s/etcd-%s-linux-amd64.tar.gz",
 				etcdVersion, etcdVersion,
 			)
+			ch <- stepOutputMsg(fmt.Sprintf("Downloading from %s", url))
 			curlCmd := exec.Command("/usr/bin/curl", "-fsSL", url)
 			tarCmd := exec.Command(
 				"/usr/bin/tar", "xz", "--strip-components=1", "-C", "/opt/bin",
@@ -196,6 +197,10 @@ var installSteps = []installStep{
 				ch <- stepDoneMsg{label: label, err: err}
 				return
 			}
+
+			pipe2, err := curlCmd.CombinedOutput()
+			ch <- stepOutputMsg(fmt.Sprintf("%s", pipe2))
+
 			tarCmd.Stdin = pipe
 			var errBuf strings.Builder
 			curlCmd.Stderr = &errBuf
