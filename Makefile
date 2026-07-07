@@ -30,7 +30,7 @@ SHELL := bash
 .ONESHELL:
 .DEFAULT_GOAL := help
 
-.PHONY: help iso show-ignition boot ignition test-rootfs test-container clean
+.PHONY: help iso show-ignition boot ignition test-rootfs test-container clean build-tui
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -99,6 +99,9 @@ test-rootfs: ignition  ## Materialize the server.bu-injected files into out/test
 
 clean:  ## Remove build artifacts (ISOs, test disk, ignition, rootfs)
 	rm -rf "$(OUT_DIR)"/*.iso "$(OUT_DIR)"/*.qcow2 "$(IGNITION)" "$(ROOTFS)"
+
+build-tui:  ## Build the Go TUI binary
+	cd tui && go build -o tea-test setup.go
 
 test-container: test-rootfs  ## Layer 2: open a shell in an FCOS userland with the server.bu files in place
 	@[ -n "$(RUNTIME)" ] || { echo "Error: neither docker nor podman found in PATH." >&2; exit 1; }

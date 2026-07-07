@@ -1,10 +1,15 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
+	"compress/gzip"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -92,6 +97,54 @@ type installStep struct {
 	run   func(ch chan<- tea.Msg)
 }
 
+// downloadAndUntar downloads a .tar.gz from url and extracts only the
+// etcdctl binary into destDir
+func downloadAndUntar(url, destDir string) error {
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		if _, statErr := os.Stat(destDir); statErr != nil {
+			return err
+		}
+	}
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	gzReader, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return err
+	}
+	defer gzReader.Close()
+
+	tarReader := tar.NewReader(gzReader)
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		if !strings.HasSuffix(header.Name, "etcdctl") {
+			continue
+		}
+
+		outPath := filepath.Join(destDir, "etcdctl")
+		f, err := os.Create(outPath)
+		if err != nil {
+			return err
+		}
+		io.Copy(f, tarReader)
+		f.Close()
+		os.Chmod(outPath, 0755)
+		break
+	}
+	return nil
+}
+
 // streamExec runs a single command and sends each output line to ch,
 // followed by a stepDoneMsg when the command finishes.
 func streamExec(label, name string, args ...string) func(ch chan<- tea.Msg) {
@@ -177,57 +230,12 @@ var installSteps = []installStep{
 				ch <- stepDoneMsg{label: label}
 				return
 			}
-			if err := os.MkdirAll("/opt/bin", 0755); err != nil && !os.IsExist(err) {
-				ch <- stepDoneMsg{label: label, err: err}
-				return
-			}
 			ch <- stepOutputMsg(fmt.Sprintf("Downloading etcdctl %s...", etcdVersion))
 			url := fmt.Sprintf(
 				"https://github.com/etcd-io/etcd/releases/download/%s/etcd-%s-linux-amd64.tar.gz",
 				etcdVersion, etcdVersion,
 			)
-			ch <- stepOutputMsg(fmt.Sprintf("Downloading from %s", url))
-			curlCmd := exec.Command("/usr/bin/curl", "-fsSL", url)
-			tarCmd := exec.Command(
-				"/usr/bin/tar", "xz", "--strip-components=1", "-C", "/opt/bin",
-				fmt.Sprintf("etcd-%s-linux-amd64/etcdctl", etcdVersion),
-			)
-			pipe, err := curlCmd.StdoutPipe()
-			if err != nil {
-				ch <- stepDoneMsg{label: label, err: err}
-				return
-			}
-
-			pipe2, err := curlCmd.CombinedOutput()
-			ch <- stepOutputMsg(fmt.Sprintf("%s", pipe2))
-
-			tarCmd.Stdin = pipe
-			var errBuf strings.Builder
-			curlCmd.Stderr = &errBuf
-			tarCmd.Stderr = &errBuf
-			if err := curlCmd.Start(); err != nil {
-				ch <- stepDoneMsg{label: label, err: err}
-				return
-			}
-			if err := tarCmd.Start(); err != nil {
-				ch <- stepDoneMsg{label: label, err: err}
-				return
-			}
-			if err := curlCmd.Wait(); err != nil {
-				if s := errBuf.String(); s != "" {
-					ch <- stepOutputMsg(s)
-				}
-				ch <- stepDoneMsg{label: label, err: err}
-				return
-			}
-			if err := tarCmd.Wait(); err != nil {
-				if s := errBuf.String(); s != "" {
-					ch <- stepOutputMsg(s)
-				}
-				ch <- stepDoneMsg{label: label, err: err}
-				return
-			}
-			if err := os.Chmod("/opt/bin/etcdctl", 0755); err != nil {
+			if err := downloadAndUntar(url, "/opt/bin"); err != nil {
 				ch <- stepDoneMsg{label: label, err: err}
 				return
 			}
