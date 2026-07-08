@@ -101,9 +101,22 @@ type installStep struct {
 // etcdctl binary into destDir
 func downloadAndUntar(url, destDir string) error {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
-		if _, statErr := os.Stat(destDir); statErr != nil {
+		// /opt is a symlink on FCOS. MkdirAll chokes on it, so read
+		// where it points and create the real path directly.
+		parent := filepath.Dir(destDir)
+		link, readErr := os.Readlink(parent)
+		if readErr != nil {
 			return err
 		}
+		// link may be relative (e.g. "var/opt"), make it absolute
+		if !filepath.IsAbs(link) {
+			link = filepath.Join("/", link)
+		}
+		realDest := filepath.Join(link, filepath.Base(destDir))
+		if mkErr := os.MkdirAll(realDest, 0755); mkErr != nil {
+			return mkErr
+		}
+		destDir = realDest
 	}
 
 	resp, err := http.Get(url)
