@@ -188,7 +188,13 @@ storage:
     - path: /usr/local/bin/ruddervirt-setup
       mode: 0755
       contents:
-        local: tui/tea-test
+        # The Go setup TUI is ~10 MB, well past Ignition's 256 KiB embed limit,
+        # so it can't be inlined as a `local:` file. `make boot` serves it over
+        # HTTP and the guest fetches it here on first boot. 10.0.2.2 is the QEMU
+        # user-net gateway mapping to the host loopback; the port must match
+        # TUI_SERVE_PORT in the Makefile. (Dev-only delivery; a real deployment
+        # would point this at a release URL.)
+        source: http://10.0.2.2:8080/ruddervirt-setup
     - path: /usr/local/bin/ruddervirt-shell
       mode: 0755
       contents:
