@@ -12,6 +12,13 @@
 # kubevirt manifests) is skipped by default because it is large and network-bound;
 # set FETCH_REMOTE=1 to download it too.
 #
+# Local overrides: some files ship via a remote `source:` that is only reachable
+# in the real boot flow (e.g. /usr/local/bin/ruddervirt-setup, fetched over the
+# QEMU host loopback), yet exist as a local build artifact during development.
+# Set LOCAL_FILE_OVERRIDES to a comma/newline-separated list of
+# `ignition-path=local-path` pairs to write those files from the local artifact
+# instead of fetching/skipping them. The Ignition mode still applies.
+#
 # Usage: render-ignition-rootfs.py <ignition.json> <output-dir>
 
 import base64
@@ -32,6 +39,20 @@ def decode_data_url(url: str) -> bytes:
     return urllib.parse.unquote_to_bytes(data)
 
 
+def parse_overrides(spec: str) -> dict[str, str]:
+    # "ign-path=local-path" pairs separated by commas or newlines.
+    overrides: dict[str, str] = {}
+    for item in spec.replace("\n", ",").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        ign_path, sep, local_path = item.partition("=")
+        if not sep:
+            raise ValueError(f"invalid LOCAL_FILE_OVERRIDES entry (want ign=local): {item!r}")
+        overrides[ign_path.strip()] = local_path.strip()
+    return overrides
+
+
 def decompress(data: bytes, compression: str | None) -> bytes:
     # Butane gzip-compresses inline/local contents by default and records it in
     # `contents.compression`; Ignition decompresses on boot
@@ -50,6 +71,7 @@ def main() -> int:
     ign = json.loads(Path(sys.argv[1]).read_text())
     out_dir = Path(sys.argv[2])
     fetch_remote = os.environ.get("FETCH_REMOTE") == "1"
+    overrides = parse_overrides(os.environ.get("LOCAL_FILE_OVERRIDES", ""))
 
     storage = ign.get("storage", {})
 
@@ -58,23 +80,35 @@ def main() -> int:
 
     written, skipped = 0, []
     for f in storage.get("files", []):
+        path = f["path"]
         contents = f.get("contents") or {}
         source = contents.get("source")
-        if not source:
+        override = overrides.get(path)
+        if override is not None:
+            # A local build artifact stands in for a file whose real source is
+            # unreachable at render time; take its bytes verbatim (not gzip'd, so
+            # no `contents.compression` decode applies).
+            local = Path(override)
+            if not local.is_file():
+                skipped.append(f"{path} (override {override} missing)")
+                continue
+            data = local.read_bytes()
+        elif not source:
             continue
-        if source.startswith("data:"):
+        elif source.startswith("data:"):
             data = decode_data_url(source)
+            data = decompress(data, contents.get("compression"))
         elif source.startswith(("http://", "https://")):
             if not fetch_remote:
-                skipped.append(f["path"])
+                skipped.append(path)
                 continue
             with urllib.request.urlopen(source) as r:  # trusted release URLs from server.bu
                 data = r.read()
+            data = decompress(data, contents.get("compression"))
         else:
-            skipped.append(f["path"])
+            skipped.append(path)
             continue
-        data = decompress(data, contents.get("compression"))
-        dest = out_dir / f["path"].lstrip("/")
+        dest = out_dir / path.lstrip("/")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         mode = f.get("mode")

@@ -118,29 +118,43 @@ ignition:  ## Render server.bu -> out/server.ign (via the Butane container)
 	  --files-dir . --strict server.bu > "$(IGNITION)"
 	echo ">>> Wrote $(IGNITION)"
 
-test-rootfs: ignition  ## Materialize the server.bu-injected files into out/test-rootfs/
+test-rootfs: ignition $(TUI_BIN)  ## Materialize the server.bu-injected files into out/test-rootfs/
 	rm -rf "$(ROOTFS)"
-	python3 "$(RENDER)" "$(IGNITION)" "$(ROOTFS)"
+	# The setup TUI ships via a remote source: URL only reachable during the real
+	# boot (the QEMU host loopback), so the renderer would skip it. Substitute the
+	# locally-built binary so the test container gets the same admin menu the ISO has.
+	LOCAL_FILE_OVERRIDES="/usr/local/bin/ruddervirt-setup=$(TUI_BIN)" \
+	  python3 "$(RENDER)" "$(IGNITION)" "$(ROOTFS)"
 
 clean:  ## Remove build artifacts (ISOs, test disk, ignition, rootfs)
 	rm -rf "$(OUT_DIR)"/*.iso "$(OUT_DIR)"/*.qcow2 "$(IGNITION)" "$(ROOTFS)"
 
-test-container: test-rootfs  ## Layer 2: open a shell in an FCOS userland with the server.bu files in place
+test-container: test-rootfs  ## Layer 2: open an admin shell in an FCOS userland with the server.bu files in place
 	@[ -n "$(RUNTIME)" ] || { echo "Error: neither docker nor podman found in PATH." >&2; exit 1; }
-	# Overlay the rendered server.bu files onto the FCOS image and drop into a shell, so
-	# you can inspect a realistic /etc/ruddervirt, /usr/local/bin helpers, etc. tar's
+	# Overlay the rendered server.bu files onto the FCOS image and drop into the admin
+	# login shell, so you can inspect a realistic /etc/ruddervirt, /usr/local/bin helpers,
+	# etc. as the same unprivileged admin user the ISO boots into (not root). tar's
 	# --overwrite replaces existing /etc symlinks (resolv.conf, hostname) the way Ignition
 	# does, and --keep-directory-symlink descends FCOS's dir symlinks (/usr/local, /opt)
 	# instead of erroring on them. -it is added only when attached to a terminal, so this
 	# also runs cleanly (overlay then exit) in non-interactive contexts like CI.
+	#
+	# The ISO's admin/root/rudderadmin users live in the Ignition `passwd` section, not in
+	# the file overlay, so recreate them here from the *generated* ignition (single source
+	# of truth) and hand the list to setup-test-users.sh inside the container. python3 is a
+	# host-side dep already (http.server, render); the FCOS image ships no python3. One line
+	# per user: name|groups(comma)|shell|password-hash (| avoids read collapsing empty fields).
+	users_spec="$$(python3 -c 'import json,sys; users=json.load(open(sys.argv[1])).get("passwd",{}).get("users",[]); print("\n".join("|".join([u.get("name",""), ",".join(u.get("groups",[])), u.get("shell",""), u.get("passwordHash","")]) for u in users if u.get("name")))' "$(IGNITION)")"
 	tty=""; [ -t 0 ] && [ -t 1 ] && tty="-it"
 	if [ -n "$$tty" ]; then
 	  printf '\n\033[1;33m============================================================\033[0m\n'
-	  printf '\033[1;33m  ⚠  YOU ARE ENTERING THE TEST CONTAINER\033[0m\n'
+	  printf '\033[1;33m  ⚠  YOU ARE ENTERING THE TEST CONTAINER (as admin)\033[0m\n'
 	  printf '\033[1;33m  Press Ctrl+D (or type "exit") to leave and return here.\033[0m\n'
 	  printf '\033[1;33m============================================================\033[0m\n\n'
 	fi
 	$(RUNTIME) run --rm $$tty \
+	  -e USERS_SPEC="$$users_spec" \
 	  -v "$(ROOTFS):/rootfs:ro" \
+	  -v "$(CURDIR)/scripts/dev/setup-test-users.sh:/setup-test-users.sh:ro" \
 	  "$(TEST_IMG)" \
-	  /bin/bash -c 'tar -C /rootfs -cf - . | tar -C / --overwrite --keep-directory-symlink -xf - && exec bash'
+	  /bin/bash -c 'tar -C /rootfs -cf - . | tar -C / --overwrite --keep-directory-symlink -xf - && /setup-test-users.sh && exec runuser -l admin'
