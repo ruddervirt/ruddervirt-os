@@ -19,6 +19,16 @@ OUT_DIR   := $(CURDIR)/out
 TEST_DISK := $(OUT_DIR)/ruddervirt-test.qcow2
 IGNITION  := $(OUT_DIR)/server.ign
 ROOTFS    := $(OUT_DIR)/test-rootfs
+# TUI_BIN: the Go installer TUI. It's ~10 MB, far past Ignition's 256 KiB
+# embed limit, so it can't be inlined into server.ign like a `local:` file.
+# Instead `make boot` serves scripts/ over HTTP and server.bu fetches the binary
+# from http://10.0.2.2:$(TUI_SERVE_PORT)/ruddervirt-setup on first boot (10.0.2.2
+# is the QEMU user-net gateway that maps to the host loopback). It's a real file
+# target so make only rebuilds it when its sources change.
+TUI_BIN   := scripts/ruddervirt-setup
+TUI_SRC   := tui/setup.go tui/go.mod tui/go.sum
+# Port for the dev binary-serving HTTP server (must match the URL in server.bu).
+TUI_SERVE_PORT ?= 8080
 # BUTANE_IMG: official Butane image, used to render server.bu -> Ignition without
 # building the full ISO.
 BUTANE_IMG ?= quay.io/coreos/butane:release
@@ -49,10 +59,20 @@ iso:  ## Build the installer ISO into out/ (VERSION=, ARGS=)
 show-ignition:  ## Build and print the generated Ignition config
 	$(MAKE) iso ARGS=--show-ignition
 
-boot:  ## Boot the newest ISO in QEMU (KVM if available; needs qemu, a KVM host)
+boot: $(TUI_BIN)  ## Boot the newest ISO in QEMU (KVM if available; needs qemu, a KVM host)
 	command -v qemu-system-x86_64 >/dev/null 2>&1 || { echo "Error: qemu-system-x86_64 not found." >&2; exit 1; }
 	iso="$$(ls -t "$(OUT_DIR)"/*.iso 2>/dev/null | head -1 || true)"
 	[ -n "$$iso" ] || { echo "Error: no ISO to boot (run 'make iso' first)." >&2; exit 1; }
+	# Serve the freshly-built TUI binary to the guest. The binary is too large to
+	# embed in Ignition, so server.bu fetches it from
+	# http://10.0.2.2:$(TUI_SERVE_PORT)/ruddervirt-setup on first boot. 10.0.2.2 is
+	# the QEMU user-net gateway that maps to the host loopback, so binding the
+	# server to 127.0.0.1 is enough. Kept alive for the whole run (via the EXIT
+	# trap) so it's still up when the installed system's first-boot Ignition runs.
+	echo ">>> Serving scripts/ on 127.0.0.1:$(TUI_SERVE_PORT) for guest binary fetch"
+	( cd scripts && exec python3 -m http.server "$(TUI_SERVE_PORT)" --bind 127.0.0.1 ) >/dev/null 2>&1 &
+	serve_pid=$$!
+	trap 'kill $$serve_pid 2>/dev/null || true' EXIT
 	# Start every run from a fresh disk so each boot does a clean install. The
 	# installer requires >=50 GiB; qcow2 is sparse so 100G costs almost nothing.
 	rm -f "$(TEST_DISK)"
@@ -86,6 +106,11 @@ boot:  ## Boot the newest ISO in QEMU (KVM if available; needs qemu, a KVM host)
 	  -nic user,model=virtio-net-pci \
 	  $$display
 
+build-tui: $(TUI_BIN)  ## Build the Go TUI binary (scripts/ruddervirt-setup)
+
+$(TUI_BIN): $(TUI_SRC)
+	cd tui && go build -o ../scripts/ruddervirt-setup setup.go
+
 ignition:  ## Render server.bu -> out/server.ign (via the Butane container)
 	@[ -n "$(RUNTIME)" ] || { echo "Error: neither docker nor podman found in PATH." >&2; exit 1; }
 	mkdir -p "$(OUT_DIR)"
@@ -99,9 +124,6 @@ test-rootfs: ignition  ## Materialize the server.bu-injected files into out/test
 
 clean:  ## Remove build artifacts (ISOs, test disk, ignition, rootfs)
 	rm -rf "$(OUT_DIR)"/*.iso "$(OUT_DIR)"/*.qcow2 "$(IGNITION)" "$(ROOTFS)"
-
-build-tui:  ## Build the Go TUI binary
-	cd tui && go build -o tea-test setup.go
 
 test-container: test-rootfs  ## Layer 2: open a shell in an FCOS userland with the server.bu files in place
 	@[ -n "$(RUNTIME)" ] || { echo "Error: neither docker nor podman found in PATH." >&2; exit 1; }
