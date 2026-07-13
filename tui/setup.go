@@ -255,10 +255,24 @@ var installSteps = []installStep{
 				"https://github.com/etcd-io/etcd/releases/download/%s/etcd-%s-linux-amd64.tar.gz",
 				etcdVersion, etcdVersion,
 			)
-			if err := downloadAndUntar(url, "/opt/bin"); err != nil {
+			// download to /tmp first, then move to /opt/bin to avoid permission issues
+			if err := downloadAndUntar(url, "/tmp"); err != nil {
 				ch <- stepDoneMsg{label: label, err: err}
 				return
 			}
+
+			// use sudo to create /var/opt/bin
+			if out, err := runPrivileged("/usr/bin/mkdir", "-p", "/var/opt/bin").CombinedOutput(); err != nil {
+				ch <- stepDoneMsg{label: label, err: fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)}
+				return
+			}
+
+			// move binary into place with sudo
+			if out, err := runPrivileged("/usr/bin/mv", "/tmp/etcdctl", "/opt/bin/etcdctl").CombinedOutput(); err != nil {
+				ch <- stepDoneMsg{label: label, err: fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)}
+				return
+			}
+
 			ch <- stepOutputMsg("etcdctl installed successfully")
 			ch <- stepDoneMsg{label: label}
 		},
@@ -273,10 +287,19 @@ var installSteps = []installStep{
 			label := "Writing k3s systemd unit"
 			const unitPath = "/etc/systemd/system/k3s.service"
 			ch <- stepOutputMsg(fmt.Sprintf("Writing %s...", unitPath))
-			if err := os.WriteFile(unitPath, []byte(k3sUnitContent), 0644); err != nil {
+
+			// write to tmp first to avoid permission issues
+			if err := os.WriteFile("/tmp/k3s.service", []byte(k3sUnitContent), 0644); err != nil {
 				ch <- stepDoneMsg{label: label, err: err}
 				return
 			}
+
+			// move to /usr/bin with sudo
+			if out, err := runPrivileged("/usr/bin/mv", "/tmp/k3s.service", unitPath).CombinedOutput(); err != nil {
+				ch <- stepDoneMsg{label: label, err: fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)}
+				return
+			}
+
 			ch <- stepOutputMsg("Running systemctl daemon-reload...")
 			out, err := runPrivileged("/usr/bin/systemctl", "daemon-reload").CombinedOutput()
 			if s := strings.TrimSpace(string(out)); s != "" {
