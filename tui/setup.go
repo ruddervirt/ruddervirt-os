@@ -158,11 +158,18 @@ func downloadAndUntar(url, destDir string) error {
 	return nil
 }
 
+func runPrivileged(name string, args ...string) *exec.Cmd {
+	if os.Getuid() != 0 {
+		return exec.Command("sudo", append([]string{name}, args...)...)
+	}
+	return exec.Command(name, args...)
+}
+
 // streamExec runs a single command and sends each output line to ch,
 // followed by a stepDoneMsg when the command finishes.
 func streamExec(label, name string, args ...string) func(ch chan<- tea.Msg) {
 	return func(ch chan<- tea.Msg) {
-		cmd := exec.Command(name, args...)
+		cmd := runPrivileged(name, args...)
 		pr, pw, err := os.Pipe()
 		if err != nil {
 			ch <- stepDoneMsg{label: label, err: err}
@@ -194,7 +201,7 @@ var installSteps = []installStep{
 			pkgs := []string{"btop", "mdadm", "iperf3", "k3s-selinux"}
 			var missing []string
 			for _, p := range pkgs {
-				if err := exec.Command("/usr/bin/rpm", "-q", p).Run(); err != nil {
+				if err := runPrivileged("/usr/bin/rpm", "-q", p).Run(); err != nil {
 					missing = append(missing, p)
 				}
 			}
@@ -210,7 +217,7 @@ var installSteps = []installStep{
 			}
 			ch <- stepOutputMsg(fmt.Sprintf("Installing: %s", strings.Join(missing, ", ")))
 			args := append([]string{"install", "--apply-live", "--allow-inactive", "--assumeyes"}, missing...)
-			cmd := exec.Command("/usr/bin/rpm-ostree", args...)
+			cmd := runPrivileged("/usr/bin/rpm-ostree", args...)
 			pr, pw, err := os.Pipe()
 			if err != nil {
 				ch <- stepDoneMsg{label: label, err: err}
@@ -271,7 +278,7 @@ var installSteps = []installStep{
 				return
 			}
 			ch <- stepOutputMsg("Running systemctl daemon-reload...")
-			out, err := exec.Command("/usr/bin/systemctl", "daemon-reload").CombinedOutput()
+			out, err := runPrivileged("/usr/bin/systemctl", "daemon-reload").CombinedOutput()
 			if s := strings.TrimSpace(string(out)); s != "" {
 				ch <- stepOutputMsg(s)
 			}
@@ -402,11 +409,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.current = screenNetwork
 						return m, nil
 					case "install":
-						if os.Getuid() != 0 {
-							m.result = "Error: install must be run as root (try: sudo ruddervirt-setup)"
-							m.current = screenResult
-							return m, nil
-						}
 						m.current = screenInstall
 						m.installStepIdx = 0
 						m.installLogs = nil
