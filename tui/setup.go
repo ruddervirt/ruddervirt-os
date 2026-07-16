@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -44,6 +45,8 @@ type model struct {
 	installDone    bool
 	installFailed  bool
 	installCh      chan tea.Msg
+
+	shellMode bool
 }
 
 var menuOptions = map[string]string{
@@ -440,6 +443,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						ch, cmd := launchStep(installSteps[0])
 						m.installCh = ch
 						return m, cmd
+					case "shell":
+						m.shellMode = true
+						return m, tea.Quit
 					default:
 						m.result = label
 						m.current = screenResult
@@ -527,7 +533,15 @@ func (m model) View() string {
 
 func main() {
 	p := tea.NewProgram(initialModel())
-	if _, err := p.Run(); err != nil {
+	m, err := p.Run()
+	if err != nil {
 		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// launch shell if shellMode = true, allow us to return to ruddervirt setup as well
+	if m.(model).shellMode {
+		os.Setenv("RUDDERVIRT_SHELL", "1")
+		syscall.Exec("/bin/bash", []string{"bash", "-l"}, os.Environ())
 	}
 }
