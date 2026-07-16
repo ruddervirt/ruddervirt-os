@@ -542,6 +542,8 @@ func main() {
 	// launch shell if shellMode = true, allow us to return to ruddervirt setup as well
 	if m.(model).shellMode {
 		os.Setenv("RUDDERVIRT_SHELL", "1")
+		fmt.Println("\nYou are exiting to a bash shell.")
+		fmt.Println("Press ctrl+d or type \"exit\" to quit and type \"ruddervirt-setup\" to return to the menu.\n")
 		syscall.Exec("/bin/bash", []string{"bash", "-l"}, os.Environ())
 	}
 }
