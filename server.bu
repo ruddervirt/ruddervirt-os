@@ -13,58 +13,8 @@ passwd:
       # Login shell launches the ruddervirt-setup menu (console and SSH) and
       # falls back to bash for non-interactive use and the menu's shell escape.
       shell: /usr/local/bin/ruddervirt-shell
-    - name: rudderadmin
-      groups: ["wheel", "sudo"]
 systemd:
   units:
-    - name: "rudderadmin-key-sync-setup.service"
-      enabled: true
-      contents: |
-        [Unit]
-        Description=rudderadmin Key Sync Setup
-        Wants=systemd-remount-fs.service local-fs.target network-online.target
-        After=systemd-remount-fs.service local-fs.target network-online.target
-        ConditionPathExists=!/var/.rudderadmin-key-sync-installed
-
-        [Service]
-        Type=oneshot
-        ExecStartPre=/bin/bash -c 'curl -Lo /var/opt/ssh-key-sync_linux_amd64.tar.gz https://github.com/shoenig/ssh-key-sync/releases/download/v1.7.3/ssh-key-sync_1.7.3_linux_amd64.tar.gz'    
-        ExecStartPre=/bin/bash -c 'tar -xzf /var/opt/ssh-key-sync_linux_amd64.tar.gz -C /usr/local/bin/ ssh-key-sync'
-        ExecStartPre=/bin/bash -c 'touch /var/.rudderadmin-key-sync-installed'
-        ExecStart=/bin/bash -c 'exit 0'
-
-        [Install]
-        WantedBy=multi-user.target
-    - name: "rudderadmin-key-sync.service"
-      enabled: true
-      contents: |
-        [Unit]
-        Description=Synchronize ssh authorized keys for rudderadmin
-        Wants=network-online.target rudderadmin-key-sync-setup.service
-        After=network-online.target rudderadmin-key-sync-setup.service
-
-        [Service]
-        User=rudderadmin
-        ExecStartPre=-/bin/mkdir -p /home/rudderadmin/.ssh
-        ExecStartPre=-/bin/touch /home/rudderadmin/.ssh/authorized_keys
-        ExecStart=/usr/local/bin/ssh-key-sync -verbose -system-user rudderadmin -github-user rudder-virt
-
-        [Install]
-        WantedBy=multi-user.target
-    - name: "rudderadmin-key-sync.timer"
-      enabled: true
-      contents: |
-        [Unit]
-        Description=Synchronize ssh authorized keys for rudderadmin
-
-        [Timer]
-        OnBootSec=5min
-        OnUnitActiveSec=24h
-        Persistent=true
-        Unit=rudderadmin-key-sync.service
-
-        [Install]
-        WantedBy=timers.target
     - name: "brand-ruddervirt.service"
       enabled: true
       contents: |
@@ -117,26 +67,34 @@ storage:
           gpgcheck=1
           repo_gpgcheck=0
           gpgkey=https://rpm.rancher.io/public.key
-    - path: /etc/ruddervirt/manifests/kubevirt-crd.yaml
-      overwrite: true
-      mode: 0644
-      contents:
-        source: "https://github.com/kubevirt/kubevirt/releases/download/v1.4.0/kubevirt-cr.yaml"
     - path: /etc/ruddervirt/manifests/kubevirt-operator.yaml
-      overwrite: true
       mode: 0644
       contents:
-        source:  https://github.com/kubevirt/kubevirt/releases/download/v1.4.0/kubevirt-operator.yaml
-    - path: /etc/ruddervirt/manifests/cdi-crd.yaml
-      overwrite: true
+        inline: |
+          # placeholder - overwritten by ruddervirt-setup's "Downloading
+          # KubeVirt/CDI manifests" step, which always downloads the
+          # version selected in Settings.
+    - path: /etc/ruddervirt/manifests/kubevirt-cr.yaml
       mode: 0644
       contents:
-        source: https://github.com/kubevirt/containerized-data-importer/releases/download/v1.62.0/cdi-cr.yaml
+        inline: |
+          # placeholder - overwritten by ruddervirt-setup's "Downloading
+          # KubeVirt/CDI manifests" step, which always downloads the
+          # version selected in Settings.
     - path: /etc/ruddervirt/manifests/cdi-operator.yaml
-      overwrite: true
       mode: 0644
       contents:
-        source: https://github.com/kubevirt/containerized-data-importer/releases/download/v1.62.0/cdi-operator.yaml
+        inline: |
+          # placeholder - overwritten by ruddervirt-setup's "Downloading
+          # KubeVirt/CDI manifests" step, which always downloads the
+          # version selected in Settings.
+    - path: /etc/ruddervirt/manifests/cdi-cr.yaml
+      mode: 0644
+      contents:
+        inline: |
+          # placeholder - overwritten by ruddervirt-setup's "Downloading
+          # KubeVirt/CDI manifests" step, which always downloads the
+          # version selected in Settings.
     - path: /etc/NetworkManager/conf.d/no-search-domains.conf
       mode: 0644
       contents:
@@ -144,12 +102,7 @@ storage:
           [main]
           dns=none
           rc-manager=unmanaged
-    - path: /usr/local/bin/k3s
-      overwrite: true
-      mode: 0755
-      contents:
-        source: "https://github.com/k3s-io/k3s/releases/download/v1.34.5%2Bk3s1/k3s"
-    - path: /var/tmp/k9s.rpm 
+    - path: /var/tmp/k9s.rpm
       overwrite: true
       mode: 0755
       contents:
@@ -162,29 +115,18 @@ storage:
           kind: KubeletConfiguration
           shutdownGracePeriod: 60s
           shutdownGracePeriodCriticalPods: 10s
-    - path: /usr/local/bin/ssh-key-sync
-      mode: 0777
-      contents:
-        inline: |
-          # placeholder
-    - path: /opt/bin/install-kube-ovn.sh
+    - path: /usr/local/bin/k3s
       mode: 0755
       contents:
-        source: https://raw.githubusercontent.com/kubeovn/kube-ovn/release-1.15/dist/images/install.sh
+        inline: |
+          # placeholder - overwritten by ruddervirt-setup's "Installing k3s"
+          # step, which always downloads the version selected in Settings.
     - path: /usr/local/bin/kubectl
       mode: 0777
       contents:
         inline: |
           #!/bin/sh
           exec k3s kubectl "$@"
-    - path: /usr/local/bin/render-k3s-config
-      mode: 0755
-      contents:
-        local: scripts/render-k3s-config.sh
-    - path: /usr/local/bin/prepare-k3s
-      mode: 0755
-      contents:
-        local: scripts/prepare-k3s.sh
     - path: /usr/local/bin/ruddervirt-setup
       mode: 0755
       contents:
@@ -210,14 +152,6 @@ storage:
           alias vim="vi"
           export EDITOR="vi"
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-    - path: /etc/ruddervirt/ruddervirt-networking.env
-      mode: 0644
-      overwrite: true
-      contents:
-        inline: |
-          POD_CIDR=10.42.0.0/16
-          SVC_CIDR=10.43.0.0/16
-          LOCAL_IP=
     - path: /etc/ruddervirt/k3s-config.yaml
       mode: 0644
       overwrite: true
@@ -233,11 +167,11 @@ storage:
           # etcd-s3: true
           # etcd-s3-config-secret: k3s-etcd-snapshot-s3-config
 
-          # bind-address: __LOCAL_IP__
-          # advertise-address: __LOCAL_IP__
-          # node-ip: __LOCAL_IP__
-          # tls-san:
-          #   - "__LOCAL_IP__"
+          bind-address: __LOCAL_IP__
+          advertise-address: __LOCAL_IP__
+          node-ip: __LOCAL_IP__
+          tls-san:
+            - "__LOCAL_IP__"
 
           # cluster networking settings; only matters when tailscale operator exists
           # cluster-cidr: __POD_CIDR__
@@ -250,11 +184,15 @@ storage:
             - "config=/etc/kubelet.config"
           node-label:
             - "ruddervirt=metal"
+            - "kube-ovn/role=master"
           resolv-conf: /etc/resolv.conf
           disable:
             - "local-storage"
             - "network-policy"
-    - path: /etc/zincati/config.d/99-periodic-sat-midnight-us-eastern.toml
+      # Managed by ruddervirt-setup's "Automatic updates" setting after
+      # first boot (tui/config.go writeZincatiConfig) - this is just the
+      # default before an operator changes it.
+    - path: /etc/zincati/config.d/99-ruddervirt-updates.toml
       mode: 0644
       overwrite: true
       contents:
@@ -284,6 +222,12 @@ storage:
         inline: |
           fs.inotify.max_user_instances=8192
           fs.inotify.max_user_watches=524288
+    - path: /etc/ssh/sshd_config.d/50-allow-password.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          PasswordAuthentication yes
     - path: /etc/sysctl.d/99-nebula.conf
       mode: 0644
       contents:

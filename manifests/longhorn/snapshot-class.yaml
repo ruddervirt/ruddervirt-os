@@ -1,0 +1,11 @@
+# Apply after Longhorn is healthy (handled by tui/k3s.go's
+# applyGenericStorageEngine, part of the same kustomize overlay so it lands
+# alongside the chart itself).
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: longhorn
+driver: driver.longhorn.io
+deletionPolicy: Delete
+parameters:
+  type: snap

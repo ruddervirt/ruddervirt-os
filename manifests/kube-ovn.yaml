@@ -1,0 +1,51 @@
+# Kube-OVN CNI, deployed via the k3s HelmChart CRD (helm.cattle.io/v1), same
+# pattern as multus.yaml.
+#
+# Chart: kubeovn/kube-ovn-v2 - ships CRDs in crds/, so helm never upgrades or
+# deletes them; CRD upgrades on version bumps must be applied manually.
+#
+# NEVER delete this HelmChart CR casually: the k3s helm-controller finalizer
+# runs `helm uninstall`, which removes the CNI workloads (CRDs survive).
+#
+# Safety settings:
+#   bootstrap: true      -> helm job runs on hostNetwork; a CNI chart's own
+#                           rollout otherwise kills the job's API access.
+#   failurePolicy: abort -> never auto-uninstall the CNI on a failed
+#                           install/upgrade. Investigate manually.
+#   takeOwnership: true  -> adopt any script-installed Services/SAs/RBAC/
+#                           ConfigMaps (names match) instead of erroring.
+#
+# This file is a template, not applied as-is: scripts/prepare-k3s.sh
+# substitutes the pod/service CIDRs, pod gateway, and control-plane node
+# IPs below from the ruddervirt-setup network settings and the live
+# cluster state before applying the rendered result. The join CIDR is
+# not a setting - it's internal to kube-ovn and left static here.
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: kube-ovn
+  namespace: kube-system
+spec:
+  chart: kube-ovn-v2
+  repo: https://kubeovn.github.io/kube-ovn/
+  version: v1.15.19
+  targetNamespace: kube-system
+  bootstrap: true
+  failurePolicy: abort
+  takeOwnership: true
+  valuesContent: |-
+    masterNodes: [__MASTER_NODES__]
+    networking:
+      stack: IPv4
+      pods:
+        cidr:
+          v4: "__POD_CIDR__"
+        gateways:
+          v4: "__POD_GATEWAY__"
+      services:
+        cidr:
+          v4: "__SVC_CIDR__"
+      join:
+        cidr:
+          v4: "172.31.0.0/16"

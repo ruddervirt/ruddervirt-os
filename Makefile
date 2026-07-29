@@ -26,7 +26,7 @@ ROOTFS    := $(OUT_DIR)/test-rootfs
 # is the QEMU user-net gateway that maps to the host loopback). It's a real file
 # target so make only rebuilds it when its sources change.
 TUI_BIN   := scripts/ruddervirt-setup
-TUI_SRC   := tui/setup.go tui/go.mod tui/go.sum
+TUI_SRC   := tui/setup.go tui/config.go tui/k3s.go tui/network.go tui/storage.go tui/kubevirt.go tui/aileron.go tui/update.go tui/version.go tui/supported-versions.yaml tui/go.mod tui/go.sum
 # Port for the dev binary-serving HTTP server (must match the URL in server.bu).
 TUI_SERVE_PORT ?= 8080
 # BUTANE_IMG: official Butane image, used to render server.bu -> Ignition without
@@ -59,7 +59,7 @@ iso:  ## Build the installer ISO into out/ (VERSION=, ARGS=)
 show-ignition:  ## Build and print the generated Ignition config
 	$(MAKE) iso ARGS=--show-ignition
 
-boot: $(TUI_BIN)  ## Boot the newest ISO in QEMU (KVM if available; needs qemu, a KVM host)
+boot: iso $(TUI_BIN)  ## Boot the newest ISO in QEMU (KVM if available; needs qemu, a KVM host)
 	command -v qemu-system-x86_64 >/dev/null 2>&1 || { echo "Error: qemu-system-x86_64 not found." >&2; exit 1; }
 	iso="$$(ls -t "$(OUT_DIR)"/*.iso 2>/dev/null | head -1 || true)"
 	[ -n "$$iso" ] || { echo "Error: no ISO to boot (run 'make iso' first)." >&2; exit 1; }
@@ -103,13 +103,13 @@ boot: $(TUI_BIN)  ## Boot the newest ISO in QEMU (KVM if available; needs qemu, 
 	  -drive file="$(TEST_DISK)",if=virtio,format=qcow2 \
 	  -cdrom "$$iso" \
 	  -boot order=cd \
-	  -nic user,model=virtio-net-pci \
+	  -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2222-:22 \
 	  $$display
 
 build-tui: $(TUI_BIN)  ## Build the Go TUI binary (scripts/ruddervirt-setup)
 
 $(TUI_BIN): $(TUI_SRC)
-	cd tui && go build -o ../scripts/ruddervirt-setup setup.go
+	cd tui && go build -ldflags "-X main.version=$(VERSION)" -o ../scripts/ruddervirt-setup .
 
 ignition:  ## Render server.bu -> out/server.ign (via the Butane container)
 	@[ -n "$(RUNTIME)" ] || { echo "Error: neither docker nor podman found in PATH." >&2; exit 1; }
@@ -139,7 +139,7 @@ test-container: test-rootfs  ## Layer 2: open an admin shell in an FCOS userland
 	# instead of erroring on them. -it is added only when attached to a terminal, so this
 	# also runs cleanly (overlay then exit) in non-interactive contexts like CI.
 	#
-	# The ISO's admin/root/rudderadmin users live in the Ignition `passwd` section, not in
+	# The ISO's admin/root users live in the Ignition `passwd` section, not in
 	# the file overlay, so recreate them here from the *generated* ignition (single source
 	# of truth) and hand the list to setup-test-users.sh inside the container. python3 is a
 	# host-side dep already (http.server, render); the FCOS image ships no python3. One line
