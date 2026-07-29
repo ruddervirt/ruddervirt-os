@@ -16,12 +16,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build the installer ISO
-        run: make iso VERSION="${GITHUB_REF_NAME}"
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
 
-      - name: Publish ISO to GitHub Release
+      - name: Build ruddervirt-setup binary
+        run: make build-tui VERSION="${GITHUB_REF_NAME}"
+
+      # Computed before the ISO build so create-iso.py can template the real
+      # download URL + hash into the same ISO it's building, without any
+      # fetch back to GitHub (the release doesn't exist yet at this point).
+      - name: Compute ruddervirt-setup checksum
+        id: checksum
+        run: |
+          hash="$(sha256sum scripts/ruddervirt-setup | cut -d' ' -f1)"
+          echo "hash=sha256-${hash}" >> "$GITHUB_OUTPUT"
+          printf '%s  ruddervirt-setup\n' "$hash" > scripts/ruddervirt-setup.sha256
+
+      - name: Build the installer ISO
+        run: |
+          make iso VERSION="${GITHUB_REF_NAME}" \
+            ARGS="--setup-checksum ${{ steps.checksum.outputs.hash }}"
+
+      - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: out/ruddervirt-install-${{ github.ref_name }}.iso
+          files: |
+            out/ruddervirt-install-${{ github.ref_name }}.iso
+            scripts/ruddervirt-setup
+            scripts/ruddervirt-setup.sha256
           fail_on_unmatched_files: true
           generate_release_notes: true

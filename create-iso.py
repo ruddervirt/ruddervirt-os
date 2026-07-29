@@ -96,6 +96,43 @@ def build_live_rootfs_url(stream: str, arch: str, release: str) -> str:
     )
 
 
+# The exact server.bu text this substitution matches - if that file's
+# ruddervirt-setup entry is ever reformatted, render_server_bu raises loudly
+# rather than silently continuing to ship the dev-only loopback URL in a
+# real tagged release.
+DEV_SETUP_SOURCE_LINE = "        source: http://10.0.2.2:8080/ruddervirt-setup"
+
+
+def render_server_bu(path: str, version: str, setup_checksum: str | None) -> str:
+    """Return the butane input path: `path` unchanged when no checksum is
+    given (the common/default case, and always true for `make boot`/`make
+    ignition`/`make test-rootfs`, none of which go through this script at
+    all), or a rendered temp copy pointing ruddervirt-setup at the matching
+    GitHub Release asset with its SHA256 verification hash, when CI supplies
+    a checksum for the binary it just built in this same job."""
+    if not setup_checksum:
+        return path
+    text = Path(path).read_text(encoding="utf-8")
+    if DEV_SETUP_SOURCE_LINE not in text:
+        raise RuntimeError(
+            "server.bu's dev ruddervirt-setup source line has changed - "
+            "update DEV_SETUP_SOURCE_LINE / render_server_bu to match "
+            "before templating a real release URL."
+        )
+    real_url = (
+        f"https://github.com/ruddervirt/ruddervirt-os/releases/download/"
+        f"{version}/ruddervirt-setup"
+    )
+    replacement = (
+        f"        source: {real_url}\n"
+        f"        verification:\n"
+        f"          hash: {setup_checksum}"
+    )
+    rendered_path = str(Path(path).with_suffix(".rendered.bu"))
+    Path(rendered_path).write_text(text.replace(DEV_SETUP_SOURCE_LINE, replacement), encoding="utf-8")
+    return rendered_path
+
+
 def main():
     parser = argparse.ArgumentParser(description="Create CoreOS installation ISO with embedded ignition config")
     parser.add_argument(
@@ -109,10 +146,22 @@ def main():
         action="store_true",
         help="Print the generated Ignition config to stdout.",
     )
+    parser.add_argument(
+        "--setup-checksum",
+        default=None,
+        metavar="sha256-HEX",
+        help=(
+            "Ignition verification.hash value (Ignition's native "
+            '"sha256-<hex>" format) for the ruddervirt-setup binary release '
+            "asset matching --version. When omitted (the default, and always "
+            "the case for local dev builds), server.bu's dev-only QEMU "
+            "loopback source for ruddervirt-setup is left untouched."
+        ),
+    )
 
     args = parser.parse_args()
 
-    input_butane = "server.bu"
+    input_butane = render_server_bu("server.bu", args.version, args.setup_checksum)
     stream = "stable"
     arch = "x86_64"
     output_ignition = Path(input_butane).with_suffix('.ign')

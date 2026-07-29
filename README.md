@@ -10,18 +10,16 @@ Download the latest installer ISO from the [Releases page](../../releases). Burn
 
 The installed system ships with a default password `ruddervirt` for the `root` and `admin` users. **Change it immediately after first login.**
 
-The OS image is a minimal base: it boots, but the RudderVirt solution (k3s, Rook-Ceph, KubeVirt, CDI, Kube-OVN) is **not** installed automatically. After first boot, log in as `admin` (password `ruddervirt`) — on the console or over SSH, the `ruddervirt-setup` menu launches automatically in place of a shell:
+The OS image is a minimal base: it boots, but the RudderVirt solution (k3s, KubeVirt, CDI, Kube-OVN, Aileron, plus a storage engine) is **not** installed automatically. After first boot, log in as `admin` (password `ruddervirt`) — on the console or over SSH, the `ruddervirt-setup` menu launches automatically in place of a shell:
 
 ```
-  1) install   Install the solution on this node
-  2) update    Re-apply the solution after an OS image update
-  3) network   Configure a private network interface
-  4) purge     Stop k3s and delete all cluster data (DESTRUCTIVE)
-  5) shell     Drop to a bash shell
-  6) logout    End this session
+  1) configure  View/edit settings, then install (or re-apply) the solution
+  2) k9s        Launch the k9s cluster dashboard
+  3) shell      Drop to a bash shell
+  4) logout     End this session
 ```
 
-Pick `install` to set up the node (privileged actions prompt for the `admin` password via `sudo`). Pick `shell` to drop to a normal bash prompt; run `ruddervirt-setup` again to return to the menu. `ruddervirt-setup` is the sole entrypoint for the solution and can also be run non-interactively, e.g. `sudo ruddervirt-setup install`.
+Pick `configure` to review and edit network/version/update/storage settings, then choose the "Apply" row at the bottom to install (or re-apply) the solution on this node. The storage engine (Rook-Ceph, Longhorn, or OpenEBS) is selectable here, but only until the first Apply actually prepares the disk for one of them — after that the setting locks, since switching engines on a node that may already hold VM data isn't a supported migration; reinstall the OS to change it — re-running it later re-applies the same way, e.g. after an OS image update (privileged actions prompt for the `admin` password via `sudo`). The settings table detects the node's internet-facing network interface automatically (whichever one has a default route); if none can be found, or you want static instead of DHCP addressing, set it there first — "Apply" won't proceed until that's resolved. Applying then shows a summary of the current settings and requires typing `yes` to confirm — it restarts k3s, briefly interrupting the Kubernetes API and any running workloads, and the full process can take 30+ minutes. Pick `k9s` to browse and manage the running cluster; exit k9s (`ctrl+c` or `:quit`) to return to the menu. Pick `shell` to drop to a normal bash prompt; run `ruddervirt-setup` again to return to the menu. `ruddervirt-setup` is the sole entrypoint for the solution and can also be run non-interactively, e.g. `sudo ruddervirt-setup install`.
 
 ### Building the ISO locally (development)
 

@@ -1,0 +1,17 @@
+# References the thin-pool volume group tui/storage.go's
+# prepareOpenEBSDevice creates (pvcreate + vgcreate + lvcreate --type
+# thin-pool) before this gets applied. Thin-provisioned volumes are what
+# make CSI snapshots practical here - thick LVM snapshots need space
+# reserved up front per snapshot and don't scale past a handful.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: openebs-lvm
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: local.csi.openebs.io
+allowVolumeExpansion: true
+parameters:
+  storage: "lvm"
+  volgroup: "ruddervirt-vg"
+  thinProvision: "yes"

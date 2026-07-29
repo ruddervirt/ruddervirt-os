@@ -1,0 +1,41 @@
+# Longhorn (replicated block storage) - alternative to Rook-Ceph, see
+# manifests/rook-ceph and manifests/openebs for the other engine choices.
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: longhorn
+  namespace: kube-system
+spec:
+  repo: https://charts.longhorn.io
+  chart: longhorn
+  targetNamespace: longhorn-system
+  createNamespace: true
+  version: v1.12.0
+  valuesContent: |-
+    persistence:
+      defaultClass: true
+      # Cluster-specific replica count (single vs multi-node) is set via
+      # the ruddervirt overlay - base defaults to Longhorn's own default.
+      defaultClassReplicaCount: 3
+
+    defaultSettings:
+      defaultDataPath: /var/lib/longhorn
+      # Only run Longhorn's managed components (engine images, instance
+      # managers, etc.) on nodes labeled ruddervirt=metal.
+      systemManagedComponentsNodeSelector: "ruddervirt:metal"
+
+    # Only run the manager/driver pods themselves on nodes labeled
+    # ruddervirt=metal - same restriction rook-ceph applies via nodeAffinity.
+    longhornManager:
+      nodeSelector:
+        ruddervirt: metal
+    longhornDriver:
+      nodeSelector:
+        ruddervirt: metal
+
+    # CSI sidecar replica counts - cluster-specific values set via overlay.
+    csi:
+      attacherReplicaCount: 2
+      provisionerReplicaCount: 2
+      resizerReplicaCount: 2
+      snapshotterReplicaCount: 2

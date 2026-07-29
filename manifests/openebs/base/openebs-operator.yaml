@@ -1,0 +1,35 @@
+# OpenEBS LVM LocalPV (node-local block storage, no cross-node replication)
+# - alternative to Rook-Ceph, see manifests/rook-ceph and manifests/longhorn
+# for the other engine choices. Only the LVM engine is enabled; the umbrella
+# chart's other engines (Mayastor, ZFS LocalPV, Hostpath) are turned off so
+# only the LVM CSI driver and its controller/node components get deployed.
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: openebs
+  namespace: kube-system
+spec:
+  repo: https://openebs.github.io/openebs
+  chart: openebs
+  targetNamespace: openebs
+  createNamespace: true
+  version: 4.2.0
+  valuesContent: |-
+    engines:
+      local:
+        lvm:
+          enabled: true
+        zfs:
+          enabled: false
+      replicated:
+        mayastor:
+          enabled: false
+    localpv-provisioner:
+      enabled: false
+
+    # Only run the LVM CSI node plugin on nodes labeled ruddervirt=metal -
+    # same restriction rook-ceph and longhorn apply to their own components.
+    lvm-localpv:
+      lvmNode:
+        nodeSelector:
+          ruddervirt: metal
