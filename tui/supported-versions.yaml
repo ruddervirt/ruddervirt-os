@@ -1,8 +1,3 @@
-# Versions of KubeVirt and CDI that RudderVirt has internally QA'd and is
-# willing to offer through the "configure" screen's version pickers. Unlike
-# k3s (whose picker fetches upstream release tags live from GitHub), these
-# lists are curated by hand - add an entry here only once a version has
-# actually been validated, not just because it's been released upstream.
 kubevirt:
   - v1.8.2
 cdi:

@@ -26,9 +26,14 @@ ROOTFS    := $(OUT_DIR)/test-rootfs
 # is the QEMU user-net gateway that maps to the host loopback). It's a real file
 # target so make only rebuilds it when its sources change.
 TUI_BIN   := scripts/ruddervirt-setup
-TUI_SRC   := tui/setup.go tui/config.go tui/k3s.go tui/network.go tui/storage.go tui/kubevirt.go tui/aileron.go tui/update.go tui/version.go tui/supported-versions.yaml tui/go.mod tui/go.sum
+TUI_SRC   := tui/model.go tui/app_update.go tui/view.go tui/install_steps.go tui/exec.go tui/main.go tui/config.go tui/k3s.go tui/network.go tui/storage.go tui/kubevirt.go tui/aileron.go tui/update.go tui/status.go tui/password.go tui/version.go tui/supported-versions.yaml tui/go.mod tui/go.sum
 # Port for the dev binary-serving HTTP server (must match the URL in server.bu).
 TUI_SERVE_PORT ?= 8080
+# Host port forwarded to the guest's aileron-ui NodePort (30806 - the
+# aileron Helm chart's default, see aileronUI.service.nodePort in
+# ghcr.io/ruddervirt/charts/aileron's values.yaml). Only reachable once
+# "Applying manifests" has installed Aileron.
+AILERON_UI_PORT ?= 30806
 # BUTANE_IMG: official Butane image, used to render server.bu -> Ignition without
 # building the full ISO.
 BUTANE_IMG ?= quay.io/coreos/butane:release
@@ -40,7 +45,7 @@ SHELL := bash
 .ONESHELL:
 .DEFAULT_GOAL := help
 
-.PHONY: help iso show-ignition boot ignition test-rootfs test-container clean build-tui
+.PHONY: help iso show-ignition boot ignition test-rootfs test-container clean build-tui test-tui
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -96,20 +101,24 @@ boot: iso $(TUI_BIN)  ## Boot the newest ISO in QEMU (KVM if available; needs qe
 	# Boot order is disk-first: an empty disk falls through to the ISO (install),
 	# and after install the disk boots the installed system.
 	echo ">>> Booting $${iso##*/} in QEMU"
+	echo ">>> Aileron UI (once installed) will be reachable at http://localhost:$(AILERON_UI_PORT)"
 	qemu-system-x86_64 \
 	  -name ruddervirt-test \
 	  -machine q35 $$kvm \
-	  -smp 4 -m 8192 \
+	  -smp 8 -m 16384 \
 	  -drive file="$(TEST_DISK)",if=virtio,format=qcow2 \
 	  -cdrom "$$iso" \
 	  -boot order=cd \
-	  -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2222-:22 \
+	  -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2222-:22,hostfwd=tcp:127.0.0.1:$(AILERON_UI_PORT)-:30806 \
 	  $$display
 
 build-tui: $(TUI_BIN)  ## Build the Go TUI binary (scripts/ruddervirt-setup)
 
 $(TUI_BIN): $(TUI_SRC)
 	cd tui && go build -ldflags "-X main.version=$(VERSION)" -o ../scripts/ruddervirt-setup .
+
+test-tui:  ## Run the Go TUI's unit tests
+	cd tui && go test ./...
 
 ignition:  ## Render server.bu -> out/server.ign (via the Butane container)
 	@[ -n "$(RUNTIME)" ] || { echo "Error: neither docker nor podman found in PATH." >&2; exit 1; }

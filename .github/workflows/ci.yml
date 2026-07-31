@@ -18,11 +18,8 @@ jobs:
           go-version: 'stable'
           cache: false
 
-      # Unit tests live here (the Makefile is Go-toolchain free). No-op until a
-      # go.mod exists at the repo root, then runs automatically once Go source is added.
-      - name: Unit tests
-        run: |
-          if [ -f go.mod ]; then go test ./...; else echo "no go.mod yet — skipping"; fi
+      - name: Go TUI unit tests
+        run: make test-tui
 
       # Validate that server.bu still compiles and the injected files render — this is
       # the filesystem `make test-container` overlays. Running a binary inside it is

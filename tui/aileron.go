@@ -16,11 +16,6 @@ import (
 // completes (or if it fails), same role as defaultK3sVersion.
 const defaultAileronVersion = "v0.0.25"
 
-// cachedAileronVersions holds the release tags fetchAileronVersions found
-// at startup, for the Settings screen's "Aileron version" field to pick
-// from. Populated once, best-effort, via Init's fetchAileronVersionsCmd.
-var cachedAileronVersions []string
-
 // fetchAileronVersions lists ruddervirt/aileron release tags from GitHub,
 // newest first, for the Settings screen's version picker - same shape as
 // fetchK3sVersions (k3s.go:88-144), but using the plain vMAJOR.MINOR.PATCH
@@ -124,4 +119,17 @@ func applyAileron(ch chan<- tea.Msg, kubectlBin, version string) error {
 	}
 	ch <- stepOutputMsg("Waiting for the aileron helm-install job to complete...")
 	return runStreamed(ch, kubectlBin, "-n", jobNamespace, "wait", "--for=condition=complete", jobName, "--timeout=600s")
+}
+
+// aileronVersionsFetchedMsg carries fetchAileronVersions' result back into
+// Update - same reasoning as k3sVersionsFetchedMsg above.
+type aileronVersionsFetchedMsg struct {
+	versions []string
+}
+
+func fetchAileronVersionsCmd() tea.Cmd {
+	return func() tea.Msg {
+		versions, _ := fetchAileronVersions() // best-effort - cycling just no-ops if this fails
+		return aileronVersionsFetchedMsg{versions: versions}
+	}
 }

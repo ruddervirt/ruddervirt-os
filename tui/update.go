@@ -176,7 +176,7 @@ func downloadVerifiedToPrivilegedPath(url, expectedHex, destPath string, mode os
 		return err
 	}
 	if out, err := runPrivileged("/usr/bin/mv", tmpPath, destPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		return wrapCmdErr(out, err)
 	}
 	return nil
 }

@@ -1,6 +1,30 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestSha256File(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data")
+	if err := os.WriteFile(path, []byte("hello world"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// sha256("hello world")
+	const want = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+	got, err := sha256File(path)
+	if err != nil {
+		t.Fatalf("sha256File(%q) err = %v, want nil", path, err)
+	}
+	if got != want {
+		t.Errorf("sha256File(%q) = %q, want %q", path, got, want)
+	}
+
+	if _, err := sha256File(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("sha256File(missing) err = nil, want an error")
+	}
+}
 
 func TestParseSetupVersion(t *testing.T) {
 	cases := []struct {

@@ -27,6 +27,14 @@ spec:
     localpv-provisioner:
       enabled: false
 
+    # snapshot-controller.yaml already owns the shared CSI VolumeSnapshot
+    # CRDs (see tui/k3s.go's prepareK3sStep) - openebs-crds must not try to
+    # install/own them too, or helm's ownership-annotation check fails.
+    openebs-crds:
+      csi:
+        volumeSnapshots:
+          enabled: false
+
     # Only run the LVM CSI node plugin on nodes labeled ruddervirt=metal -
     # same restriction rook-ceph and longhorn apply to their own components.
     lvm-localpv:

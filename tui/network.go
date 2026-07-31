@@ -147,7 +147,7 @@ func connectionNameFor(iface string) (string, error) {
 	}
 
 	if out, err := runPrivileged(nmcliBin, "con", "add", "type", "ethernet", "con-name", iface, "ifname", iface).CombinedOutput(); err != nil {
-		return "", fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		return "", wrapCmdErr(out, err)
 	}
 	return iface, nil
 }
@@ -191,10 +191,10 @@ func applyNetworkConfig(n NetworkConfig) error {
 	}
 
 	if out, err := runPrivileged(nmcliBin, args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		return wrapCmdErr(out, err)
 	}
 	if out, err := runPrivileged(nmcliBin, "con", "up", conName).CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		return wrapCmdErr(out, err)
 	}
 	return nil
 }

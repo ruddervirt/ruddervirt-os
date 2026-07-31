@@ -35,6 +35,29 @@ systemd:
     # console-login-helper-messages prints in the motd after login.
     - name: "console-login-helper-messages-gensnippet-os-release.service"
       mask: true
+    # coreos-ignition-write-issues writes its "Ignition: ran on ..." status
+    # message to /run/issue.d/30_coreos_ignition_provisioning.issue and also
+    # leaves a same-named symlink to it under /etc/issue.d. getty's default
+    # --issue-file scans /etc/issue.d and /run/issue.d separately, so without
+    # this, agetty prints that one message twice at every console login -
+    # once via the symlink, once via the real file - sandwiching whatever
+    # else sorts between them (e.g. our own issue.d/30_ruddervirt-credentials
+    # entry below) in what looks like a broken double render.
+    - name: "ruddervirt-dedupe-ignition-issue.service"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Remove the duplicate /etc/issue.d Ignition-status symlink
+        After=coreos-ignition-write-issues.service
+        Before=systemd-user-sessions.service
+        ConditionPathIsSymlink=/etc/issue.d/30_coreos_ignition_provisioning.issue
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/bin/rm -f /etc/issue.d/30_coreos_ignition_provisioning.issue
+
+        [Install]
+        WantedBy=multi-user.target
 storage:
   disks:
     - device: /dev/disk/by-id/coreos-boot-disk
@@ -106,7 +129,7 @@ storage:
       overwrite: true
       mode: 0755
       contents:
-        source: "https://github.com/derailed/k9s/releases/download/v0.50.18/k9s_linux_amd64.rpm"
+        source: "https://github.com/derailed/k9s/releases/download/v0.51.0/k9s_linux_amd64.rpm"
     - path: /etc/kubelet.config
       mode: 0644
       contents:
@@ -222,7 +245,7 @@ storage:
         inline: |
           fs.inotify.max_user_instances=8192
           fs.inotify.max_user_watches=524288
-    - path: /etc/ssh/sshd_config.d/50-allow-password.conf
+    - path: /etc/ssh/sshd_config.d/01-allow-password.conf
       mode: 0644
       overwrite: true
       contents:
@@ -238,12 +261,14 @@ storage:
       mode: 0644
       contents:
         inline: |
-          ruddervirtos-default
+          ruddervirt-os
     - path: /etc/issue.d/30_ruddervirt-credentials.issue
       mode: 0644
       contents:
         inline: |
           -----------------------------------------------------
+          -----------------------------------------------------
           Default RudderVirt OS Credentials: admin / ruddervirt
+          -----------------------------------------------------
           -----------------------------------------------------
           
