@@ -4,13 +4,23 @@ RudderVirt Virt OS is a specialized operating system that provides a secure, con
 
 **Important**: This operating system is the foundation for running a private VM Deployment Zone on ruddervirt.com. However, it cannot be connected or used without coordination with Rudder Virt. Please contact us at [selfhosted@ruddervirt.com](mailto:selfhosted@ruddervirt.com) for more information.
 
-## Quick Start
+## Getting Started
 
-Download the latest installer ISO from the [Releases page](../../releases). Burn it onto a USB flash drive (we recommend [balenaEtcher](https://www.balena.io/etcher) or [rufus](https://rufus.ie/en/)). Then, boot into it on your hardware. The installer presents an interactive menu on the console to choose the target disk, asks you to confirm, and then installs onto it. **Warning:** This will erase all existing data on the selected drive.
+### 1. Download and create install media
 
-The installed system ships with a default password `ruddervirt` for the `root` and `admin` users. **Change it immediately after first login.**
+Download the latest installer ISO from the [Releases page](../../releases), then write it to a USB flash drive using a tool like [balenaEtcher](https://www.balena.io/etcher) or [rufus](https://rufus.ie/en/).
 
-The OS image is a minimal base: it boots, but the RudderVirt solution (k3s, KubeVirt, CDI, Kube-OVN, Aileron, plus a storage engine) is **not** installed automatically. After first boot, log in as `admin` (password `ruddervirt`) — on the console or over SSH, the `ruddervirt-setup` menu launches automatically in place of a shell:
+### 2. Install
+
+Boot your server from the USB drive. The installer walks you through choosing a target disk, confirming your choice, and installing.
+
+**Warning:** Installing erases all existing data on the selected drive.
+
+**Default Credentials:** Username `admin`, Password `ruddervirt`
+
+### 3. Set up the solution
+
+Fresh off the installer, the system boots to a minimal base — the full RudderVirt solution (the Kubernetes cluster, virtualization stack, storage, and networking) isn't installed yet. Log in as `admin` (password `ruddervirt`), either on the console or over SSH. You'll land in the `ruddervirt-setup` menu automatically:
 
 ```
   1) configure  View/edit settings, then install (or re-apply) the solution
@@ -19,14 +29,7 @@ The OS image is a minimal base: it boots, but the RudderVirt solution (k3s, Kube
   4) logout     End this session
 ```
 
-Pick `configure` to review and edit network/version/update/storage settings, then choose the "Apply" row at the bottom to install (or re-apply) the solution on this node. The storage engine (Rook-Ceph, Longhorn, or OpenEBS) is selectable here, but only until the first Apply actually prepares the disk for one of them — after that the setting locks, since switching engines on a node that may already hold VM data isn't a supported migration; reinstall the OS to change it — re-running it later re-applies the same way, e.g. after an OS image update (privileged actions prompt for the `admin` password via `sudo`). The settings table detects the node's internet-facing network interface automatically (whichever one has a default route); if none can be found, or you want static instead of DHCP addressing, set it there first — "Apply" won't proceed until that's resolved. Applying then shows a summary of the current settings and requires typing `yes` to confirm — it restarts k3s, briefly interrupting the Kubernetes API and any running workloads, and the full process can take 30+ minutes. Pick `k9s` to browse and manage the running cluster; exit k9s (`ctrl+c` or `:quit`) to return to the menu. Pick `shell` to drop to a normal bash prompt; run `ruddervirt-setup` again to return to the menu. `ruddervirt-setup` is the sole entrypoint for the solution; it's always interactive, run it as `sudo ruddervirt-setup` and use the menu above.
-
-### Building the ISO locally (development)
-
-Releases are built by CI and published to the [Releases page](../../releases). For local development, run `make iso` (requires Docker or Podman) to produce `out/ruddervirt-install-dev.iso`. `make boot` then boots the result in QEMU (needs `qemu` and a host with `/dev/kvm`), and `make show-ignition` prints the generated Ignition config. Run `make` on its own for the full list of targets.
-
-You can also develop in the browser with [GitHub Codespaces](https://github.com/features/codespaces): the repo ships a dev container with Docker and the Go toolchain preconfigured. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev/test workflow and for how to add a Go binary to the ISO.
-
+Pick `configure` to review and edit settings (network, version, update, storage), then select "Apply" at the bottom to install the solution. The installer auto-detects your internet-facing network interface; if it can't find one, or you'd rather use a static IP instead of DHCP, set that here first — "Apply" won't proceed until it's resolved.
 ### Target Hardware Requirements
 
 | Component | Minimum | Recommended |
