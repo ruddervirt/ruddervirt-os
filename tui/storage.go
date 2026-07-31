@@ -28,8 +28,19 @@ const (
 	// references this VG name). A thin pool (rather than plain/thick LVM)
 	// is what makes CSI snapshots practical - thick LVM snapshots need
 	// space reserved up front per snapshot and don't scale past a handful.
+	//
+	// openebsThinPoolLV's name isn't arbitrary: the LVM-LocalPV driver
+	// looks for an existing pool named "<volgroup>_thinpool" and only
+	// auto-creates its own (tiny, sized off whatever's left over - never
+	// what this codebase actually provisions) if it can't find one under
+	// that exact name. Naming it anything else means the driver silently
+	// ignores this 95%-of-VG pool and thin-provisions every real volume
+	// into its own undersized one instead, which then runs out of backing
+	// space under real write load - surfacing as ext4 I/O errors/aborted
+	// journals on whatever's using the volume, not as a provisioning
+	// error where you'd expect to see it.
 	openebsVGName     = "ruddervirt-vg"
-	openebsThinPoolLV = "thinpool"
+	openebsThinPoolLV = openebsVGName + "_thinpool"
 )
 
 const (
@@ -211,7 +222,13 @@ func prepareLonghornDevice(ch chan<- tea.Msg, device string) error {
 		return nil
 	}
 
-	if runPrivileged(blkidBin, device).Run() != nil {
+	// blkid's own exit code isn't reliable here: run against a bare device
+	// with no filesystem, it still exits 0 as long as it can read the
+	// partition table (e.g. PARTUUID) - it only fails outright on a device
+	// it can't read at all. -o value -s TYPE narrows it to specifically the
+	// filesystem-type tag, so "no output" is the real "no filesystem" signal.
+	fsType, _ := runPrivileged(blkidBin, "-o", "value", "-s", "TYPE", device).Output()
+	if strings.TrimSpace(string(fsType)) == "" {
 		ch <- stepOutputMsg(fmt.Sprintf("Formatting %s as ext4...", device))
 		if err := runStreamed(ch, mkfsExt4Bin, "-F", device); err != nil {
 			return err
@@ -221,7 +238,7 @@ func prepareLonghornDevice(ch chan<- tea.Msg, device string) error {
 	}
 
 	if out, err := runPrivileged("/usr/bin/mkdir", "-p", longhornDataPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		return wrapCmdErr(out, err)
 	}
 
 	unit := fmt.Sprintf(`[Unit]
@@ -240,7 +257,7 @@ WantedBy=local-fs.target
 	}
 
 	if out, err := runPrivileged("/usr/bin/systemctl", "daemon-reload").CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		return wrapCmdErr(out, err)
 	}
 	ch <- stepOutputMsg(fmt.Sprintf("Mounting %s...", longhornDataPath))
 	return runStreamed(ch, "/usr/bin/systemctl", "enable", "--now", "var-lib-longhorn.mount")

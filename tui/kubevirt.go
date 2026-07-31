@@ -2,7 +2,9 @@ package main
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"sort"
@@ -130,6 +132,31 @@ var kubevirtCDIManifestFiles = []string{
 	"cdi-cr.yaml",
 }
 
+// kubevirtCDIInstallSpecs describes the operator manifest that owns each
+// required CRD and the custom resource that must only be applied after that
+// CRD has reached the Established condition.
+type kubevirtCDIInstallSpec struct {
+	displayName            string
+	operatorManifest       string
+	crdName                string
+	customResourceManifest string
+}
+
+var kubevirtCDIInstallSpecs = []kubevirtCDIInstallSpec{
+	{
+		displayName:            "KubeVirt",
+		operatorManifest:       "kubevirt-operator.yaml",
+		crdName:                "kubevirts.kubevirt.io",
+		customResourceManifest: "kubevirt-cr.yaml",
+	},
+	{
+		displayName:            "CDI",
+		operatorManifest:       "cdi-operator.yaml",
+		crdName:                "cdis.cdi.kubevirt.io",
+		customResourceManifest: "cdi-cr.yaml",
+	},
+}
+
 func appliedKubeVirtManifestVersion() (string, error) {
 	data, err := os.ReadFile(kubevirtManifestMarkerPath)
 	if err != nil {
@@ -163,6 +190,37 @@ func kubevirtCDIManifestsPresent(manifestDir string) bool {
 		}
 	}
 	return true
+}
+
+// manifestDefinesCRD verifies that an upstream operator manifest still embeds
+// the CRD the TUI relies on it to install. Release asset layouts can change;
+// rejecting an unexpected manifest here is safer than marking the download as
+// complete and failing later when its custom resource is applied.
+func manifestDefinesCRD(path, crdName string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+
+	decoder := yaml.NewDecoder(file)
+	for {
+		var document struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+		}
+		if err := decoder.Decode(&document); err != nil {
+			if errors.Is(err, io.EOF) {
+				return false, nil
+			}
+			return false, err
+		}
+		if document.Kind == "CustomResourceDefinition" && document.Metadata.Name == crdName {
+			return true, nil
+		}
+	}
 }
 
 // resolveKubeVirtVersion/resolveCDIVersion return cfg's configured
@@ -258,6 +316,18 @@ func downloadKubeVirtCDIManifestsStep(cfg Config, ch chan<- tea.Msg) {
 		ch <- stepOutputMsg(fmt.Sprintf("Downloading %s...", d.destName))
 		if err := downloadToPrivilegedPath(d.url, manifestDir+d.destName, 0644); err != nil {
 			ch <- stepDoneMsg{label: label, err: err}
+			return
+		}
+	}
+
+	for _, component := range kubevirtCDIInstallSpecs {
+		found, err := manifestDefinesCRD(manifestDir+component.operatorManifest, component.crdName)
+		if err != nil {
+			ch <- stepDoneMsg{label: label, err: fmt.Errorf("validating %s: %w", component.operatorManifest, err)}
+			return
+		}
+		if !found {
+			ch <- stepDoneMsg{label: label, err: fmt.Errorf("%s does not define required CRD %s", component.operatorManifest, component.crdName)}
 			return
 		}
 	}

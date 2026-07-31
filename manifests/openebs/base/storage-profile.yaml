@@ -1,0 +1,36 @@
+# CDI ships built-in default accessMode/volumeMode for well-known
+# provisioners (Ceph RBD, Longhorn, etc.) but doesn't recognize
+# local.csi.openebs.io - without this override, the auto-created
+# "openebs-lvm" StorageProfile's status.claimPropertySets stays empty,
+# CDI can't fill in a DataVolume's PVC template, and any VM whose disk
+# uses this StorageClass fails to provision with ErrClaimNotValid
+# ("Spec is missing accessMode and cannot get access mode from
+# StorageProfile openebs-lvm") - the VM (and anything waiting on it,
+# e.g. Aileron's build coordinator) then hangs forever.
+#
+# NOT part of base/kustomization.yaml: the StorageProfile CRD is
+# registered by the CDI operator, which tui/k3s.go's prepareK3sStep
+# applies well after the storage engine's own kustomize overlay - applying
+# this any earlier fails with "no matches for kind StorageProfile in
+# version cdi.kubevirt.io/v1beta1: ensure CRDs are installed first".
+# prepareK3sStep applies this file directly once CDI's CRDs are
+# Established instead.
+#
+# cloneStrategy: copy forces CDI's host-assisted (byte-copy) clone path.
+# Without this override, CDI auto-picks "snapshot" cloning because
+# manifests/openebs/snapshot-class.yaml registers a VolumeSnapshotClass for
+# this provisioner - but the LVM-LocalPV CSI driver can only *create*
+# snapshots, not restore a PVC *from* one: CreateVolume with a snapshot
+# source always fails with "rpc error: code = Unimplemented", so any clone
+# (e.g. Aileron cloning its cached source image into a new VM's disk) would
+# retry forever and never complete.
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: StorageProfile
+metadata:
+  name: openebs-lvm
+spec:
+  cloneStrategy: copy
+  claimPropertySets:
+    - accessModes:
+        - ReadWriteOnce
+      volumeMode: Filesystem

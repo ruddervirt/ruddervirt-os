@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -20,11 +19,6 @@ import (
 )
 
 const defaultK3sVersion = "v1.34.5+k3s1"
-
-// cachedK3sVersions holds the release tags fetchK3sVersions found at
-// startup, for the Settings screen's "k3s version" field to pick from.
-// Populated once, best-effort, via Init's fetchK3sVersionsCmd.
-var cachedK3sVersions []string
 
 var k3sVersionPattern = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)(?:-rc(\d+))?\+k3s(\d+)$`)
 
@@ -188,7 +182,7 @@ func installedK3sVersion() (string, bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binPath, "--version").Output()
+	out, err := DefaultRunner.Output(ctx, binPath, "--version")
 	if err != nil {
 		return "", false
 	}
@@ -274,7 +268,7 @@ func downloadToPrivilegedPath(url, destPath string, mode os.FileMode) error {
 		return err
 	}
 	if out, err := runPrivileged("/usr/bin/mv", tmpPath, destPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		return wrapCmdErr(out, err)
 	}
 	return nil
 }
@@ -596,11 +590,55 @@ func prepareK3sStep(cfg Config, ch chan<- tea.Msg) {
 		return
 	}
 
+	for _, component := range kubevirtCDIInstallSpecs {
+		ch <- stepOutputMsg(fmt.Sprintf("Applying %s operator and CRDs...", component.displayName))
+		if err := runStreamed(ch, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/"+component.operatorManifest); err != nil {
+			fail(err)
+			return
+		}
+
+		ch <- stepOutputMsg(fmt.Sprintf("Waiting for CRD %s to become Established...", component.crdName))
+		if err := runStreamed(ch, kubectlBin, "wait", "--for=condition=Established", "crd/"+component.crdName, "--timeout=300s"); err != nil {
+			fail(err)
+			return
+		}
+
+		ch <- stepOutputMsg(fmt.Sprintf("Applying %s custom resource...", component.displayName))
+		if err := runStreamed(ch, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/"+component.customResourceManifest); err != nil {
+			fail(err)
+			return
+		}
+	}
+
+	// openebs's StorageProfile override (manifests/openebs/base/storage-profile.yaml)
+	// needs the StorageProfile CRD - but unlike kubevirts.kubevirt.io/
+	// cdis.cdi.kubevirt.io above, that CRD isn't in cdi-operator.yaml's own
+	// bundle: it only gets registered once the "cdi" custom resource just
+	// applied is actually reconciled and CDI's operand (cdi-apiserver,
+	// cdi-deployment, etc.) rolls out, which happens asynchronously after
+	// this loop moves on. `kubectl wait` on a CRD name that doesn't exist
+	// yet fails immediately with "not found" rather than polling for it to
+	// appear, so - same as applyRookCeph's cephclusters.ceph.rook.io CRD
+	// below - poll for the CRD to exist first, then wait on it.
+	if cfg.Storage.Engine == "openebs" {
+		if err := pollUntil(ch, "Waiting for CRD storageprofiles.cdi.kubevirt.io", 60, 5*time.Second, func() bool {
+			return runPrivileged(kubectlBin, "get", "crd", "storageprofiles.cdi.kubevirt.io").Run() == nil
+		}); err != nil {
+			fail(err)
+			return
+		}
+		if err := runStreamed(ch, kubectlBin, "wait", "--for=condition=Established", "crd/storageprofiles.cdi.kubevirt.io", "--timeout=60s"); err != nil {
+			fail(err)
+			return
+		}
+		ch <- stepOutputMsg("Applying openebs storage profile...")
+		if err := runStreamed(ch, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/openebs/base/storage-profile.yaml"); err != nil {
+			fail(err)
+			return
+		}
+	}
+
 	manifests := []string{
-		"kubevirt-operator.yaml",
-		"kubevirt-cr.yaml",
-		"cdi-operator.yaml",
-		"cdi-cr.yaml",
 		"multus.yaml",
 		snapshotClassManifest,
 	}
@@ -622,11 +660,11 @@ func prepareK3sStep(cfg Config, ch chan<- tea.Msg) {
 	}
 
 	if out, err := runPrivileged("/usr/bin/mkdir", "-p", "/var/lib/ruddervirt").CombinedOutput(); err != nil {
-		fail(fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err))
+		fail(wrapCmdErr(out, err))
 		return
 	}
 	if out, err := runPrivileged("/usr/bin/touch", "/var/lib/ruddervirt/prepare-k3s.done").CombinedOutput(); err != nil {
-		fail(fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err))
+		fail(wrapCmdErr(out, err))
 		return
 	}
 
@@ -641,7 +679,7 @@ func prepareK3sStep(cfg Config, ch chan<- tea.Msg) {
 // skip-vs-do distinction worth predicting here, unlike installK3sStep's or
 // downloadKubeVirtCDIManifestsStep's on-disk version checks.
 func planApplyManifests(cfg Config) string {
-	return "will run - applies storage/KubeVirt/CDI manifests (already-applied resources and already-Ready waits are no-ops)"
+	return "will run - applies storage plus KubeVirt/CDI operators, CRDs, and custom resources (already-applied resources and Ready waits are no-ops)"
 }
 
 // applyStorageEngine applies the kustomize overlay for engine and blocks
@@ -722,5 +760,19 @@ func storageSnapshotClassManifest(engine string) (string, error) {
 		return "openebs/snapshot-class.yaml", nil
 	default:
 		return "", fmt.Errorf("unknown storage engine %q", engine)
+	}
+}
+
+// k3sVersionsFetchedMsg carries fetchK3sVersions' result back into Update -
+// run as a tea.Cmd (not synchronously in initialModel) so a slow or
+// unreachable network doesn't delay the TUI's first paint.
+type k3sVersionsFetchedMsg struct {
+	versions []string
+}
+
+func fetchK3sVersionsCmd() tea.Cmd {
+	return func() tea.Msg {
+		versions, _ := fetchK3sVersions() // best-effort - cycling just no-ops if this fails
+		return k3sVersionsFetchedMsg{versions: versions}
 	}
 }

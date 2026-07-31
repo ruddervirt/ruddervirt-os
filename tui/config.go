@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"gopkg.in/yaml.v3"
 )
 
@@ -123,6 +124,17 @@ func loadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
+// configSaved reports whether configPath exists - i.e. the operator has
+// saved Settings at least once via "configure". Used to gate the home
+// screen's "Services" summary: probing systemctl/kubectl is pointless (and
+// misleading) on a system nothing has ever been configured on. A var (like
+// DefaultRunner) rather than a plain func so tests can swap it instead of
+// depending on the real /etc/ruddervirt path.
+var configSaved = func() bool {
+	_, err := os.Stat(configPath)
+	return err == nil
+}
+
 // saveConfig writes cfg to path. /etc/ruddervirt is root-owned, so the file
 // is written to a temp path first and moved into place with runPrivileged,
 // mirroring how installSteps writes the k3s systemd unit.
@@ -183,12 +195,21 @@ func writePrivileged(path string, data []byte) error {
 	}
 
 	if out, err := runPrivileged("/usr/bin/mkdir", "-p", filepath.Dir(path)).CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		return wrapCmdErr(out, err)
 	}
 	if out, err := runPrivileged("/usr/bin/mv", tmpPath, path).CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		return wrapCmdErr(out, err)
 	}
 	return nil
+}
+
+// versionCache carries the model's in-flight k3s/aileron version-fetch
+// results into settingField.options - the model is the single source of
+// truth for these, so options reads them via this parameter instead of a
+// package-level global.
+type versionCache struct {
+	K3s     []string
+	Aileron []string
 }
 
 // settingField binds one editable Settings-screen row to the Config field it
@@ -203,7 +224,7 @@ type settingField struct {
 	// picker listing its return value instead of a free-text edit box.
 	// Computed fresh each time (not cached on the field) since the choices
 	// can depend on live state (detected NICs, fetched k3s releases).
-	options      func(cfg *Config) []string
+	options      func(cfg *Config, versions versionCache) []string
 	advanced     bool // hidden behind the Settings screen's "Advanced settings" toggle
 	staticOnly   bool // only shown (nested under "IP addressing") when Network.Addressing == "static"
 	networkSetup bool // hidden behind the "Local physical network setup" toggle
@@ -257,7 +278,7 @@ var settingFields = []settingField{
 	{
 		key: "network.interface_name", label: "Local network-interface (internet-facing)", networkSetup: true,
 		get: func(c *Config) string { return c.Network.InterfaceName },
-		options: func(c *Config) []string {
+		options: func(c *Config, versions versionCache) []string {
 			ifaces, _ := listNetworkInterfaces()
 			return ifaces
 		},
@@ -269,7 +290,7 @@ var settingFields = []settingField{
 	{
 		key: "network.addressing", label: "IP addressing", networkSetup: true,
 		get:     func(c *Config) string { return c.Network.Addressing },
-		options: func(c *Config) []string { return []string{"dhcp", "static"} },
+		options: func(c *Config, versions versionCache) []string { return []string{"dhcp", "static"} },
 		set: func(c *Config, v string) error {
 			c.Network.Addressing = v
 			return nil
@@ -361,7 +382,7 @@ var settingFields = []settingField{
 			}
 			return "off"
 		},
-		options: func(c *Config) []string { return []string{"on", "off"} },
+		options: func(c *Config, versions versionCache) []string { return []string{"on", "off"} },
 		set: func(c *Config, v string) error {
 			c.System.AutoUpdate = v == "on"
 			return nil
@@ -370,7 +391,7 @@ var settingFields = []settingField{
 	{
 		key: "versions.k3s", label: "k3s version",
 		get: func(c *Config) string { return c.Versions.K3s },
-		options: func(c *Config) []string {
+		options: func(c *Config, versions versionCache) []string {
 			// k3s doesn't support downgrades, so never offer anything
 			// older than whatever's currently configured (install always
 			// downloads exactly this value, so it's the same thing as
@@ -378,7 +399,7 @@ var settingFields = []settingField{
 			// querying a real /usr/local/bin/k3s binary, it's always
 			// available, even before the very first install has run).
 			var available []string
-			for _, v := range cachedK3sVersions {
+			for _, v := range versions.K3s {
 				cmp, ok := compareK3sVersions(v, c.Versions.K3s)
 				if ok && cmp < 0 {
 					continue
@@ -395,7 +416,7 @@ var settingFields = []settingField{
 	{
 		key: "versions.kubevirt", label: "KubeVirt version",
 		get: func(c *Config) string { return c.Versions.KubeVirt },
-		options: func(c *Config) []string {
+		options: func(c *Config, versions versionCache) []string {
 			return supportedVersionsAtLeast(supportedVersions.KubeVirt, c.Versions.KubeVirt)
 		},
 		set: func(c *Config, v string) error {
@@ -406,7 +427,7 @@ var settingFields = []settingField{
 	{
 		key: "versions.cdi", label: "CDI version",
 		get: func(c *Config) string { return c.Versions.CDI },
-		options: func(c *Config) []string {
+		options: func(c *Config, versions versionCache) []string {
 			return supportedVersionsAtLeast(supportedVersions.CDI, c.Versions.CDI)
 		},
 		set: func(c *Config, v string) error {
@@ -417,12 +438,12 @@ var settingFields = []settingField{
 	{
 		key: "versions.aileron", label: "Aileron version",
 		get: func(c *Config) string { return c.Versions.Aileron },
-		options: func(c *Config) []string {
+		options: func(c *Config, versions versionCache) []string {
 			// Aileron ships too frequently for a hand-curated list (unlike
 			// KubeVirt/CDI) - fetch live from GitHub, same reasoning as
 			// versions.k3s: never offer a downgrade from what's configured.
 			var available []string
-			for _, v := range cachedAileronVersions {
+			for _, v := range versions.Aileron {
 				cmp, ok := compareSemver(v, c.Versions.Aileron)
 				if ok && cmp < 0 {
 					continue
@@ -443,7 +464,7 @@ var settingFields = []settingField{
 	{
 		key: "storage.engine", label: "Storage engine",
 		get:     func(c *Config) string { return c.Storage.Engine },
-		options: func(c *Config) []string { return []string{"openebs", "longhorn", "rook-ceph"} },
+		options: func(c *Config, versions versionCache) []string { return []string{"openebs", "longhorn", "rook-ceph"} },
 		set: func(c *Config, v string) error {
 			c.Storage.Engine = v
 			return nil
@@ -459,4 +480,10 @@ var settingFields = []settingField{
 			return false, ""
 		},
 	},
+}
+
+func saveSettingCmd(cfg Config) tea.Cmd {
+	return func() tea.Msg {
+		return settingsSavedMsg{err: saveConfig(cfg, configPath)}
+	}
 }

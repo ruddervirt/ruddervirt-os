@@ -77,7 +77,7 @@ func setAdminPassword(newPassword string) error {
 	cmd := runPrivileged("/usr/sbin/chpasswd")
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("%s:%s\n", adminUsername, newPassword))
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		return wrapCmdErr(out, err)
 	}
 	return nil
 }
@@ -87,7 +87,7 @@ func setAdminPassword(newPassword string) error {
 // run.
 func removeCredentialsBanner() error {
 	if out, err := runPrivileged("/usr/bin/rm", "-f", credentialsBannerPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+		return wrapCmdErr(out, err)
 	}
 	return nil
 }
