@@ -99,20 +99,16 @@ func sign(n int) int {
 	}
 }
 
-func TestFindAsset(t *testing.T) {
-	assets := []ghAsset{
-		{Name: "ruddervirt-install-v1.2.3.iso", BrowserDownloadURL: "https://example.com/iso"},
-		{Name: setupBinaryAssetName, BrowserDownloadURL: "https://example.com/bin"},
-		{Name: setupChecksumAssetName, BrowserDownloadURL: "https://example.com/sum"},
+func TestSetupBinaryURL(t *testing.T) {
+	const want = "https://raw.githubusercontent.com/ruddervirt/ruddervirt-os/release-binaries/v1.2.3/ruddervirt-setup"
+	if got := setupBinaryURL("v1.2.3"); got != want {
+		t.Errorf("setupBinaryURL(v1.2.3) = %q, want %q", got, want)
 	}
+}
 
-	if a, ok := findAsset(assets, setupBinaryAssetName); !ok || a.BrowserDownloadURL != "https://example.com/bin" {
-		t.Errorf("findAsset binary = %+v, ok=%v", a, ok)
-	}
-	if a, ok := findAsset(assets, setupChecksumAssetName); !ok || a.BrowserDownloadURL != "https://example.com/sum" {
-		t.Errorf("findAsset checksum = %+v, ok=%v", a, ok)
-	}
-	if _, ok := findAsset(assets, "nonexistent"); ok {
-		t.Errorf("findAsset nonexistent: expected ok=false")
+func TestSetupChecksumURL(t *testing.T) {
+	const want = "https://raw.githubusercontent.com/ruddervirt/ruddervirt-os/release-binaries/v1.2.3/ruddervirt-setup.sha256"
+	if got := setupChecksumURL("v1.2.3"); got != want {
+		t.Errorf("setupChecksumURL(v1.2.3) = %q, want %q", got, want)
 	}
 }

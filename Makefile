@@ -2,7 +2,7 @@
 #
 # Single entrypoint for RudderVirt OS development (replaces the old local-build.sh).
 #
-#   make iso              # build the installer ISO -> out/ruddervirt-install-dev.iso
+#   make iso              # build the installer ISO -> out/ruddervirt-install-dev-x86_64.iso
 #   make iso VERSION=v1   # custom version string in the filename
 #   make show-ignition    # build, and print the generated Ignition config
 #   make boot             # boot the newest ISO in QEMU (needs qemu + a KVM host)

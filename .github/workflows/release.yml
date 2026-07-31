@@ -44,8 +44,37 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            out/ruddervirt-install-${{ github.ref_name }}.iso
-            scripts/ruddervirt-setup
-            scripts/ruddervirt-setup.sha256
+            out/ruddervirt-install-${{ github.ref_name }}-x86_64.iso
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+      # ruddervirt-setup itself is an internal upgrade artifact (fetched by
+      # the running TUI's self-update flow, see tui/update.go), not something
+      # end users download - so it's pushed to a dedicated orphan branch
+      # instead of the public Releases page, which should only ever show the
+      # installer ISO. One folder per version, so older tags stay fetchable.
+      - name: Publish ruddervirt-setup binary
+        env:
+          VERSION: ${{ github.ref_name }}
+          REMOTE: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          workdir="$(mktemp -d)"
+          if git ls-remote --exit-code --heads "$REMOTE" release-binaries >/dev/null 2>&1; then
+            git clone --depth 1 --branch release-binaries "$REMOTE" "$workdir"
+          else
+            git clone --depth 1 --no-checkout "$REMOTE" "$workdir"
+            git -C "$workdir" checkout --orphan release-binaries
+            git -C "$workdir" rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          mkdir -p "$workdir/$VERSION"
+          cp scripts/ruddervirt-setup "$workdir/$VERSION/ruddervirt-setup"
+          cp scripts/ruddervirt-setup.sha256 "$workdir/$VERSION/ruddervirt-setup.sha256"
+
+          git -C "$workdir" add "$VERSION"
+          git -C "$workdir" commit -m "Add ruddervirt-setup $VERSION"
+          git -C "$workdir" push origin HEAD:release-binaries

@@ -22,17 +22,27 @@ import (
 // known-good origin over HTTPS.
 const ruddervirtRepo = "ruddervirt/ruddervirt-os"
 
-const setupBinaryAssetName = "ruddervirt-setup"
-const setupChecksumAssetName = "ruddervirt-setup.sha256"
-
-type ghAsset struct {
-	Name               string `json:"name"`
-	BrowserDownloadURL string `json:"browser_download_url"`
-}
+// releaseBinariesBranch holds the actual ruddervirt-setup binaries, one
+// version folder per release (release.yml pushes here after each tag
+// build). Kept off the public Releases page - which only ever shows the
+// installer ISO - so end users aren't confused by an internal-only binary
+// they never need to touch directly.
+const releaseBinariesBranch = "release-binaries"
 
 type ghRelease struct {
-	TagName string    `json:"tag_name"`
-	Assets  []ghAsset `json:"assets"`
+	TagName string `json:"tag_name"`
+}
+
+// setupBinaryURL returns the raw.githubusercontent.com URL for the
+// ruddervirt-setup binary published for the given release tag.
+func setupBinaryURL(version string) string {
+	return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/ruddervirt-setup", ruddervirtRepo, releaseBinariesBranch, version)
+}
+
+// setupChecksumURL is setupBinaryURL's sibling for the accompanying
+// ruddervirt-setup.sha256 file.
+func setupChecksumURL(version string) string {
+	return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/ruddervirt-setup.sha256", ruddervirtRepo, releaseBinariesBranch, version)
 }
 
 // fetchLatestSetupRelease returns the latest non-draft, non-prerelease
@@ -65,16 +75,6 @@ func fetchLatestSetupRelease() (ghRelease, error) {
 		return ghRelease{}, fmt.Errorf("latest release has no tag name")
 	}
 	return rel, nil
-}
-
-// findAsset returns the first asset in assets named name.
-func findAsset(assets []ghAsset, name string) (ghAsset, bool) {
-	for _, a := range assets {
-		if a.Name == name {
-			return a, true
-		}
-	}
-	return ghAsset{}, false
 }
 
 var setupVersionPattern = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)$`)
@@ -113,9 +113,9 @@ func compareSetupVersions(a, b string) (cmp int, ok bool) {
 	return aPatch - bPatch, true
 }
 
-// fetchChecksumHex downloads the small ruddervirt-setup.sha256 release
-// asset and returns the hex digest from its first whitespace-separated
-// field (standard `sha256sum` output format: "<hex>  <filename>").
+// fetchChecksumHex downloads the small ruddervirt-setup.sha256 file and
+// returns the hex digest from its first whitespace-separated field
+// (standard `sha256sum` output format: "<hex>  <filename>").
 func fetchChecksumHex(url string) (string, error) {
 	tmp := filepath.Join(os.TempDir(), "ruddervirt-setup.sha256.tmp")
 	defer os.Remove(tmp)
@@ -223,7 +223,7 @@ type updateCheckMsg struct {
 
 // checkForUpdateCmd hits GitHub for the latest ruddervirt-setup release,
 // compares it against the running binary's version, and (if newer) fetches
-// the checksum asset so it's ready to hand straight to updateSteps without
+// the checksum file so it's ready to hand straight to updateSteps without
 // another round-trip after the user confirms.
 func checkForUpdateCmd() tea.Cmd {
 	return func() tea.Msg {
@@ -231,24 +231,16 @@ func checkForUpdateCmd() tea.Cmd {
 		if err != nil {
 			return updateCheckMsg{err: err}
 		}
-		bin, ok := findAsset(rel.Assets, setupBinaryAssetName)
-		if !ok {
-			return updateCheckMsg{err: fmt.Errorf("release %s has no %s asset", rel.TagName, setupBinaryAssetName)}
-		}
-		sumAsset, ok := findAsset(rel.Assets, setupChecksumAssetName)
-		if !ok {
-			return updateCheckMsg{err: fmt.Errorf("release %s has no %s asset", rel.TagName, setupChecksumAssetName)}
-		}
 		if cmp, ok := compareSetupVersions(rel.TagName, version); ok && cmp <= 0 {
 			return updateCheckMsg{latestVersion: rel.TagName, alreadyLatest: true}
 		}
-		checksumHex, err := fetchChecksumHex(sumAsset.BrowserDownloadURL)
+		checksumHex, err := fetchChecksumHex(setupChecksumURL(rel.TagName))
 		if err != nil {
 			return updateCheckMsg{err: err}
 		}
 		return updateCheckMsg{
 			latestVersion: rel.TagName,
-			binaryURL:     bin.BrowserDownloadURL,
+			binaryURL:     setupBinaryURL(rel.TagName),
 			checksumHex:   checksumHex,
 		}
 	}

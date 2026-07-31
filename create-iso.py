@@ -165,7 +165,7 @@ def main():
     stream = "stable"
     arch = "x86_64"
     output_ignition = Path(input_butane).with_suffix('.ign')
-    output_iso = f"/output/ruddervirt-install-{args.version}.iso"
+    output_iso = f"/output/ruddervirt-install-{args.version}-{arch}.iso"
     fedora_iso = "fedora-coreos.iso"
 
     try:
