@@ -2,3 +2,11 @@ __pycache__
 .venv
 *.iso
 *.ign
+.vscode
+out
+/bin/
+*.test
+.vscode
+
+# Built by `make build-tui`
+/scripts/ruddervirt-setup

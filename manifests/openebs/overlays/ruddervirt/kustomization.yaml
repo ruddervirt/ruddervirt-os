@@ -1,0 +1,10 @@
+# No cluster-specific overrides needed yet - kept for structural
+# consistency with manifests/rook-ceph and manifests/longhorn, whose
+# overlays/ruddervirt directories carry single-node patches. If a
+# ruddervirt-specific override is ever needed here, add a `patches:` entry
+# the same way those do.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base

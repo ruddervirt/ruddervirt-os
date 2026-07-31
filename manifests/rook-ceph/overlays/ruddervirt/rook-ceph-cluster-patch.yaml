@@ -23,8 +23,13 @@ spec:
     cephClusterSpec.resources.osd.requests.memory: "1Gi"
     cephClusterSpec.resources.osd.limits.memory: "2Gi"
 
-    # Block pool - use OSD failure domain for single node (base uses host)
+    # Block pool - use OSD failure domain for single node (base uses host),
+    # and drop to 1 replica (base uses 2) - with a single OSD, size 2 can
+    # never be satisfied and leaves the pool permanently degraded. Mirrors
+    # manifests/longhorn/overlays/ruddervirt/longhorn-patch.yaml's same
+    # single-node replica-count override.
     cephBlockPools[0].spec.failureDomain: "osd"
+    cephBlockPools[0].spec.replicated.size: "1"
 
     # Dashboard ingress
     # ingress.dashboard.host.name: "your-k3s-cluster-name-ceph"

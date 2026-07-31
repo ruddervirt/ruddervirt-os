@@ -1,0 +1,17 @@
+# Keep the builder image's context to just what create-iso.py needs.
+.git
+.github
+.devcontainer
+.vscode
+out
+bin
+__pycache__
+scripts/dev
+# The setup TUI binary is fetched over HTTP at first boot (see server.bu), not
+# baked into the image, so keep it out of the build context.
+scripts/ruddervirt-setup
+*.md
+*.iso
+*.ign
+LICENSE
+Makefile

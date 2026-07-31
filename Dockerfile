@@ -7,17 +7,14 @@ RUN dnf update -y && \
         butane \
         git \
         ignition-validate \
-        python3 \
-        python3-pip \
-        python3-passlib \
-        python3-jinja2 && \
+        python3 && \
     dnf clean all
 
 WORKDIR /output
 WORKDIR /opt
 
 COPY create-iso.py .
-COPY server.bu.j2 .
+COPY server.bu .
 COPY scripts ./scripts
 COPY manifests ./manifests
 

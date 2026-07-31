@@ -1,0 +1,19 @@
+# Installs Aileron (github.com/ruddervirt/aileron) via k3s's built-in
+# helm-controller, which already runs as a core k3s subsystem - this
+# resource just points it at the published OCI chart. No helm binary is
+# ever invoked by ruddervirt-os itself; the controller's own Job
+# (rancher/klipper-helm) does the real install work inside the cluster.
+# __AILERON_VERSION__ is substituted at apply time with the selected
+# release tag stripped of its leading "v" (Helm chart versions must be
+# bare semver).
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: aileron
+  namespace: kube-system
+spec:
+  chart: oci://ghcr.io/ruddervirt/charts/aileron
+  version: __AILERON_VERSION__
+  targetNamespace: ruddervirt-system
+  createNamespace: true
+  takeOwnership: true

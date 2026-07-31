@@ -1,0 +1,274 @@
+# SPDX-License-Identifier: GPL-3.0-only
+variant: fcos
+version: 1.6.0
+passwd:
+  users:
+    # Default password is "ruddervirt" for both root and admin. This is a
+    # well-known default meant to be changed by the post-install setup script.
+    - name: root
+      password_hash: "$6$ruddervirt0$hVyBGZxUjDrV7kW.cEWoJxBLIWzCDxPDRjE3NgDEmeAMoNEpXoJa2fR6PGEKu5dnI78I22zK5z1cC.IEDOnAZ/"
+    - name: admin
+      groups: ["wheel", "sudo"]
+      password_hash: "$6$ruddervirt0$hVyBGZxUjDrV7kW.cEWoJxBLIWzCDxPDRjE3NgDEmeAMoNEpXoJa2fR6PGEKu5dnI78I22zK5z1cC.IEDOnAZ/"
+      # Login shell launches the ruddervirt-setup menu (console and SSH) and
+      # falls back to bash for non-interactive use and the menu's shell escape.
+      shell: /usr/local/bin/ruddervirt-shell
+systemd:
+  units:
+    - name: "brand-ruddervirt.service"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Apply RudderVirt OS branding (os-release, boot menu)
+        After=local-fs.target
+        RequiresMountsFor=/boot
+        Before=systemd-user-sessions.service
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/local/bin/brand-ruddervirt
+
+        [Install]
+        WantedBy=multi-user.target
+    # Suppress the colored "Fedora CoreOS <version>" OS-release line that
+    # console-login-helper-messages prints in the motd after login.
+    - name: "console-login-helper-messages-gensnippet-os-release.service"
+      mask: true
+    # coreos-ignition-write-issues writes its "Ignition: ran on ..." status
+    # message to /run/issue.d/30_coreos_ignition_provisioning.issue and also
+    # leaves a same-named symlink to it under /etc/issue.d. getty's default
+    # --issue-file scans /etc/issue.d and /run/issue.d separately, so without
+    # this, agetty prints that one message twice at every console login -
+    # once via the symlink, once via the real file - sandwiching whatever
+    # else sorts between them (e.g. our own issue.d/30_ruddervirt-credentials
+    # entry below) in what looks like a broken double render.
+    - name: "ruddervirt-dedupe-ignition-issue.service"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Remove the duplicate /etc/issue.d Ignition-status symlink
+        After=coreos-ignition-write-issues.service
+        Before=systemd-user-sessions.service
+        ConditionPathIsSymlink=/etc/issue.d/30_coreos_ignition_provisioning.issue
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/bin/rm -f /etc/issue.d/30_coreos_ignition_provisioning.issue
+
+        [Install]
+        WantedBy=multi-user.target
+storage:
+  disks:
+    - device: /dev/disk/by-id/coreos-boot-disk
+      wipe_table: false
+      partitions:
+        - number: 4
+          resize: true
+          size_mib: 51200 # root at 50GB
+        - number: 5
+          size_mib: 0
+  trees:
+    # The bundled solution manifests, embedded wholesale from the repo's
+    # manifests/ directory (resolved via `butane --files-dir`).
+    - local: manifests
+      path: /etc/ruddervirt/manifests
+  files:
+    - path: /etc/modprobe.d/ixgbe.conf
+      mode: 0644
+      contents:
+        inline: |
+          options ixgbe allow_unsupported_sfp=1
+    - path: /etc/yum.repos.d/rancher-k3s-common.repo
+      mode: 0644
+      contents:
+        inline: |
+          [rancher-k3s-common-stable]
+          name=Rancher K3s Common (stable)
+          baseurl=https://rpm.rancher.io/k3s/stable/common/centos/8/noarch
+          enabled=1
+          gpgcheck=1
+          repo_gpgcheck=0
+          gpgkey=https://rpm.rancher.io/public.key
+    - path: /etc/ruddervirt/manifests/kubevirt-operator.yaml
+      mode: 0644
+      contents:
+        inline: |
+          # placeholder - overwritten by ruddervirt-setup's "Downloading
+          # KubeVirt/CDI manifests" step, which always downloads the
+          # version selected in Settings.
+    - path: /etc/ruddervirt/manifests/kubevirt-cr.yaml
+      mode: 0644
+      contents:
+        inline: |
+          # placeholder - overwritten by ruddervirt-setup's "Downloading
+          # KubeVirt/CDI manifests" step, which always downloads the
+          # version selected in Settings.
+    - path: /etc/ruddervirt/manifests/cdi-operator.yaml
+      mode: 0644
+      contents:
+        inline: |
+          # placeholder - overwritten by ruddervirt-setup's "Downloading
+          # KubeVirt/CDI manifests" step, which always downloads the
+          # version selected in Settings.
+    - path: /etc/ruddervirt/manifests/cdi-cr.yaml
+      mode: 0644
+      contents:
+        inline: |
+          # placeholder - overwritten by ruddervirt-setup's "Downloading
+          # KubeVirt/CDI manifests" step, which always downloads the
+          # version selected in Settings.
+    - path: /etc/NetworkManager/conf.d/no-search-domains.conf
+      mode: 0644
+      contents:
+        inline: |
+          [main]
+          dns=none
+          rc-manager=unmanaged
+    - path: /var/tmp/k9s.rpm
+      overwrite: true
+      mode: 0755
+      contents:
+        source: "https://github.com/derailed/k9s/releases/download/v0.51.0/k9s_linux_amd64.rpm"
+    - path: /etc/kubelet.config
+      mode: 0644
+      contents:
+        inline: |
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          shutdownGracePeriod: 60s
+          shutdownGracePeriodCriticalPods: 10s
+    - path: /usr/local/bin/k3s
+      mode: 0755
+      contents:
+        inline: |
+          # placeholder - overwritten by ruddervirt-setup's "Installing k3s"
+          # step, which always downloads the version selected in Settings.
+    - path: /usr/local/bin/kubectl
+      mode: 0777
+      contents:
+        inline: |
+          #!/bin/sh
+          exec k3s kubectl "$@"
+    - path: /usr/local/bin/ruddervirt-setup
+      mode: 0755
+      contents:
+        # The Go setup TUI is ~10 MB, well past Ignition's 256 KiB embed limit,
+        # so it can't be inlined as a `local:` file. `make boot` serves it over
+        # HTTP and the guest fetches it here on first boot. 10.0.2.2 is the QEMU
+        # user-net gateway mapping to the host loopback; the port must match
+        # TUI_SERVE_PORT in the Makefile. (Dev-only delivery; a real deployment
+        # would point this at a release URL.)
+        source: http://10.0.2.2:8080/ruddervirt-setup
+    - path: /usr/local/bin/ruddervirt-shell
+      mode: 0755
+      contents:
+        local: scripts/ruddervirt-shell.sh
+    - path: /usr/local/bin/brand-ruddervirt
+      mode: 0755
+      contents:
+        local: scripts/brand-ruddervirt.sh
+    - path: /etc/profile.d/01-custom-profile.sh
+      mode: 0777
+      contents:
+        inline: |
+          alias vim="vi"
+          export EDITOR="vi"
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+    - path: /etc/ruddervirt/k3s-config.yaml
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          # connecting to another server
+          # server: https://192.168.1.5:6443
+          # token: MYTOKEN
+
+          # initialize the cluster; only on first server
+          # cluster-init: true
+          # backup the cluster
+          # etcd-s3: true
+          # etcd-s3-config-secret: k3s-etcd-snapshot-s3-config
+
+          bind-address: __LOCAL_IP__
+          advertise-address: __LOCAL_IP__
+          node-ip: __LOCAL_IP__
+          tls-san:
+            - "__LOCAL_IP__"
+
+          # cluster networking settings; only matters when tailscale operator exists
+          # cluster-cidr: __POD_CIDR__
+          # service-cidr: __SVC_CIDR__
+          # cluster-dns: __CLUSTER_DNS__
+
+          # generic settings; shouldn't ever change
+          flannel-backend: none
+          kubelet-arg:
+            - "config=/etc/kubelet.config"
+          node-label:
+            - "ruddervirt=metal"
+            - "kube-ovn/role=master"
+          resolv-conf: /etc/resolv.conf
+          disable:
+            - "local-storage"
+            - "network-policy"
+      # Managed by ruddervirt-setup's "Automatic updates" setting after
+      # first boot (tui/config.go writeZincatiConfig) - this is just the
+      # default before an operator changes it.
+    - path: /etc/zincati/config.d/99-ruddervirt-updates.toml
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          [updates]
+          enabled = true
+          strategy = "periodic"
+
+          [updates.periodic]
+          time_zone = "US/Eastern"
+
+          [[updates.periodic.window]]
+          days = [ "Sat" ]
+          start_time = "00:00"
+          length_minutes = 60
+    - path: /etc/resolv.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          nameserver 1.1.1.1
+          nameserver 8.8.8.8
+    - path: /etc/sysctl.d/98-inotify.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          fs.inotify.max_user_instances=8192
+          fs.inotify.max_user_watches=524288
+    - path: /etc/ssh/sshd_config.d/01-allow-password.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          PasswordAuthentication yes
+    - path: /etc/sysctl.d/99-nebula.conf
+      mode: 0644
+      contents:
+        inline: |
+          net.ipv4.ip_forward=1
+          net.ipv6.conf.all.forwarding=1
+    - path: /etc/hostname
+      mode: 0644
+      contents:
+        inline: |
+          ruddervirt-os
+    - path: /etc/issue.d/30_ruddervirt-credentials.issue
+      mode: 0644
+      contents:
+        inline: |
+          -----------------------------------------------------
+          -----------------------------------------------------
+          Default RudderVirt OS Credentials: admin / ruddervirt
+          -----------------------------------------------------
+          -----------------------------------------------------
+          

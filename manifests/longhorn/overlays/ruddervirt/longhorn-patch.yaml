@@ -1,0 +1,13 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: longhorn
+  namespace: kube-system
+spec:
+  set:
+    # Single node - only 1 replica of each volume/CSI sidecar is possible.
+    persistence.defaultClassReplicaCount: 1
+    csi.attacherReplicaCount: 1
+    csi.provisionerReplicaCount: 1
+    csi.resizerReplicaCount: 1
+    csi.snapshotterReplicaCount: 1
