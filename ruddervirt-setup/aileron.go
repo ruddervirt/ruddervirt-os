@@ -6,11 +6,33 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// aileronUINodePort is the NodePort aileronUI.service.nodePort defaults to
+// in ghcr.io/ruddervirt/charts/aileron's values.yaml - ruddervirt-setup
+// doesn't expose an override for it (only aileronUI.enabled, see
+// applyAileron below), so it's safe to hardcode here. Matches
+// AILERON_UI_PORT in the Makefile, used the same way for `make boot`.
+const aileronUINodePort = "30806"
+
+// aileronUIURL returns the URL to reach the Aileron UI at, for the home
+// screen's prominent display - empty if the UI is disabled or this node's
+// address can't currently be resolved (e.g. network isn't configured yet).
+func aileronUIURL(cfg Config) string {
+	if !cfg.System.AileronUIEnabled {
+		return ""
+	}
+	ip, err := resolveLocalIP(cfg.Network)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("http://%s:%s", ip, aileronUINodePort)
+}
 
 // fetchAileronVersions lists ruddervirt/aileron release tags from GitHub,
 // newest first, for the Settings screen's version picker - same shape as
@@ -74,7 +96,7 @@ func fetchAileronVersions() ([]string, error) {
 // (k3s.go:339-374). k3s's own always-on helm-controller then does the
 // actual chart install as a Job inside the cluster; no helm binary is ever
 // invoked here.
-func applyAileron(ch chan<- tea.Msg, kubectlBin, version string) error {
+func applyAileron(ch chan<- tea.Msg, kubectlBin, version string, uiEnabled bool) error {
 	const templatePath = "/etc/ruddervirt/manifests/aileron-helmchart.yaml"
 	const jobNamespace = "kube-system"
 	const jobName = "job/helm-install-aileron"
@@ -86,6 +108,7 @@ func applyAileron(ch chan<- tea.Msg, kubectlBin, version string) error {
 		return err
 	}
 	rendered := strings.ReplaceAll(string(data), "__AILERON_VERSION__", chartVersion)
+	rendered = strings.ReplaceAll(rendered, "__AILERON_UI_ENABLED__", strconv.FormatBool(uiEnabled))
 
 	tmp, err := os.CreateTemp("", "aileron-helmchart-*.yaml")
 	if err != nil {

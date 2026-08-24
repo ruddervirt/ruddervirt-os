@@ -5,7 +5,11 @@
 # (rancher/klipper-helm) does the real install work inside the cluster.
 # __AILERON_VERSION__ is substituted at apply time with the selected
 # release tag stripped of its leading "v" (Helm chart versions must be
-# bare semver).
+# bare semver). __AILERON_UI_ENABLED__ is substituted with "true" or
+# "false" from the operator's system.aileron_ui_enabled setting - the
+# chart's own values.yaml defaults aileronUI.enabled to true but flags the
+# UI as UNAUTHENTICATED and able to create/delete VMs and open any
+# console, hence the setting.
 apiVersion: helm.cattle.io/v1
 kind: HelmChart
 metadata:
@@ -17,3 +21,6 @@ spec:
   targetNamespace: ruddervirt-system
   createNamespace: true
   takeOwnership: true
+  valuesContent: |-
+    aileronUI:
+      enabled: __AILERON_UI_ENABLED__

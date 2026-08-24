@@ -10,3 +10,4 @@ out
 
 # Built by `make build-tui`
 /scripts/ruddervirt-setup
+/ruddervirt-setup/ruddervirt-setup

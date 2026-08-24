@@ -47,6 +47,13 @@ type SystemConfig struct {
 	// entering "configure" skips the check (and its /etc/shadow read)
 	// instead of re-verifying every time.
 	PasswordChanged bool `yaml:"password_changed"`
+	// AileronUIEnabled toggles the aileronUI.enabled Helm value (see
+	// applyAileron in aileron.go and manifests/aileron-helmchart.yaml).
+	// Defaults to true (matching the chart's own default), but the chart's
+	// own values.yaml flags the UI as UNAUTHENTICATED and able to
+	// create/delete VMs and open any console - worth letting an operator
+	// turn off on an untrusted network.
+	AileronUIEnabled bool `yaml:"aileron_ui_enabled"`
 }
 
 type VersionsConfig struct {
@@ -86,7 +93,8 @@ func defaultConfig() Config {
 			SvcCIDR:       "10.43.0.0/16",
 		},
 		System: SystemConfig{
-			AutoUpdate: true,
+			AutoUpdate:       true,
+			AileronUIEnabled: true,
 		},
 		Versions: VersionsConfig{
 			K3s:      defaultK3sVersion,
@@ -458,6 +466,21 @@ var settingFields = []settingField{
 		},
 		set: func(c *Config, v string) error {
 			c.Versions.Aileron = v
+			return nil
+		},
+	},
+	{
+		// UNAUTHENTICATED when on - see AileronUIEnabled's doc comment.
+		key: "system.aileron_ui_enabled", label: "Aileron UI (unauthenticated)",
+		get: func(c *Config) string {
+			if c.System.AileronUIEnabled {
+				return "on"
+			}
+			return "off"
+		},
+		options: func(c *Config, versions versionCache) []string { return []string{"on", "off"} },
+		set: func(c *Config, v string) error {
+			c.System.AileronUIEnabled = v == "on"
 			return nil
 		},
 	},

@@ -468,6 +468,11 @@ func (m model) View() string {
 
 	default:
 		s := "\nRudderVirt OS\n\n"
+		if configSaved() {
+			if url := aileronUIURL(m.cfg); url != "" {
+				s += fmt.Sprintf("Aileron UI:  %s\n\n", url)
+			}
+		}
 		s += renderServiceStatuses(m.serviceStatuses)
 		s += "  1. configure\n"
 		s += "  2. k9s\n"

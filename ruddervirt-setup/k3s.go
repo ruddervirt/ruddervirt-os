@@ -674,7 +674,7 @@ func prepareK3sStep(cfg Config, ch chan<- tea.Msg) {
 		aileronVersion = defaultAileronVersion
 	}
 	ch <- stepOutputMsg("Applying aileron...")
-	if err := applyAileron(ch, kubectlBin, aileronVersion); err != nil {
+	if err := applyAileron(ch, kubectlBin, aileronVersion, cfg.System.AileronUIEnabled); err != nil {
 		fail(err)
 		return
 	}

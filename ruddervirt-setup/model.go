@@ -141,8 +141,19 @@ func initialModel() model {
 		}
 	}
 
+	// cfg.System.PasswordChanged is false only until the admin password is
+	// changed away from server.bu's well-known default - i.e. exactly the
+	// window between first boot and the operator's first trip through
+	// "configure". Skip the home menu and land straight on the same
+	// password-check -> Settings flow selecting "configure" would trigger,
+	// instead of making them find and type it themselves.
+	current := screenMenu
+	if !cfg.System.PasswordChanged {
+		current = screenPasswordCheck
+	}
+
 	return model{
-		current:              screenMenu,
+		current:              current,
 		settingsInput:        settingsInput,
 		installConfirmInput:  installConfirmInput,
 		updateConfirmInput:   updateConfirmInput,
@@ -156,5 +167,11 @@ func initialModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, fetchK3sVersionsCmd(), fetchAileronVersionsCmd(), fetchServiceStatusesCmd(m.cfg), tickServiceStatusCmd())
+	cmds := []tea.Cmd{textinput.Blink, fetchK3sVersionsCmd(), fetchAileronVersionsCmd(), fetchServiceStatusesCmd(m.cfg), tickServiceStatusCmd()}
+	if m.current == screenPasswordCheck {
+		// initialModel() starts here on first boot (see its comment) -
+		// same command the menu's "configure" selection fires manually.
+		cmds = append(cmds, checkPasswordChangedCmd())
+	}
+	return tea.Batch(cmds...)
 }
