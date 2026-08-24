@@ -8,58 +8,63 @@ import (
 )
 
 // settingsChromeLines is the number of lines the Settings screen spends on
-// its header, footer/help text, scroll indicators, and table borders/header
-// row - i.e. everything around the field rows themselves. Subtracted from
-// the terminal height to decide how many fields can be shown at once.
-const settingsChromeLines = 16
+// its header, footer/help text, scroll indicators, table borders/header
+// row, and the fixed Apply action bar below the table - i.e. everything
+// around the field rows themselves. Subtracted from the terminal height to
+// decide how many fields can be shown at once.
+const settingsChromeLines = 20
 
 // networkSetupLabel is the toggle row that expands/collapses the local
 // physical network fields (interface, addressing, and static IP details)
-// nested beneath it.
+// nested beneath it. Uses the full-size ▶/▼ triangles (same family as the
+// Apply button's ▶), not the small ▸/▾ variants - those render inconsistently
+// across terminal fonts (some render them tiny/off-baseline, or double-width
+// under East Asian locale settings), throwing off the table's alignment.
 func networkSetupLabel(expanded bool) string {
 	if expanded {
-		return "▾ Local physical network setup"
+		return "▼ Local physical network setup"
 	}
-	return "▸ Local physical network setup"
+	return "▶ Local physical network setup"
 }
 
 // advancedSettingsLabel is the toggle row that expands/collapses the
 // advanced (rarely-changed) fields nested beneath it.
 func advancedSettingsLabel(expanded bool) string {
 	if expanded {
-		return "▾ Advanced settings"
+		return "▼ Advanced settings"
 	}
-	return "▸ Advanced settings"
+	return "▶ Advanced settings"
 }
 
 // settingsRow is one row in the Settings table: either a real settingField
 // (nested, i.e. indented, if it belongs to a collapsible group) or one of
-// the synthetic toggle/action rows.
+// the synthetic toggle rows.
 type settingsRow struct {
 	field           settingField
 	isNetworkToggle bool
 	isToggle        bool
-	isApply         bool
 	nested          bool
 }
 
 // settingsRows lays out the Settings table in display order:
 //
-//  1. The "Apply" row, always first - "configure"'s equivalent of the old
-//     standalone "install" menu item. It sits above the rest of the fields
-//     so it's always visible right away instead of buried at the bottom,
-//     behind however many fields happen to be expanded.
-//  2. The "Local physical network setup" toggle row (where
+//  1. The "Local physical network setup" toggle row (where
 //     interface_name/addressing used to sit directly) - expanding it
 //     reveals the interface and addressing fields, plus (only when
 //     addressing is static) the static IP/prefix/gateway/DNS fields, all
 //     nested one level.
-//  3. Any remaining plain fields (automatic updates, k3s version, ...).
-//  4. The "Advanced settings" toggle row, then its fields when expanded.
+//  2. Any remaining plain fields (automatic updates, k3s version, ...).
+//  3. The "Advanced settings" toggle row, then its fields when expanded.
 //
-// Every toggle/action row's own position is fixed regardless of its
-// group's expand state - only what's nested beneath it grows or shrinks -
-// so toggling one never shifts the cursor onto a different field.
+// Apply isn't one of these rows - it's rendered as its own fixed action
+// bar below the table (see the screenSettings case in View), one cursor
+// position past the last row here (settingsScrollCursor). That keeps it
+// reachable by pressing Down past the end of the list while always
+// staying visible at the bottom of the page, regardless of scroll.
+//
+// Every toggle row's own position is fixed regardless of its group's
+// expand state - only what's nested beneath it grows or shrinks - so
+// toggling one never shifts the cursor onto a different field.
 func (m model) settingsRows() []settingsRow {
 	var plain []settingsRow
 	var network []settingsRow
@@ -67,6 +72,8 @@ func (m model) settingsRows() []settingsRow {
 
 	for _, f := range settingFields {
 		switch {
+		case f.updateScreen:
+			continue // lives on the Update screen instead - see updateVersionsRows
 		case f.advanced:
 			advanced = append(advanced, f)
 		case f.networkSetup:
@@ -80,7 +87,7 @@ func (m model) settingsRows() []settingsRow {
 		}
 	}
 
-	rows := []settingsRow{{isApply: true}, {isNetworkToggle: true}}
+	rows := []settingsRow{{isNetworkToggle: true}}
 	if m.settingsShowNetwork {
 		rows = append(rows, network...)
 	}
@@ -92,6 +99,51 @@ func (m model) settingsRows() []settingsRow {
 		}
 	}
 	return rows
+}
+
+// settingsScrollCursor caps settingsCursor at the last real table row for
+// scroll-window purposes - Apply lives in its own fixed footer below the
+// table (see settingsRows), never inside the scrolling window, so it
+// should never pull the table into scrolling one row further than its
+// content requires.
+func (m model) settingsScrollCursor() int {
+	if last := len(m.settingsRows()) - 1; m.settingsCursor > last {
+		return last
+	}
+	return m.settingsCursor
+}
+
+// updateVersionsRow is one row of the Update screen's landing table:
+// either the ruddervirt-setup row (delegates into the existing
+// checkForUpdateCmd/screenUpdateChecking flow) or one of the component
+// version fields moved out of Settings (settingField.updateScreen).
+type updateVersionsRow struct {
+	isSelfUpdate bool
+	field        settingField
+}
+
+// updateVersionsRows lists the Update screen's rows: ruddervirt-setup
+// first, then every settingField tagged updateScreen, in settingFields'
+// order. Apply isn't one of these rows - same fixed-footer treatment as
+// Settings' Apply (see settingsRows), one cursor position past the last
+// row here.
+func updateVersionsRows() []updateVersionsRow {
+	rows := []updateVersionsRow{{isSelfUpdate: true}}
+	for _, f := range settingFields {
+		if f.updateScreen {
+			rows = append(rows, updateVersionsRow{field: f})
+		}
+	}
+	return rows
+}
+
+// updateVersionsScrollCursor mirrors settingsScrollCursor for the Update
+// screen's own cursor/row list.
+func (m model) updateVersionsScrollCursor() int {
+	if last := len(updateVersionsRows()) - 1; m.updateVersionsCursor > last {
+		return last
+	}
+	return m.updateVersionsCursor
 }
 
 // settingsVisibleRows returns how many setting fields fit in the current
@@ -271,7 +323,11 @@ func (m model) View() string {
 		} else if m.passwordError != "" {
 			s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.passwordError))
 		}
-		s += "\n" + helpStyle.Render("Enter to confirm each field, Esc to cancel.") + "\n"
+		if m.passwordConfirmFocus {
+			s += "\n" + hintBar([2]string{"Enter", "confirm"}, [2]string{"Esc", "back to new password"}) + "\n"
+		} else {
+			s += "\n" + hintBar([2]string{"Enter", "continue"}, [2]string{"Esc", "cancel"}) + "\n"
+		}
 		return s
 
 	case screenUpdateConfirm:
@@ -305,6 +361,167 @@ func (m model) View() string {
 		}
 		return s
 
+	case screenUpdateVersions:
+		if m.updateVersionsPicking {
+			rows := updateVersionsRows()
+			field := rows[m.updateVersionsCursor].field
+			options := m.updateVersionsPickOptions
+
+			width := runewidth.StringWidth(field.label) + 4
+			for _, o := range options {
+				if l := runewidth.StringWidth(o) + 4; l > width {
+					width = l
+				}
+			}
+			termWidth := m.termWidth
+			if termWidth <= 0 {
+				termWidth = 80
+			}
+			if width > termWidth-2 {
+				width = termWidth - 2
+			}
+			if width < 20 {
+				width = 20
+			}
+
+			topBorder := "╭" + strings.Repeat("─", width) + "╮"
+			bottomBorder := "╰" + strings.Repeat("─", width) + "╯"
+
+			s := "\n" + titleStyle.Render("Update") + fmt.Sprintf("\n\nSelect %s:\n\n", field.label)
+
+			visible := m.settingsVisibleRows()
+			start := m.updateVersionsPickScroll
+			end := start + visible
+			if end > len(options) {
+				end = len(options)
+			}
+			if start > end {
+				start = end
+			}
+			if start > 0 {
+				s += helpStyle.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n"
+			}
+
+			s += colorBorders(topBorder) + "\n"
+			for i := start; i < end; i++ {
+				selected := i == m.updateVersionsPickCursor
+				cursor := "  "
+				cell := fitCell(options[i], width-2)
+				if selected {
+					cursor = cursorStyle.Render(">") + " "
+					cell = selectedStyle.Render(cell)
+				}
+				s += fmt.Sprintf("%s%s%s%s\n", colorBorders("│"), cursor, cell, colorBorders("│"))
+			}
+			s += colorBorders(bottomBorder) + "\n"
+			if end < len(options) {
+				s += helpStyle.Render(fmt.Sprintf("  ↓ %d more below", len(options)-end)) + "\n"
+			}
+
+			if m.settingsError != "" {
+				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.settingsError))
+			}
+			s += "\n" + hintBar([2]string{"↑/↓", "navigate"}, [2]string{"Enter", "select"}, [2]string{"Esc", "cancel"}) + "\n"
+			return s
+		}
+
+		rows := updateVersionsRows()
+		total := len(rows)
+
+		rowLabel := func(r updateVersionsRow) string {
+			if r.isSelfUpdate {
+				return "ruddervirt-setup"
+			}
+			return r.field.label
+		}
+		rowValue := func(r updateVersionsRow) string {
+			if r.isSelfUpdate {
+				return version
+			}
+			if r.field.locked != nil {
+				if locked, reason := r.field.locked(&m.cfg); locked {
+					return reason
+				}
+			}
+			return r.field.get(&m.cfg)
+		}
+
+		labelWidth := len("Component")
+		valueWidth := len("Version")
+		for _, r := range rows {
+			if l := runewidth.StringWidth(rowLabel(r)); l > labelWidth {
+				labelWidth = l
+			}
+			if l := runewidth.StringWidth(rowValue(r)); l > valueWidth {
+				valueWidth = l
+			}
+		}
+
+		termWidth := m.termWidth
+		if termWidth <= 0 {
+			termWidth = 80
+		}
+		const tableOverhead = 11 // "│" + cursor(3) + "│ " + " │ " + " │"
+		for labelWidth+valueWidth+tableOverhead > termWidth && valueWidth > 12 {
+			valueWidth--
+		}
+		for labelWidth+valueWidth+tableOverhead > termWidth && labelWidth > 20 {
+			labelWidth--
+		}
+		tableWidth := labelWidth + valueWidth + tableOverhead
+
+		topBorder := "╭───┬" + strings.Repeat("─", labelWidth+2) + "┬" + strings.Repeat("─", valueWidth+2) + "╮"
+		sepBorder := "├───┼" + strings.Repeat("─", labelWidth+2) + "┼" + strings.Repeat("─", valueWidth+2) + "┤"
+		bottomBorder := "╰───┴" + strings.Repeat("─", labelWidth+2) + "┴" + strings.Repeat("─", valueWidth+2) + "╯"
+
+		s := "\n" + titleStyle.Render("Update") + "\n\n"
+
+		visible := m.settingsVisibleRows()
+		start := m.updateVersionsScroll
+		end := start + visible
+		if end > total {
+			end = total
+		}
+		if start > end {
+			start = end
+		}
+		if start > 0 {
+			s += helpStyle.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n"
+		}
+
+		s += colorBorders(topBorder) + "\n"
+		s += colorBorders(fmt.Sprintf("│   │ %s │ %s │", fitCell("Component", labelWidth), fitCell("Version", valueWidth))) + "\n"
+		s += colorBorders(sepBorder) + "\n"
+		for i := start; i < end; i++ {
+			selected := i == m.updateVersionsCursor
+			r := rows[i]
+			label := fitCell(rowLabel(r), labelWidth)
+			value := fitCell(rowValue(r), valueWidth)
+			if selected {
+				label = selectedStyle.Render(label)
+				value = selectedStyle.Render(value)
+			}
+			s += fmt.Sprintf("%s%s%s %s %s %s %s\n", colorBorders("│"), cursorArrow(selected), colorBorders("│"), label, colorBorders("│"), value, colorBorders("│"))
+		}
+		s += colorBorders(bottomBorder) + "\n"
+
+		if end < total {
+			s += helpStyle.Render(fmt.Sprintf("  ↓ %d more below", total-end)) + "\n"
+		}
+
+		// Apply upgrades: same fixed-footer treatment as Settings' Apply
+		// (see settingsRows) - pushes whatever versions are picked above
+		// through the same install pipeline.
+		s += renderApplyBar(tableWidth, "Apply upgrades", m.updateVersionsCursor == total)
+
+		if m.settingsSaving {
+			s += "\n" + helpStyle.Render("Saving...") + "\n"
+		} else if m.settingsError != "" {
+			s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.settingsError))
+		}
+		s += "\n" + hintBar([2]string{"↑/↓", "navigate"}, [2]string{"Enter", "check / choose / apply"}, [2]string{"Esc", "back"}) + "\n"
+		return s
+
 	case screenSettings:
 		if m.settingsPicking {
 			field := m.settingsRows()[m.settingsCursor].field
@@ -327,8 +544,8 @@ func (m model) View() string {
 				width = 20
 			}
 
-			topBorder := "┌" + strings.Repeat("─", width) + "┐"
-			bottomBorder := "└" + strings.Repeat("─", width) + "┘"
+			topBorder := "╭" + strings.Repeat("─", width) + "╮"
+			bottomBorder := "╰" + strings.Repeat("─", width) + "╯"
 
 			s := "\n" + titleStyle.Render("Settings") + fmt.Sprintf("\n\nSelect %s:\n\n", field.label)
 
@@ -364,7 +581,7 @@ func (m model) View() string {
 			if m.settingsError != "" {
 				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.settingsError))
 			}
-			s += "\n" + helpStyle.Render("Enter to select, Esc to cancel.") + "\n"
+			s += "\n" + hintBar([2]string{"↑/↓", "navigate"}, [2]string{"Enter", "select"}, [2]string{"Esc", "cancel"}) + "\n"
 			return s
 		}
 
@@ -377,8 +594,6 @@ func (m model) View() string {
 				return networkSetupLabel(m.settingsShowNetwork)
 			case r.isToggle:
 				return advancedSettingsLabel(m.settingsShowAdvanced)
-			case r.isApply:
-				return "▶ Apply (install/re-apply)"
 			case r.nested:
 				return "  " + r.field.label
 			default:
@@ -386,7 +601,7 @@ func (m model) View() string {
 			}
 		}
 		rowValue := func(r settingsRow) string {
-			if r.isNetworkToggle || r.isToggle || r.isApply {
+			if r.isNetworkToggle || r.isToggle {
 				return ""
 			}
 			if r.field.locked != nil {
@@ -419,10 +634,11 @@ func (m model) View() string {
 		for labelWidth+valueWidth+tableOverhead > termWidth && labelWidth > 20 {
 			labelWidth--
 		}
+		tableWidth := labelWidth + valueWidth + tableOverhead
 
-		topBorder := "┌───┬" + strings.Repeat("─", labelWidth+2) + "┬" + strings.Repeat("─", valueWidth+2) + "┐"
+		topBorder := "╭───┬" + strings.Repeat("─", labelWidth+2) + "┬" + strings.Repeat("─", valueWidth+2) + "╮"
 		sepBorder := "├───┼" + strings.Repeat("─", labelWidth+2) + "┼" + strings.Repeat("─", valueWidth+2) + "┤"
-		bottomBorder := "└───┴" + strings.Repeat("─", labelWidth+2) + "┴" + strings.Repeat("─", valueWidth+2) + "┘"
+		bottomBorder := "╰───┴" + strings.Repeat("─", labelWidth+2) + "┴" + strings.Repeat("─", valueWidth+2) + "╯"
 
 		s := "\n" + titleStyle.Render("Settings") + "\n\n"
 
@@ -450,6 +666,8 @@ func (m model) View() string {
 			if selected {
 				label = selectedStyle.Render(label)
 				value = selectedStyle.Render(value)
+			} else if r.isNetworkToggle || r.isToggle {
+				label = colorToggleArrow(label)
 			}
 			s += fmt.Sprintf("%s%s%s %s %s %s %s\n", colorBorders("│"), cursorArrow(selected), colorBorders("│"), label, colorBorders("│"), value, colorBorders("│"))
 		}
@@ -459,19 +677,24 @@ func (m model) View() string {
 			s += helpStyle.Render(fmt.Sprintf("  ↓ %d more below", total-end)) + "\n"
 		}
 
+		// Apply: a fixed action bar below the table, not one of its rows -
+		// always visible at the bottom of the page regardless of scroll.
+		// One cursor position past the last real row selects it.
+		s += renderApplyBar(tableWidth, "Apply (install / re-apply)", m.settingsCursor == total)
+
 		if m.settingsEditing {
 			s += fmt.Sprintf("\nEditing %s:\n  %s\n", rows[m.settingsCursor].field.label, m.settingsInput.View())
 			if m.settingsError != "" {
 				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.settingsError))
 			}
-			s += "\n" + helpStyle.Render("Enter to save, Esc to cancel.") + "\n"
+			s += "\n" + hintBar([2]string{"Enter", "save"}, [2]string{"Esc", "cancel"}) + "\n"
 		} else {
 			if m.settingsSaving {
 				s += "\n" + helpStyle.Render("Saving...") + "\n"
 			} else if m.settingsError != "" {
 				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error saving: "+m.settingsError))
 			}
-			s += "\n" + helpStyle.Render("Up/Down to select, Enter to edit/choose, Esc to go back.") + "\n"
+			s += "\n" + hintBar([2]string{"↑/↓", "navigate"}, [2]string{"Enter", "edit / choose / apply"}, [2]string{"Esc", "back"}) + "\n"
 		}
 		return s
 

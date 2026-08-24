@@ -14,7 +14,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
 		m.termHeight = msg.Height
-		m.settingsScroll = clampScroll(m.settingsScroll, m.settingsCursor, m.settingsVisibleRows())
+		m.settingsScroll = clampScroll(m.settingsScroll, m.settingsScrollCursor(), m.settingsVisibleRows())
+		m.updateVersionsScroll = clampScroll(m.updateVersionsScroll, m.updateVersionsScrollCursor(), m.settingsVisibleRows())
 		return m, nil
 
 	case k3sVersionsFetchedMsg:
@@ -163,7 +164,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.passwordNewInput.Blur()
 		m.passwordConfirmInput.Blur()
 		m.current = screenSettings
-		m.settingsCursor = 1
+		m.settingsCursor = 0
 		m.settingsScroll = 0
 		m.settingsEditing = false
 		m.settingsShowAdvanced = false
@@ -207,10 +208,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.settingsInput.Blur()
 				return m, nil
 			}
+			if m.current == screenUpdateVersions && m.updateVersionsPicking {
+				m.updateVersionsPicking = false
+				m.settingsError = ""
+				return m, nil
+			}
+			if m.current == screenPasswordChange && m.passwordConfirmFocus {
+				// Step back to the new-password field instead of falling
+				// through to the generic reset below - otherwise a typo
+				// caught only at the confirm step (e.g. it not matching)
+				// had no way back to fix the field that's actually wrong,
+				// short of abandoning the whole flow. The confirm value is
+				// cleared since it was only ever validated against
+				// whatever the new field held at the time.
+				m.passwordConfirmInput.SetValue("")
+				m.passwordConfirmInput.Blur()
+				m.passwordNewInput.CursorEnd()
+				m.passwordNewInput.Focus()
+				m.passwordConfirmFocus = false
+				m.passwordError = ""
+				return m, nil
+			}
 			if m.current == screenInstallConfirm {
-				// Cancel back into configure/settings, not all the way
-				// out to the main menu - this was reached from there.
-				m.current = screenSettings
+				// Cancel back to wherever Apply was pressed from (Settings
+				// or the Update screen - see installConfirmOrigin), not
+				// all the way out to the main menu.
+				m.current = m.installConfirmOrigin
 				m.installConfirmInput.SetValue("")
 				m.installConfirmInput.Blur()
 				m.installConfirmError = ""
@@ -218,13 +241,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.current == screenUpdateConfirm {
-				// Cancel back to the main menu, not settings - "update"
-				// is reached directly from there, unlike Apply.
-				m.current = screenMenu
+				// Cancel back into the Update screen, not all the way out
+				// to the main menu - same reasoning as screenInstallConfirm
+				// below, since this is reached from there now too.
+				m.current = screenUpdateVersions
 				m.updateConfirmInput.SetValue("")
 				m.updateConfirmInput.Blur()
 				m.updateConfirmError = ""
-				return m, fetchServiceStatusesCmd(m.cfg)
+				return m, nil
 			}
 			m.current = screenMenu
 			m.input = ""
@@ -236,6 +260,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.installFailed = false
 			m.installCh = nil
 			m.installPlanLines = nil
+			m.installConfirmOrigin = screenMenu
 			m.settingsCursor = 0
 			m.settingsScroll = 0
 			m.settingsEditing = false
@@ -248,6 +273,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.settingsError = ""
 			m.settingsInput.SetValue("")
 			m.settingsInput.Blur()
+			m.updateVersionsCursor = 0
+			m.updateVersionsScroll = 0
+			m.updateVersionsPicking = false
+			m.updateVersionsPickCursor = 0
+			m.updateVersionsPickScroll = 0
 			m.installConfirmInput.SetValue("")
 			m.installConfirmInput.Blur()
 			m.installConfirmError = ""
@@ -286,7 +316,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.settingsCursor > 0 {
 					m.settingsCursor--
 				}
-				m.settingsScroll = clampScroll(m.settingsScroll, m.settingsCursor, m.settingsVisibleRows())
+				m.settingsScroll = clampScroll(m.settingsScroll, m.settingsScrollCursor(), m.settingsVisibleRows())
+				return m, nil
+			}
+			if m.current == screenUpdateVersions && m.updateVersionsPicking {
+				if m.updateVersionsPickCursor > 0 {
+					m.updateVersionsPickCursor--
+				}
+				m.updateVersionsPickScroll = clampScroll(m.updateVersionsPickScroll, m.updateVersionsPickCursor, m.settingsVisibleRows())
+				return m, nil
+			}
+			if m.current == screenUpdateVersions {
+				if m.updateVersionsCursor > 0 {
+					m.updateVersionsCursor--
+				}
+				m.updateVersionsScroll = clampScroll(m.updateVersionsScroll, m.updateVersionsScrollCursor(), m.settingsVisibleRows())
 				return m, nil
 			}
 
@@ -299,10 +343,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.current == screenSettings && !m.settingsEditing {
-				if m.settingsCursor < len(m.settingsRows())-1 {
+				// len(m.settingsRows()), not -1: one cursor position past
+				// the last real row lands on Apply, the fixed action bar
+				// pinned below the table (see settingsScrollCursor).
+				if m.settingsCursor < len(m.settingsRows()) {
 					m.settingsCursor++
 				}
-				m.settingsScroll = clampScroll(m.settingsScroll, m.settingsCursor, m.settingsVisibleRows())
+				m.settingsScroll = clampScroll(m.settingsScroll, m.settingsScrollCursor(), m.settingsVisibleRows())
+				return m, nil
+			}
+			if m.current == screenUpdateVersions && m.updateVersionsPicking {
+				if m.updateVersionsPickCursor < len(m.updateVersionsPickOptions)-1 {
+					m.updateVersionsPickCursor++
+				}
+				m.updateVersionsPickScroll = clampScroll(m.updateVersionsPickScroll, m.updateVersionsPickCursor, m.settingsVisibleRows())
+				return m, nil
+			}
+			if m.current == screenUpdateVersions {
+				// len(updateVersionsRows()), not -1: one cursor position
+				// past the last real row lands on Apply upgrades (see
+				// updateVersionsScrollCursor).
+				if m.updateVersionsCursor < len(updateVersionsRows()) {
+					m.updateVersionsCursor++
+				}
+				m.updateVersionsScroll = clampScroll(m.updateVersionsScroll, m.updateVersionsScrollCursor(), m.settingsVisibleRows())
 				return m, nil
 			}
 
@@ -316,11 +380,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					case "configure":
 						if m.cfg.System.PasswordChanged {
 							m.current = screenSettings
-							// Land on the network toggle (row 1), not Apply
-							// (row 0) - Apply is pinned at the top for
-							// visibility, not meant to grab the cursor by
-							// default.
-							m.settingsCursor = 1
+							// Land on the first real field row - Apply now
+							// lives in its own fixed footer below the
+							// table (see settingsScrollCursor), not at the
+							// top of the row list.
+							m.settingsCursor = 0
 							m.settingsScroll = 0
 							m.settingsEditing = false
 							m.settingsShowAdvanced = false
@@ -341,6 +405,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					case "k9s":
 						m.k9sMode = true
 						return m, tea.Quit
+					case "update":
+						// Lands on screenUpdateVersions, not straight into
+						// the ruddervirt-setup check - that's now just the
+						// first row there, alongside the component
+						// versions moved out of Settings, so every upgrade
+						// happens from one place (see updateVersionsRows).
+						m.current = screenUpdateVersions
+						m.updateVersionsCursor = 0
+						m.updateVersionsScroll = 0
+						m.updateVersionsPicking = false
+						m.settingsSaving = false
+						m.settingsError = ""
+						return m, nil
 					default:
 						m.result = label
 						m.current = screenResult
@@ -390,7 +467,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.settingsError = ""
 					return m, saveSettingCmd(m.cfg)
 				}
-				row := m.settingsRows()[m.settingsCursor]
+				rows := m.settingsRows()
+				if m.settingsCursor == len(rows) {
+					// Apply - the fixed footer below the table, one cursor
+					// position past the last real row (see
+					// settingsScrollCursor).
+					if err := resolveNetworkForInstall(&m.cfg); err != nil {
+						m.settingsError = err.Error()
+						return m, nil
+					}
+					m.current = screenInstallPlanning
+					m.installConfirmOrigin = screenSettings
+					m.installPlanLines = nil
+					return m, computeInstallPlanCmd(m.cfg)
+				}
+				row := rows[m.settingsCursor]
 				if row.isNetworkToggle {
 					m.settingsShowNetwork = !m.settingsShowNetwork
 					return m, nil
@@ -401,15 +492,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// rows after it - so the cursor just stays put.
 					m.settingsShowAdvanced = !m.settingsShowAdvanced
 					return m, nil
-				}
-				if row.isApply {
-					if err := resolveNetworkForInstall(&m.cfg); err != nil {
-						m.settingsError = err.Error()
-						return m, nil
-					}
-					m.current = screenInstallPlanning
-					m.installPlanLines = nil
-					return m, computeInstallPlanCmd(m.cfg)
 				}
 				field := row.field
 				if field.locked != nil {
@@ -454,10 +536,82 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.settingsInput.Focus()
 				m.settingsEditing = true
 				m.settingsError = ""
+			} else if m.current == screenUpdateVersions {
+				rows := updateVersionsRows()
+				if m.updateVersionsPicking {
+					field := rows[m.updateVersionsCursor].field
+					chosen := m.updateVersionsPickOptions[m.updateVersionsPickCursor]
+					if err := field.set(&m.cfg, chosen); err != nil {
+						m.settingsError = err.Error()
+						return m, nil
+					}
+					m.updateVersionsPicking = false
+					m.settingsSaving = true
+					m.settingsError = ""
+					return m, saveSettingCmd(m.cfg)
+				}
+				if m.updateVersionsCursor == len(rows) {
+					// Apply upgrades - the fixed footer below the table,
+					// one cursor position past the last real row (see
+					// updateVersionsScrollCursor). Same install pipeline
+					// Settings' Apply uses.
+					if err := resolveNetworkForInstall(&m.cfg); err != nil {
+						m.settingsError = err.Error()
+						return m, nil
+					}
+					m.current = screenInstallPlanning
+					m.installConfirmOrigin = screenUpdateVersions
+					m.installPlanLines = nil
+					return m, computeInstallPlanCmd(m.cfg)
+				}
+				row := rows[m.updateVersionsCursor]
+				if row.isSelfUpdate {
+					m.current = screenUpdateChecking
+					m.updateChecking = true
+					m.updateCheckErr = ""
+					return m, checkForUpdateCmd()
+				}
+				field := row.field
+				if field.locked != nil {
+					if locked, reason := field.locked(&m.cfg); locked {
+						m.settingsError = reason
+						return m, nil
+					}
+				}
+				// Every updateScreen field is picker-only (all four
+				// component-version fields set options), so this always
+				// has something to open.
+				options := field.options(&m.cfg, versionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions})
+				if len(options) == 0 {
+					return m, nil // nothing to pick yet - e.g. still fetching, or none detected
+				}
+				m.updateVersionsPickOptions = options
+				m.updateVersionsPickCursor = 0
+				if current := field.get(&m.cfg); current != "" {
+					for i, o := range options {
+						if o == current {
+							m.updateVersionsPickCursor = i
+							break
+						}
+					}
+				}
+				m.updateVersionsPickScroll = clampScroll(0, m.updateVersionsPickCursor, m.settingsVisibleRows())
+				m.updateVersionsPicking = true
+				m.settingsError = ""
 			} else if m.current == screenPasswordChange {
 				if !m.passwordConfirmFocus {
+					// Validated here, before the confirm field ever gets
+					// focus - so a bad password (empty or too short) is
+					// caught while the operator can still just fix it and
+					// press Enter again, instead of only surfacing once
+					// they've moved on to confirm (see the KeyEsc case
+					// below for the way back from there).
 					if m.passwordNewInput.Value() == "" {
 						m.passwordError = "password must not be empty"
+						return m, nil
+					}
+					if len(m.passwordNewInput.Value()) < minAdminPasswordLength {
+						m.passwordError = fmt.Sprintf("password must be at least %d characters", minAdminPasswordLength)
 						return m, nil
 					}
 					m.passwordNewInput.Blur()
@@ -467,10 +621,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				newVal := m.passwordNewInput.Value()
-				if len(newVal) < minAdminPasswordLength {
-					m.passwordError = fmt.Sprintf("password must be at least %d characters", minAdminPasswordLength)
-					return m, nil
-				}
 				if newVal != m.passwordConfirmInput.Value() {
 					m.passwordError = "passwords do not match"
 					m.passwordConfirmInput.SetValue("")

@@ -236,6 +236,11 @@ type settingField struct {
 	advanced     bool // hidden behind the Settings screen's "Advanced settings" toggle
 	staticOnly   bool // only shown (nested under "IP addressing") when Network.Addressing == "static"
 	networkSetup bool // hidden behind the "Local physical network setup" toggle
+	// updateScreen moves the field out of Settings entirely and onto the
+	// Update screen instead (see updateVersionsRows in view.go) - for the
+	// four component-version fields, so "configure" only has the
+	// straightforward settings and every upgrade lives in one place.
+	updateScreen bool
 	// locked, if non-nil, can make the field temporarily read-only: Enter
 	// becomes a no-op and the row shows the returned reason instead of
 	// letting the operator edit/pick a new value. nil (the default for
@@ -397,7 +402,7 @@ var settingFields = []settingField{
 		},
 	},
 	{
-		key: "versions.k3s", label: "k3s version",
+		key: "versions.k3s", label: "k3s version", updateScreen: true,
 		get: func(c *Config) string { return c.Versions.K3s },
 		options: func(c *Config, versions versionCache) []string {
 			// k3s doesn't support downgrades, so never offer anything
@@ -422,7 +427,7 @@ var settingFields = []settingField{
 		},
 	},
 	{
-		key: "versions.kubevirt", label: "KubeVirt version",
+		key: "versions.kubevirt", label: "KubeVirt version", updateScreen: true,
 		get: func(c *Config) string { return c.Versions.KubeVirt },
 		options: func(c *Config, versions versionCache) []string {
 			return supportedVersionsAtLeast(supportedVersions.KubeVirt, c.Versions.KubeVirt)
@@ -433,7 +438,7 @@ var settingFields = []settingField{
 		},
 	},
 	{
-		key: "versions.cdi", label: "CDI version",
+		key: "versions.cdi", label: "CDI version", updateScreen: true,
 		get: func(c *Config) string { return c.Versions.CDI },
 		options: func(c *Config, versions versionCache) []string {
 			return supportedVersionsAtLeast(supportedVersions.CDI, c.Versions.CDI)
@@ -444,7 +449,7 @@ var settingFields = []settingField{
 		},
 	},
 	{
-		key: "versions.aileron", label: "Aileron version",
+		key: "versions.aileron", label: "Aileron version", updateScreen: true,
 		get: func(c *Config) string { return c.Versions.Aileron },
 		options: func(c *Config, versions versionCache) []string {
 			// Aileron ships too frequently for a hand-curated list (unlike

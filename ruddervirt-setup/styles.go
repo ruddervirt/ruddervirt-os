@@ -1,6 +1,11 @@
 package main
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
+)
 
 // Color palette - AdaptiveColor picks the Light or Dark value based on the
 // terminal's reported background, so the TUI reads well over both a light
@@ -27,7 +32,64 @@ var (
 	borderStyle   = lipgloss.NewStyle().Foreground(colorBorder)
 	menuKeyStyle  = lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
 	promptStyle   = lipgloss.NewStyle().Bold(true).Foreground(colorPrimary)
+
+	// ctaStyle/ctaSelectedStyle/ctaBorderStyle style the Settings screen's
+	// Apply action bar - a call-to-action button, not just another table
+	// row, so it gets its own green accent rather than the primary/accent
+	// colors used for regular selection.
+	ctaStyle         = lipgloss.NewStyle().Bold(true).Foreground(colorSuccess)
+	ctaSelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(colorSuccess)
+	ctaBorderStyle   = lipgloss.NewStyle().Foreground(colorSuccess)
+
+	// toggleStyle colors a collapsible row's leading ▶/▼ disclosure
+	// triangle, marking it as expandable at a glance even when it isn't
+	// the currently selected row.
+	toggleStyle = lipgloss.NewStyle().Foreground(colorAccent)
 )
+
+// colorToggleArrow re-colors just the first rune of s (a settings row
+// label's leading ▶/▼) with toggleStyle, leaving the rest of the label
+// plain - used instead of styling the whole row, which selectedStyle
+// already owns when the row is the current cursor position.
+func colorToggleArrow(s string) string {
+	r := []rune(s)
+	if len(r) == 0 {
+		return s
+	}
+	return toggleStyle.Render(string(r[0])) + string(r[1:])
+}
+
+// renderApplyBar renders the fixed action-bar footer shared by the
+// Settings and Update screens - a bordered, centered call-to-action
+// button below their tables, tableWidth columns wide (matching the
+// table's own outer width) and filled solid when selected.
+func renderApplyBar(tableWidth int, label string, selected bool) string {
+	inner := tableWidth - 2
+	text := "▶  " + label
+	if pad := inner - runewidth.StringWidth(text); pad > 0 {
+		left := pad / 2
+		text = strings.Repeat(" ", left) + text + strings.Repeat(" ", pad-left)
+	}
+	content := ctaStyle.Render(text)
+	if selected {
+		content = ctaSelectedStyle.Render(text)
+	}
+	s := "\n" + ctaBorderStyle.Render("╭"+strings.Repeat("─", inner)+"╮") + "\n"
+	s += ctaBorderStyle.Render("│") + content + ctaBorderStyle.Render("│") + "\n"
+	s += ctaBorderStyle.Render("╰"+strings.Repeat("─", inner)+"╯") + "\n"
+	return s
+}
+
+// hintBar renders a bottom-of-screen key cheat sheet, e.g.
+// hintBar([2]string{"Enter", "edit"}, [2]string{"Esc", "cancel"}) ->
+// "Enter edit  •  Esc cancel", with each key bolded and the rest muted.
+func hintBar(pairs ...[2]string) string {
+	parts := make([]string, len(pairs))
+	for i, p := range pairs {
+		parts[i] = menuKeyStyle.Render(p[0]) + " " + helpStyle.Render(p[1])
+	}
+	return strings.Join(parts, helpStyle.Render("  •  "))
+}
 
 // colorBorders re-colors every box-drawing character in s - used on table
 // rows that mix plain content with "│" column separators, since styling

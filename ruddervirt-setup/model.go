@@ -16,6 +16,7 @@ const (
 	screenSettings
 	screenInstallPlanning
 	screenInstallConfirm
+	screenUpdateVersions
 	screenUpdateChecking
 	screenUpdateConfirm
 	screenUpdate
@@ -51,6 +52,12 @@ type model struct {
 	installFailed    bool
 	installCh        chan tea.Msg
 	installPlanLines []string
+	// installConfirmOrigin remembers which screen's Apply button started
+	// screenInstallPlanning/screenInstallConfirm - both Settings' Apply and
+	// the Update screen's Apply upgrades funnel into this same confirm
+	// flow, so canceling (Esc) needs to know which one to return to
+	// instead of always assuming Settings.
+	installConfirmOrigin screen
 
 	cfg                  Config
 	settingsCursor       int
@@ -71,6 +78,20 @@ type model struct {
 
 	installConfirmInput textinput.Model
 	installConfirmError string
+
+	// screenUpdateVersions - "update" menu's landing page: a
+	// ruddervirt-setup row (delegates into the updateChecking/... flow
+	// below) plus the component version fields moved out of Settings
+	// (settingField.updateScreen), all upgraded together via the same
+	// install pipeline Settings' Apply uses. Same shape as the
+	// settings*/settingsPick* fields above, just for this screen's rows
+	// instead of settingsRows().
+	updateVersionsCursor      int
+	updateVersionsScroll      int
+	updateVersionsPicking     bool
+	updateVersionsPickCursor  int
+	updateVersionsPickScroll  int
+	updateVersionsPickOptions []string
 
 	updateChecking      bool
 	updateCheckErr      string

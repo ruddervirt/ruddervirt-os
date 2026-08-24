@@ -3,19 +3,19 @@ package main
 import "testing"
 
 func TestNetworkSetupLabel(t *testing.T) {
-	if got := networkSetupLabel(false); got != "▸ Local physical network setup" {
+	if got := networkSetupLabel(false); got != "▶ Local physical network setup" {
 		t.Errorf("networkSetupLabel(false) = %q", got)
 	}
-	if got := networkSetupLabel(true); got != "▾ Local physical network setup" {
+	if got := networkSetupLabel(true); got != "▼ Local physical network setup" {
 		t.Errorf("networkSetupLabel(true) = %q", got)
 	}
 }
 
 func TestAdvancedSettingsLabel(t *testing.T) {
-	if got := advancedSettingsLabel(false); got != "▸ Advanced settings" {
+	if got := advancedSettingsLabel(false); got != "▶ Advanced settings" {
 		t.Errorf("advancedSettingsLabel(false) = %q", got)
 	}
-	if got := advancedSettingsLabel(true); got != "▾ Advanced settings" {
+	if got := advancedSettingsLabel(true); got != "▼ Advanced settings" {
 		t.Errorf("advancedSettingsLabel(true) = %q", got)
 	}
 }
@@ -59,15 +59,12 @@ func TestFitCell(t *testing.T) {
 func TestSettingsRows(t *testing.T) {
 	base := model{cfg: Config{Network: NetworkConfig{Addressing: "dhcp"}}}
 
-	t.Run("collapsed groups show only apply/toggle rows plus plain fields", func(t *testing.T) {
+	t.Run("collapsed groups show only toggle rows plus plain fields - Apply isn't one of these rows", func(t *testing.T) {
 		rows := base.settingsRows()
-		if !rows[0].isApply {
-			t.Fatalf("rows[0].isApply = false, want true")
+		if !rows[0].isNetworkToggle {
+			t.Fatalf("rows[0].isNetworkToggle = false, want true")
 		}
-		if !rows[1].isNetworkToggle {
-			t.Fatalf("rows[1].isNetworkToggle = false, want true")
-		}
-		for _, r := range rows[2:] {
+		for _, r := range rows[1:] {
 			if r.nested {
 				t.Errorf("expected no nested rows while collapsed, got nested row for key %q", r.field.key)
 			}
