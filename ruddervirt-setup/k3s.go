@@ -18,8 +18,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const defaultK3sVersion = "v1.34.5+k3s1"
-
 var k3sVersionPattern = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)(?:-rc(\d+))?\+k3s(\d+)$`)
 
 type parsedK3sVersion struct {
@@ -638,15 +636,37 @@ func prepareK3sStep(cfg Config, ch chan<- tea.Msg) {
 		}
 	}
 
-	manifests := []string{
-		"multus.yaml",
-		snapshotClassManifest,
+	// The rke2-multus chart applied just below doesn't bundle the
+	// NetworkAttachmentDefinition CRD (confirmed against the chart tarball
+	// from rke2-charts.rancher.io: no crds/ directory, no
+	// CustomResourceDefinition template anywhere in it) - on real RKE2 it
+	// ships as one of RKE2's own built-in static manifests, applied
+	// separately from the chart, but k3s has no equivalent, so
+	// ruddervirt-setup applies it directly. See manifests/multus-crd.yaml
+	// for provenance. Aileron's chart applies its own
+	// NetworkAttachmentDefinition ("egress-external"), so this must be
+	// Established before applyAileron runs below, or its helm install fails
+	// with "no matches for kind NetworkAttachmentDefinition".
+	const multusCRD = "network-attachment-definitions.k8s.cni.cncf.io"
+	ch <- stepOutputMsg("Applying multus CRDs...")
+	if err := runStreamed(ch, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/multus-crd.yaml"); err != nil {
+		fail(err)
+		return
 	}
-	for _, m := range manifests {
-		if err := runStreamed(ch, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/"+m); err != nil {
-			fail(err)
-			return
-		}
+	if err := runStreamed(ch, kubectlBin, "wait", "--for=condition=Established", "crd/"+multusCRD, "--timeout=60s"); err != nil {
+		fail(err)
+		return
+	}
+
+	ch <- stepOutputMsg("Applying multus...")
+	if err := runStreamed(ch, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/multus.yaml"); err != nil {
+		fail(err)
+		return
+	}
+
+	if err := runStreamed(ch, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/"+snapshotClassManifest); err != nil {
+		fail(err)
+		return
 	}
 
 	aileronVersion := strings.TrimSpace(cfg.Versions.Aileron)

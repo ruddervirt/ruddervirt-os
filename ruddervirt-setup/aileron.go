@@ -12,10 +12,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// defaultAileronVersion is the fallback used before the live fetch
-// completes (or if it fails), same role as defaultK3sVersion.
-const defaultAileronVersion = "v0.0.25"
-
 // fetchAileronVersions lists ruddervirt/aileron release tags from GitHub,
 // newest first, for the Settings screen's version picker - same shape as
 // fetchK3sVersions (k3s.go:88-144), but using the plain vMAJOR.MINOR.PATCH

@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+k3s: v1.36.3+k3s1
+aileron: v0.0.40
+kubevirt: v1.8.2
+cdi: v1.64.0

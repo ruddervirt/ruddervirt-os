@@ -1,4 +1,4 @@
-module golang-tui
+module ruddervirt-setup
 
 go 1.25.11
 

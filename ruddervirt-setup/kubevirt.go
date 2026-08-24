@@ -15,11 +15,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	defaultKubeVirtVersion = "v1.8.2"
-	defaultCDIVersion      = "v1.64.0"
-)
-
 //go:embed supported-versions.yaml
 var supportedVersionsYAML []byte
 
@@ -39,7 +34,7 @@ func init() {
 	// is a build-time bug that should fail loudly rather than silently
 	// leave the version pickers empty.
 	if err := yaml.Unmarshal(supportedVersionsYAML, &supportedVersions); err != nil {
-		panic(fmt.Sprintf("tui/supported-versions.yaml failed to parse: %v", err))
+		panic(fmt.Sprintf("ruddervirt-setup/supported-versions.yaml failed to parse: %v", err))
 	}
 }
 
