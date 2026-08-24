@@ -20,16 +20,8 @@ Boot your server from the USB drive. The installer walks you through choosing a 
 
 ### 3. Set up the solution
 
-Fresh off the installer, the system boots to a minimal base — the full RudderVirt solution (the Kubernetes cluster, virtualization stack, storage, and networking) isn't installed yet. Log in as `admin` (password `ruddervirt`), either on the console or over SSH. You'll land in the `ruddervirt-setup` menu automatically:
+Log in as `admin` (password `ruddervirt`), either on the console or over SSH. Use the setup menu to configure the solution how you wish.
 
-```
-  1) configure  View/edit settings, then install (or re-apply) the solution
-  2) k9s        Launch the k9s cluster dashboard
-  3) shell      Drop to a bash shell
-  4) logout     End this session
-```
-
-Pick `configure` to review and edit settings (network, version, update, storage), then select "Apply" at the bottom to install the solution. The installer auto-detects your internet-facing network interface; if it can't find one, or you'd rather use a static IP instead of DHCP, set that here first — "Apply" won't proceed until it's resolved.
 ### Target Hardware Requirements
 
 | Component | Minimum | Recommended |
