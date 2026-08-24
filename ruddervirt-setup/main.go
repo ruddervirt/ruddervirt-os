@@ -14,8 +14,27 @@ func main() {
 	// when a login shell starts inside one of the runShell() sessions below.
 	os.Setenv("RUDDERVIRT_SHELL", "1")
 
+	opts := programOptions()
+	firstRun := true
 	for {
-		p := tea.NewProgram(initialModel())
+		im := initialModel()
+		if !firstRun && im.current == screenPasswordCheck {
+			// initialModel forces the password-change flow whenever the
+			// password is still unchanged - right for this process's
+			// true first launch, but this loop also rebuilds a fresh
+			// model every time control returns here after handing off to
+			// k9s/shell/etc. Without this override, skipping the check
+			// (Ctrl+S on screenPasswordChange) instead of actually
+			// changing the password would force the operator straight
+			// back through it every single time they used k9s or shell,
+			// since the password would still be unchanged on the very
+			// next loop iteration. Land on the menu instead - selecting
+			// "configure" still re-checks and re-prompts as needed.
+			im.current = screenMenu
+		}
+		firstRun = false
+
+		p := tea.NewProgram(im, opts...)
 		m, err := p.Run()
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -61,16 +80,48 @@ func runShell() {
 // an explicit --kubeconfig since k9s - unlike `k3s kubectl` - has no
 // built-in default pointing at /etc/rancher/k3s/k3s.yaml, and setting
 // KUBECONFIG here wouldn't survive runPrivileged's sudo wrapping anyway.
+//
+// -A (all namespaces) is what actually fixes k9s "showing up blank": its
+// default namespace is whatever the kubeconfig context points at (usually
+// "default"), which on this appliance normally has nothing running in it -
+// everything lives in kube-system/kubevirt/rook-ceph/etc. ensureK9sViewsConfig
+// pairs with it, sorting the resulting list by namespace instead of k9s's
+// own default order.
 func runK9s() {
+	ensureK9sViewsConfig()
 	fmt.Println("\nLaunching k9s. Press ctrl+c or type \":quit\" to return to the menu.")
 	// Built directly (not via runPrivileged/DefaultRunner) since k9s needs a
 	// live *exec.Cmd for interactive TTY passthrough - not something
 	// CommandRunner's fakeable, buffered-output shape supports, nor
 	// something this ever needs to be faked in a test.
-	name, args := sudoArgs(true, "k9s", "--kubeconfig", "/etc/rancher/k3s/k3s.yaml")
+	name, args := sudoArgs(true, "k9s", "--kubeconfig", "/etc/rancher/k3s/k3s.yaml", "-A")
 	cmd := exec.Command(name, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	_ = cmd.Run()
+}
+
+// k9sViewsConfigPath is k9s's per-resource view/sort config file
+// ($XDG_CONFIG_HOME/k9s/views.yaml). runK9s always launches k9s as root
+// (via sudo, which resets HOME to the target user's home by default), so
+// this is root's config dir, not the invoking admin user's.
+const k9sViewsConfigPath = "/root/.config/k9s/views.yaml"
+
+// k9sViewsConfig sorts the pod view - what k9s lands on at launch - by
+// namespace. See the schema at
+// https://github.com/derailed/k9s/blob/master/internal/config/views.go.
+const k9sViewsConfig = `views:
+  v1/pods:
+    sortColumn: NAMESPACE:asc
+`
+
+// ensureK9sViewsConfig writes k9sViewsConfig the first time k9s is
+// launched, and never after - so an operator who later customizes their
+// own views.yaml never has it silently overwritten.
+func ensureK9sViewsConfig() {
+	if runPrivileged("/usr/bin/test", "-f", k9sViewsConfigPath).Run() == nil {
+		return
+	}
+	_ = writePrivileged(k9sViewsConfigPath, []byte(k9sViewsConfig))
 }

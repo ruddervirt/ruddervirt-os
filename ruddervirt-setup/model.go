@@ -45,6 +45,10 @@ type model struct {
 	result       string
 	current      screen
 	resultSource string
+	// menuCursor is the main menu's arrow-key selection, an alternative to
+	// typing a number/word into input - see menuOrder (view.go). Enter
+	// submits input if it's non-empty, otherwise menuOrder[menuCursor].
+	menuCursor int
 
 	installStepIdx   int
 	installLogs      []string
@@ -193,7 +197,7 @@ func initialModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink, fetchK3sVersionsCmd(), fetchAileronVersionsCmd(), fetchServiceStatusesCmd(m.cfg), tickServiceStatusCmd()}
+	cmds := []tea.Cmd{textinput.Blink, fetchK3sVersionsCmd(), fetchAileronVersionsCmd(), fetchServiceStatusesCmd(m.cfg), tickServiceStatusCmd(), tickServiceStatusRenderCmd()}
 	if m.current == screenPasswordCheck {
 		// initialModel() starts here on first boot (see its comment) -
 		// same command the menu's "configure" selection fires manually.

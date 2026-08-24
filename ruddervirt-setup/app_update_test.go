@@ -25,6 +25,45 @@ func TestMenuUpdateOpensUpdateVersionsScreen(t *testing.T) {
 	}
 }
 
+// TestMenuArrowNavigation confirms ↑/↓ move menuCursor (clamped, no wrap)
+// and Enter with no typed input submits whatever's highlighted.
+func TestMenuArrowNavigation(t *testing.T) {
+	m := model{current: screenMenu}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if got := next.(model).menuCursor; got != 0 {
+		t.Fatalf("menuCursor after Up at 0 = %d, want 0 (clamped)", got)
+	}
+
+	m.menuCursor = 0
+	for i := 0; i < len(menuOrder)+2; i++ {
+		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = next.(model)
+	}
+	if m.menuCursor != len(menuOrder)-1 {
+		t.Fatalf("menuCursor after Down x%d = %d, want %d (clamped)", len(menuOrder)+2, m.menuCursor, len(menuOrder)-1)
+	}
+
+	// menuCursor is on "logout" (last item) - Enter with no typed input
+	// should submit it directly, same as typing "5"/"logout" would.
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
+		t.Fatalf("cmd = nil, want tea.Quit (logout)")
+	}
+}
+
+// TestMenuTypedInputWinsOverCursor confirms Enter prefers typed input over
+// the ↑/↓ cursor when both are present.
+func TestMenuTypedInputWinsOverCursor(t *testing.T) {
+	m := model{current: screenMenu, input: "3", menuCursor: 4} // cursor on "logout", typed "3" (shell)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(model)
+
+	if !got.shellMode {
+		t.Fatalf("shellMode = false, want true - typed \"3\" (shell) should win over the cursor's \"logout\"")
+	}
+}
+
 // TestUpdateVersionsSelfUpdateRowStartsUpdateCheck confirms the Update
 // screen's ruddervirt-setup row (row 0) still delegates into the existing
 // self-update check flow.
@@ -158,5 +197,30 @@ func TestPasswordChangeEscFromConfirmGoesBackToNewField(t *testing.T) {
 	}
 	if got.passwordConfirmInput.Value() != "" {
 		t.Fatalf("passwordConfirmInput.Value() = %q, want cleared", got.passwordConfirmInput.Value())
+	}
+}
+
+// TestPasswordChangeCtrlSSkipsToSettingsWithoutMarkingChanged confirms
+// Ctrl+S lets the operator into Settings without ever setting the default
+// password, and - deliberately - without recording PasswordChanged, so
+// the next "configure" entry asks again rather than silently treating the
+// well-known default password as acceptable going forward.
+func TestPasswordChangeCtrlSSkipsToSettingsWithoutMarkingChanged(t *testing.T) {
+	m := passwordChangeModel()
+	m.cfg = defaultConfig()
+	m.passwordNewInput.SetValue("wip")
+	m.passwordNewInput.Focus()
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	got := next.(model)
+
+	if got.current != screenSettings {
+		t.Fatalf("current = %v, want screenSettings", got.current)
+	}
+	if got.cfg.System.PasswordChanged {
+		t.Fatalf("cfg.System.PasswordChanged = true, want false - skip must not silence future prompts")
+	}
+	if got.passwordNewInput.Value() != "" {
+		t.Fatalf("passwordNewInput.Value() = %q, want cleared", got.passwordNewInput.Value())
 	}
 }

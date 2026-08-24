@@ -14,7 +14,10 @@ import (
 // statusCheckTimeout bounds every individual check below - short enough
 // that a slow/unreachable API can't make the home screen feel stuck, since
 // these all run as a background tea.Cmd, never blocking keyboard input.
-const statusCheckTimeout = 2 * time.Second
+// Padded well past each kubectl call's own --timeout=1s so a slow VM's
+// process-startup/TLS-handshake overhead alone can't make an otherwise-met
+// condition read as a context-cancelled failure.
+const statusCheckTimeout = 5 * time.Second
 
 // serviceStatusRefreshInterval is how often the home screen's "Services"
 // summary re-polls while it's on screen. Long enough that a full sweep of
@@ -38,6 +41,30 @@ func tickServiceStatusCmd() tea.Cmd {
 	})
 }
 
+// serviceStatusRenderInterval drives a redraw-only tick, separate from
+// serviceStatusRefreshInterval's actual re-fetch - bubbletea only calls
+// View() in response to a processed message, and on the menu screen the
+// only thing that otherwise fires periodically is the 15s refresh tick
+// itself, which redraws right as each fetch completes. Without this,
+// "updated Xs ago" would only ever be repainted at that moment (elapsed
+// time close to zero) and then sit frozen for the rest of the 15s cycle,
+// instead of visibly counting up.
+const serviceStatusRenderInterval = 1 * time.Second
+
+// serviceStatusRenderTickMsg carries no data - its only job is to make
+// Update return a new tea.Cmd so bubbletea repaints, letting the "updated
+// Xs ago" hint's time.Since call re-evaluate against the current clock.
+type serviceStatusRenderTickMsg time.Time
+
+// tickServiceStatusRenderCmd mirrors tickServiceStatusCmd's self-repeating
+// pattern - always reschedules regardless of screen, same reasoning as
+// there, so it doesn't need restarting on every screen change.
+func tickServiceStatusRenderCmd() tea.Cmd {
+	return tea.Tick(serviceStatusRenderInterval, func(t time.Time) tea.Msg {
+		return serviceStatusRenderTickMsg(t)
+	})
+}
+
 // serviceStatus is one row of the home screen's "Services" summary.
 type serviceStatus struct {
 	name  string
@@ -55,9 +82,26 @@ type serviceStatusMsg struct {
 // fetchK3sVersionsCmd/fetchAileronVersionsCmd - a slow or unreachable
 // cluster just leaves the home screen's status rows showing "unknown"
 // rather than blocking the TUI.
+//
+// Drops the storage row before it ever reaches the home screen -
+// fetchServiceStatuses still computes it (waitForServicesReadyStep, the
+// install pipeline's completion gate, needs the real signal), but its
+// "wait --for=condition=Ready pods --all" check isn't reliable enough to
+// show unprompted here: it can report "not ready" even when every pod in
+// the namespace is actually healthy (e.g. under a VM's timing pressure),
+// and there's nothing the operator can do about it from this screen
+// anyway.
 func fetchServiceStatusesCmd(cfg Config) tea.Cmd {
 	return func() tea.Msg {
-		return serviceStatusMsg{statuses: fetchServiceStatuses(cfg)}
+		statuses := fetchServiceStatuses(cfg)
+		display := make([]serviceStatus, 0, len(statuses))
+		for _, st := range statuses {
+			if strings.HasPrefix(st.name, "storage (") {
+				continue
+			}
+			display = append(display, st)
+		}
+		return serviceStatusMsg{statuses: display}
 	}
 }
 

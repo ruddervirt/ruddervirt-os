@@ -37,6 +37,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tickServiceStatusCmd()
 
+	case serviceStatusRenderTickMsg:
+		// Carries no data to apply - just reschedules, so the next View()
+		// call (which bubbletea triggers for every processed message,
+		// this one included) re-evaluates "updated Xs ago" against the
+		// current clock instead of whatever it was at the last actual
+		// fetch.
+		return m, tickServiceStatusRenderCmd()
+
 	case stepOutputMsg:
 		if m.current == screenUpdate {
 			m.updateLogs = append(m.updateLogs, string(msg))
@@ -177,6 +185,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case tea.KeyCtrlC:
 			return m, tea.Quit
+
+		case tea.KeyCtrlS:
+			if m.current == screenPasswordChange {
+				// Skip for now, not permanently - cfg.System.PasswordChanged
+				// stays false, so the next "configure" entry re-runs
+				// checkPasswordChangedCmd and asks again. Deliberately not
+				// bound to Esc: that already means "cancel this field/step
+				// back", and skip needs to be its own explicit action, not
+				// something a password field's existing cancel behavior
+				// accidentally triggers.
+				m.current = screenSettings
+				m.settingsCursor = 0
+				m.settingsScroll = 0
+				m.settingsEditing = false
+				m.settingsShowAdvanced = false
+				m.settingsShowNetwork = false
+				m.settingsError = ""
+				m.passwordNewInput.SetValue("")
+				m.passwordNewInput.Blur()
+				m.passwordConfirmInput.SetValue("")
+				m.passwordConfirmInput.Blur()
+				m.passwordConfirmFocus = false
+				m.passwordError = ""
+				return m, nil
+			}
+			return m, nil
 
 		case tea.KeyEsc:
 			if m.current == screenInstall && !m.installDone && !m.installFailed {
@@ -333,6 +367,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateVersionsScroll = clampScroll(m.updateVersionsScroll, m.updateVersionsScrollCursor(), m.settingsVisibleRows())
 				return m, nil
 			}
+			if m.current == screenMenu {
+				if m.menuCursor > 0 {
+					m.menuCursor--
+				}
+				return m, nil
+			}
 
 		case tea.KeyDown:
 			if m.current == screenSettings && m.settingsPicking {
@@ -369,10 +409,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateVersionsScroll = clampScroll(m.updateVersionsScroll, m.updateVersionsScrollCursor(), m.settingsVisibleRows())
 				return m, nil
 			}
+			if m.current == screenMenu {
+				if m.menuCursor < len(menuOrder)-1 {
+					m.menuCursor++
+				}
+				return m, nil
+			}
 
 		case tea.KeyEnter:
 			if m.current == screenMenu {
-				if label, ok := resolveInput(m.input); ok {
+				// Typing a number/word into input always wins over the
+				// ↑/↓ cursor when there's something typed - see
+				// showCursor in view.go's screenMenu case.
+				typed := m.input
+				if typed == "" {
+					typed = menuOrder[m.menuCursor]
+				}
+				if label, ok := resolveInput(typed); ok {
 					m.input = ""
 					switch label {
 					case "logout":

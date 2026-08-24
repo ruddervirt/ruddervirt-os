@@ -212,6 +212,11 @@ var menuOptions = map[string]string{
 	"5": "logout",
 }
 
+// menuOrder is menuOptions in display/selection order - the arrow-key
+// alternative to typing a number (see model.menuCursor) needs an ordered
+// list, which a map can't give it.
+var menuOrder = []string{"configure", "k9s", "shell", "update", "logout"}
+
 // saveSettingCmd persists cfg after a settings-field edit - nothing more.
 // Settings only checks and records intent; install is the one place that
 // ever actually applies it to the running system (see the "Applying
@@ -324,9 +329,9 @@ func (m model) View() string {
 			s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.passwordError))
 		}
 		if m.passwordConfirmFocus {
-			s += "\n" + hintBar([2]string{"Enter", "confirm"}, [2]string{"Esc", "back to new password"}) + "\n"
+			s += "\n" + hintBar([2]string{"Enter", "confirm"}, [2]string{"Esc", "back to new password"}, [2]string{"Ctrl+S", "skip for now"}) + "\n"
 		} else {
-			s += "\n" + hintBar([2]string{"Enter", "continue"}, [2]string{"Esc", "cancel"}) + "\n"
+			s += "\n" + hintBar([2]string{"Enter", "continue"}, [2]string{"Esc", "cancel"}, [2]string{"Ctrl+S", "skip for now"}) + "\n"
 		}
 		return s
 
@@ -706,13 +711,22 @@ func (m model) View() string {
 			}
 		}
 		s += renderServiceStatuses(m.serviceStatuses, m.serviceStatusUpdatedAt)
-		s += fmt.Sprintf("  %s configure\n", menuKeyStyle.Render("1."))
-		s += fmt.Sprintf("  %s k9s\n", menuKeyStyle.Render("2."))
-		s += fmt.Sprintf("  %s shell\n", menuKeyStyle.Render("3."))
-		s += fmt.Sprintf("  %s update\n", menuKeyStyle.Render("4."))
-		s += fmt.Sprintf("  %s logout\n", menuKeyStyle.Render("5."))
+		// The ↑/↓ cursor only shows while input's empty - once the operator
+		// starts typing a number/word, that takes over on Enter (see the
+		// screenMenu case in app_update.go), so highlighting a cursor row
+		// that Enter would then ignore would be misleading.
+		showCursor := m.input == ""
+		for i, item := range menuOrder {
+			cursor := "  "
+			label := item
+			if showCursor && i == m.menuCursor {
+				cursor = cursorStyle.Render(">") + " "
+				label = selectedStyle.Render(item)
+			}
+			s += fmt.Sprintf("  %s%s %s\n", cursor, menuKeyStyle.Render(fmt.Sprintf("%d.", i+1)), label)
+		}
 		s += fmt.Sprintf("\n%s %s_\n\n", promptStyle.Render(">"), m.input)
-		s += helpStyle.Render("Press ctrl+c to quit.") + "\n"
+		s += hintBar([2]string{"↑/↓", "navigate"}, [2]string{"Enter", "select"}, [2]string{"Ctrl+C", "quit"}) + "\n"
 		return s
 	}
 }

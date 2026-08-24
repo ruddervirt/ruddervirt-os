@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // cmdContains reports whether every one of substrs appears somewhere in
@@ -151,4 +153,28 @@ func TestFetchServiceStatuses(t *testing.T) {
 			t.Errorf("fetchServiceStatuses() = %+v, want %+v", got, want)
 		}
 	})
+}
+
+// TestFetchServiceStatusesCmdDropsStorage confirms the storage row is
+// filtered out of what reaches the home screen (fetchServiceStatusesCmd),
+// while still being computed by fetchServiceStatuses itself - the install
+// pipeline's completion gate (waitForServicesReadyStep) calls that
+// directly and still needs the real signal.
+func TestFetchServiceStatusesCmdDropsStorage(t *testing.T) {
+	r := &fakeRunner{}
+	cfg := Config{Storage: StorageConfig{Engine: "rook-ceph"}}
+	var msg tea.Msg
+	withConfigSaved(true, func() {
+		withFakeRunner(r, func() { msg = fetchServiceStatusesCmd(cfg)() })
+	})
+	got := msg.(serviceStatusMsg).statuses
+	want := []serviceStatus{
+		{name: "k3s", state: "running"},
+		{name: "kube-ovn", state: "ready"},
+		{name: "kubevirt", state: "ready"},
+		{name: "aileron", state: "ready"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("fetchServiceStatusesCmd()() = %+v, want %+v", got, want)
+	}
 }
