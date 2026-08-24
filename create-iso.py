@@ -108,8 +108,10 @@ def render_server_bu(path: str, version: str, setup_checksum: str | None) -> str
     given (the common/default case, and always true for `make boot`/`make
     ignition`/`make test-rootfs`, none of which go through this script at
     all), or a rendered temp copy pointing ruddervirt-setup at the matching
-    GitHub Release asset with its SHA256 verification hash, when CI supplies
-    a checksum for the binary it just built in this same job."""
+    release-binaries branch entry (see tui/update.go's setupBinaryURL - the
+    binary isn't a public Release asset) with its SHA256 verification hash,
+    when CI supplies a checksum for the binary it just built in this same
+    job."""
     if not setup_checksum:
         return path
     text = Path(path).read_text(encoding="utf-8")
@@ -120,8 +122,8 @@ def render_server_bu(path: str, version: str, setup_checksum: str | None) -> str
             "before templating a real release URL."
         )
     real_url = (
-        f"https://github.com/ruddervirt/ruddervirt-os/releases/download/"
-        f"{version}/ruddervirt-setup"
+        f"https://raw.githubusercontent.com/ruddervirt/ruddervirt-os/"
+        f"release-binaries/{version}/ruddervirt-setup"
     )
     replacement = (
         f"        source: {real_url}\n"
