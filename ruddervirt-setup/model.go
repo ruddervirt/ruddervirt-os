@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -102,8 +104,11 @@ type model struct {
 	k9sMode   bool
 
 	// Home screen's "Services" summary - nil until fetchServiceStatusesCmd
-	// (status.go) reports back, refreshed each time the menu is (re)shown.
-	serviceStatuses []serviceStatus
+	// (status.go) reports back, refreshed every serviceStatusRefreshInterval
+	// while the menu is shown. serviceStatusUpdatedAt tracks when that last
+	// happened, purely so the view can show "updated Xs ago".
+	serviceStatuses        []serviceStatus
+	serviceStatusUpdatedAt time.Time
 
 	// cachedK3sVersions/cachedAileronVersions hold the release tags
 	// fetchK3sVersions/fetchAileronVersions found, for the Settings screen's

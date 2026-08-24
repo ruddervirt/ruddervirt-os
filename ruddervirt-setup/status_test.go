@@ -1,22 +1,41 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestRenderServiceStatuses(t *testing.T) {
-	if got := renderServiceStatuses(nil); got != "" {
-		t.Errorf("renderServiceStatuses(nil) = %q, want empty string", got)
+	if got := renderServiceStatuses(nil, time.Time{}); got != "" {
+		t.Errorf("renderServiceStatuses(nil, ...) = %q, want empty string", got)
 	}
-	if got := renderServiceStatuses([]serviceStatus{}); got != "" {
-		t.Errorf("renderServiceStatuses(empty) = %q, want empty string", got)
+	if got := renderServiceStatuses([]serviceStatus{}, time.Time{}); got != "" {
+		t.Errorf("renderServiceStatuses(empty, ...) = %q, want empty string", got)
 	}
 
 	got := renderServiceStatuses([]serviceStatus{
 		{name: "k3s", state: "running"},
 		{name: "kube-ovn", state: "not ready"},
-	})
-	want := "Services:\n  k3s       running\n  kube-ovn  not ready\n\n"
+	}, time.Time{})
+	want := "Services\n  ● k3s       running\n  ● kube-ovn  not ready\n\n"
 	if got != want {
 		t.Errorf("renderServiceStatuses(...) = %q, want %q", got, want)
+	}
+}
+
+func TestFormatAge(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{3 * time.Second, "3s"},
+		{90 * time.Second, "1m30s"},
+		{-2 * time.Second, "0s"},
+	}
+	for _, c := range cases {
+		if got := formatAge(c.d); got != c.want {
+			t.Errorf("formatAge(%v) = %q, want %q", c.d, got, c.want)
+		}
 	}
 }
 

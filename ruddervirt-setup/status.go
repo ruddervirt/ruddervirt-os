@@ -64,7 +64,7 @@ func fetchServiceStatusesCmd(cfg Config) tea.Cmd {
 // renderServiceStatuses formats the home screen's "Services" summary -
 // statuses is nil until fetchServiceStatusesCmd's first result lands, in
 // which case this renders nothing rather than a block of blank rows.
-func renderServiceStatuses(statuses []serviceStatus) string {
+func renderServiceStatuses(statuses []serviceStatus, updatedAt time.Time) string {
 	if len(statuses) == 0 {
 		return ""
 	}
@@ -74,13 +74,26 @@ func renderServiceStatuses(statuses []serviceStatus) string {
 			nameWidth = l
 		}
 	}
+	header := "Services"
+	if !updatedAt.IsZero() {
+		header = fmt.Sprintf("Services (updated %s ago)", formatAge(time.Since(updatedAt)))
+	}
 	var b strings.Builder
-	b.WriteString("Services:\n")
+	b.WriteString(helpStyle.Render(header) + "\n")
 	for _, st := range statuses {
-		fmt.Fprintf(&b, "  %s  %s\n", fitCell(st.name, nameWidth), st.state)
+		fmt.Fprintf(&b, "  %s %s  %s\n", stateBullet(st.state), fitCell(st.name, nameWidth), styleState(st.state))
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+// formatAge renders d the way the home screen's "updated ... ago" hint
+// wants it - whole seconds/minutes, never a sub-second fraction.
+func formatAge(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	return d.Round(time.Second).String()
 }
 
 // nonInteractiveSucceeds runs a bounded, non-interactive command and

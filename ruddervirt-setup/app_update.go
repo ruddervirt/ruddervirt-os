@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -26,6 +27,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case serviceStatusMsg:
 		m.serviceStatuses = msg.statuses
+		m.serviceStatusUpdatedAt = time.Now()
 		return m, nil
 
 	case serviceStatusTickMsg:

@@ -196,7 +196,7 @@ func (m model) View() string {
 		return "\nComputing install plan...\n"
 
 	case screenInstallConfirm:
-		s := "\nConfirm Install\n\n"
+		s := "\n" + titleStyle.Render("Confirm Install") + "\n\n"
 		s += "This will restart k3s, causing a brief interruption to the\n"
 		s += "Kubernetes API and any running workloads. The full process can\n"
 		s += "take 30+ minutes, mostly waiting for storage to become ready.\n"
@@ -212,16 +212,19 @@ func (m model) View() string {
 			if i < len(m.installPlanLines) && m.installPlanLines[i] != "" {
 				line = m.installPlanLines[i]
 			}
+			if line == "will run" {
+				line = helpStyle.Render(line)
+			}
 			s += fmt.Sprintf("  %s  %s\n", fitCell(step.label, labelWidth), line)
 		}
-		s += fmt.Sprintf("\nType \"yes\" to proceed, or Esc to cancel:\n  %s\n", m.installConfirmInput.View())
+		s += fmt.Sprintf("\n%s\n  %s\n", helpStyle.Render("Type \"yes\" to proceed, or Esc to cancel:"), m.installConfirmInput.View())
 		if m.installConfirmError != "" {
-			s += fmt.Sprintf("\n%s\n", m.installConfirmError)
+			s += fmt.Sprintf("\n%s\n", errorStyle.Render(m.installConfirmError))
 		}
 		return s
 
 	case screenInstall:
-		s := "\nInstalling RudderVirt...\n\n"
+		s := "\n" + titleStyle.Render("Installing RudderVirt...") + "\n\n"
 		visible := m.installVisibleLogLines()
 		lines := m.installLogs
 		if len(lines) > visible {
@@ -231,29 +234,29 @@ func (m model) View() string {
 			s += line + "\n"
 		}
 		if m.installDone {
-			s += "\nInstall complete. Press Esc to return to menu.\n"
+			s += "\n" + successStyle.Render("Install complete.") + " " + helpStyle.Render("Press Esc to return to menu.") + "\n"
 		} else if m.installFailed {
-			s += "\nInstall failed. Press Esc to return to menu.\n"
+			s += "\n" + errorStyle.Render("Install failed.") + " " + helpStyle.Render("Press Esc to return to menu.") + "\n"
 		} else if m.installStepIdx < len(installSteps) {
-			s += fmt.Sprintf("\nRunning: %s...\n", installSteps[m.installStepIdx].label)
+			s += "\n" + helpStyle.Render(fmt.Sprintf("Running: %s...", installSteps[m.installStepIdx].label)) + "\n"
 		}
 		return s
 
 	case screenResult:
-		return fmt.Sprintf("\n%s\n\nPress Esc to go back, Ctrl+C to quit.\n", m.result)
+		return fmt.Sprintf("\n%s\n\n%s\n", m.result, helpStyle.Render("Press Esc to go back, Ctrl+C to quit."))
 
 	case screenUpdateChecking:
-		return "\nChecking for updates...\n"
+		return "\n" + helpStyle.Render("Checking for updates...") + "\n"
 
 	case screenPasswordCheck:
-		s := "\nChecking admin account credentials...\n"
+		s := "\n" + helpStyle.Render("Checking admin account credentials...") + "\n"
 		if m.passwordError != "" {
-			s += fmt.Sprintf("\nError: %s\n\nPress Esc to go back, Ctrl+C to quit.\n", m.passwordError)
+			s += fmt.Sprintf("\n%s\n\n%s\n", errorStyle.Render("Error: "+m.passwordError), helpStyle.Render("Press Esc to go back, Ctrl+C to quit."))
 		}
 		return s
 
 	case screenPasswordChange:
-		s := "\nChange Admin Password\n\n"
+		s := "\n" + titleStyle.Render("Change Admin Password") + "\n\n"
 		s += "This node is still using the well-known default password. Set a\n"
 		s += "new admin password before continuing to configure.\n\n"
 		if !m.passwordConfirmFocus {
@@ -264,27 +267,27 @@ func (m model) View() string {
 			s += fmt.Sprintf("Confirm password:  %s\n", m.passwordConfirmInput.View())
 		}
 		if m.passwordSaving {
-			s += "\nSaving...\n"
+			s += "\n" + helpStyle.Render("Saving...") + "\n"
 		} else if m.passwordError != "" {
-			s += fmt.Sprintf("\nError: %s\n", m.passwordError)
+			s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.passwordError))
 		}
-		s += "\nEnter to confirm each field, Esc to cancel.\n"
+		s += "\n" + helpStyle.Render("Enter to confirm each field, Esc to cancel.") + "\n"
 		return s
 
 	case screenUpdateConfirm:
-		s := "\nUpdate ruddervirt-setup\n\n"
+		s := "\n" + titleStyle.Render("Update ruddervirt-setup") + "\n\n"
 		s += fmt.Sprintf("Current version: %s\nLatest version:  %s\n", version, m.updateLatestVersion)
 		s += "\nThis will download and verify (SHA256) the new binary, then\n"
 		s += "replace /usr/local/bin/ruddervirt-setup. The menu will restart\n"
 		s += "on the new version afterward.\n"
-		s += fmt.Sprintf("\nType \"yes\" to proceed, or Esc to cancel:\n  %s\n", m.updateConfirmInput.View())
+		s += fmt.Sprintf("\n%s\n  %s\n", helpStyle.Render("Type \"yes\" to proceed, or Esc to cancel:"), m.updateConfirmInput.View())
 		if m.updateConfirmError != "" {
-			s += fmt.Sprintf("\n%s\n", m.updateConfirmError)
+			s += fmt.Sprintf("\n%s\n", errorStyle.Render(m.updateConfirmError))
 		}
 		return s
 
 	case screenUpdate:
-		s := "\nUpdating ruddervirt-setup...\n\n"
+		s := "\n" + titleStyle.Render("Updating ruddervirt-setup...") + "\n\n"
 		visible := m.installVisibleLogLines()
 		lines := m.updateLogs
 		if len(lines) > visible {
@@ -294,11 +297,11 @@ func (m model) View() string {
 			s += line + "\n"
 		}
 		if m.updateDone {
-			s += "\nUpdate complete. Restarting into the new version...\n"
+			s += "\n" + successStyle.Render("Update complete. Restarting into the new version...") + "\n"
 		} else if m.updateFailed {
-			s += "\nUpdate failed. Press Esc to return to menu.\n"
+			s += "\n" + errorStyle.Render("Update failed.") + " " + helpStyle.Render("Press Esc to return to menu.") + "\n"
 		} else if m.updateStepIdx < len(updateSteps) {
-			s += fmt.Sprintf("\nRunning: %s...\n", updateSteps[m.updateStepIdx].label)
+			s += "\n" + helpStyle.Render(fmt.Sprintf("Running: %s...", updateSteps[m.updateStepIdx].label)) + "\n"
 		}
 		return s
 
@@ -327,7 +330,7 @@ func (m model) View() string {
 			topBorder := "┌" + strings.Repeat("─", width) + "┐"
 			bottomBorder := "└" + strings.Repeat("─", width) + "┘"
 
-			s := fmt.Sprintf("\nSettings\n\nSelect %s:\n\n", field.label)
+			s := "\n" + titleStyle.Render("Settings") + fmt.Sprintf("\n\nSelect %s:\n\n", field.label)
 
 			visible := m.settingsVisibleRows()
 			start := m.settingsPickScroll
@@ -339,26 +342,29 @@ func (m model) View() string {
 				start = end
 			}
 			if start > 0 {
-				s += fmt.Sprintf("  ↑ %d more above\n", start)
+				s += helpStyle.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n"
 			}
 
-			s += topBorder + "\n"
+			s += colorBorders(topBorder) + "\n"
 			for i := start; i < end; i++ {
+				selected := i == m.settingsPickCursor
 				cursor := "  "
-				if i == m.settingsPickCursor {
-					cursor = "> "
+				cell := fitCell(options[i], width-2)
+				if selected {
+					cursor = cursorStyle.Render(">") + " "
+					cell = selectedStyle.Render(cell)
 				}
-				s += fmt.Sprintf("│%s%s│\n", cursor, fitCell(options[i], width-2))
+				s += fmt.Sprintf("%s%s%s%s\n", colorBorders("│"), cursor, cell, colorBorders("│"))
 			}
-			s += bottomBorder + "\n"
+			s += colorBorders(bottomBorder) + "\n"
 			if end < len(options) {
-				s += fmt.Sprintf("  ↓ %d more below\n", len(options)-end)
+				s += helpStyle.Render(fmt.Sprintf("  ↓ %d more below", len(options)-end)) + "\n"
 			}
 
 			if m.settingsError != "" {
-				s += fmt.Sprintf("\nError: %s\n", m.settingsError)
+				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.settingsError))
 			}
-			s += "\nEnter to select, Esc to cancel.\n"
+			s += "\n" + helpStyle.Render("Enter to select, Esc to cancel.") + "\n"
 			return s
 		}
 
@@ -418,7 +424,7 @@ func (m model) View() string {
 		sepBorder := "├───┼" + strings.Repeat("─", labelWidth+2) + "┼" + strings.Repeat("─", valueWidth+2) + "┤"
 		bottomBorder := "└───┴" + strings.Repeat("─", labelWidth+2) + "┴" + strings.Repeat("─", valueWidth+2) + "┘"
 
-		s := "\nSettings\n\n"
+		s := "\n" + titleStyle.Render("Settings") + "\n\n"
 
 		visible := m.settingsVisibleRows()
 		start := m.settingsScroll
@@ -430,57 +436,60 @@ func (m model) View() string {
 			start = end
 		}
 		if start > 0 {
-			s += fmt.Sprintf("  ↑ %d more above\n", start)
+			s += helpStyle.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n"
 		}
 
-		s += topBorder + "\n"
-		s += fmt.Sprintf("│   │ %s │ %s │\n", fitCell("Setting", labelWidth), fitCell("Value", valueWidth))
-		s += sepBorder + "\n"
+		s += colorBorders(topBorder) + "\n"
+		s += colorBorders(fmt.Sprintf("│   │ %s │ %s │", fitCell("Setting", labelWidth), fitCell("Value", valueWidth))) + "\n"
+		s += colorBorders(sepBorder) + "\n"
 		for i := start; i < end; i++ {
-			cursor := "   "
-			if i == m.settingsCursor {
-				cursor = " > "
-			}
+			selected := i == m.settingsCursor
 			r := rows[i]
-			s += fmt.Sprintf("│%s│ %s │ %s │\n", cursor, fitCell(rowLabel(r), labelWidth), fitCell(rowValue(r), valueWidth))
+			label := fitCell(rowLabel(r), labelWidth)
+			value := fitCell(rowValue(r), valueWidth)
+			if selected {
+				label = selectedStyle.Render(label)
+				value = selectedStyle.Render(value)
+			}
+			s += fmt.Sprintf("%s%s%s %s %s %s %s\n", colorBorders("│"), cursorArrow(selected), colorBorders("│"), label, colorBorders("│"), value, colorBorders("│"))
 		}
-		s += bottomBorder + "\n"
+		s += colorBorders(bottomBorder) + "\n"
 
 		if end < total {
-			s += fmt.Sprintf("  ↓ %d more below\n", total-end)
+			s += helpStyle.Render(fmt.Sprintf("  ↓ %d more below", total-end)) + "\n"
 		}
 
 		if m.settingsEditing {
 			s += fmt.Sprintf("\nEditing %s:\n  %s\n", rows[m.settingsCursor].field.label, m.settingsInput.View())
 			if m.settingsError != "" {
-				s += fmt.Sprintf("\nError: %s\n", m.settingsError)
+				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.settingsError))
 			}
-			s += "\nEnter to save, Esc to cancel.\n"
+			s += "\n" + helpStyle.Render("Enter to save, Esc to cancel.") + "\n"
 		} else {
 			if m.settingsSaving {
-				s += "\nSaving...\n"
+				s += "\n" + helpStyle.Render("Saving...") + "\n"
 			} else if m.settingsError != "" {
-				s += fmt.Sprintf("\nError saving: %s\n", m.settingsError)
+				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error saving: "+m.settingsError))
 			}
-			s += "\nUp/Down to select, Enter to edit/choose, Esc to go back.\n"
+			s += "\n" + helpStyle.Render("Up/Down to select, Enter to edit/choose, Esc to go back.") + "\n"
 		}
 		return s
 
 	default:
-		s := "\nRudderVirt OS\n\n"
+		s := "\n" + bigTitle(m.termWidth) + "\n\n"
 		if configSaved() {
 			if url := aileronUIURL(m.cfg); url != "" {
-				s += fmt.Sprintf("Aileron UI:  %s\n\n", url)
+				s += fmt.Sprintf("Aileron UI:  %s\n\n", linkStyle.Render(url))
 			}
 		}
-		s += renderServiceStatuses(m.serviceStatuses)
-		s += "  1. configure\n"
-		s += "  2. k9s\n"
-		s += "  3. shell\n"
-		s += "  4. update\n"
-		s += "  5. logout\n"
-		s += fmt.Sprintf("\n> %s_\n\n", m.input)
-		s += "Press ctrl+c to quit.\n"
+		s += renderServiceStatuses(m.serviceStatuses, m.serviceStatusUpdatedAt)
+		s += fmt.Sprintf("  %s configure\n", menuKeyStyle.Render("1."))
+		s += fmt.Sprintf("  %s k9s\n", menuKeyStyle.Render("2."))
+		s += fmt.Sprintf("  %s shell\n", menuKeyStyle.Render("3."))
+		s += fmt.Sprintf("  %s update\n", menuKeyStyle.Render("4."))
+		s += fmt.Sprintf("  %s logout\n", menuKeyStyle.Render("5."))
+		s += fmt.Sprintf("\n%s %s_\n\n", promptStyle.Render(">"), m.input)
+		s += helpStyle.Render("Press ctrl+c to quit.") + "\n"
 		return s
 	}
 }
