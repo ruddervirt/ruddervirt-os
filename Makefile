@@ -26,7 +26,7 @@ ROOTFS    := $(OUT_DIR)/test-rootfs
 # is the QEMU user-net gateway that maps to the host loopback). It's a real file
 # target so make only rebuilds it when its sources change.
 TUI_BIN   := scripts/ruddervirt-setup
-TUI_SRC   := tui/model.go tui/app_update.go tui/view.go tui/install_steps.go tui/exec.go tui/main.go tui/config.go tui/k3s.go tui/network.go tui/storage.go tui/kubevirt.go tui/aileron.go tui/update.go tui/status.go tui/password.go tui/version.go tui/supported-versions.yaml tui/go.mod tui/go.sum
+TUI_SRC   := ruddervirt-setup/model.go ruddervirt-setup/app_update.go ruddervirt-setup/view.go ruddervirt-setup/install_steps.go ruddervirt-setup/exec.go ruddervirt-setup/main.go ruddervirt-setup/config.go ruddervirt-setup/k3s.go ruddervirt-setup/network.go ruddervirt-setup/storage.go ruddervirt-setup/kubevirt.go ruddervirt-setup/aileron.go ruddervirt-setup/update.go ruddervirt-setup/status.go ruddervirt-setup/password.go ruddervirt-setup/version.go ruddervirt-setup/default-versions.go ruddervirt-setup/default-versions.yaml ruddervirt-setup/supported-versions.yaml ruddervirt-setup/go.mod ruddervirt-setup/go.sum
 # Port for the dev binary-serving HTTP server (must match the URL in server.bu).
 TUI_SERVE_PORT ?= 8080
 # Host port forwarded to the guest's aileron-ui NodePort (30806 - the
@@ -115,10 +115,10 @@ boot: iso $(TUI_BIN)  ## Boot the newest ISO in QEMU (KVM if available; needs qe
 build-tui: $(TUI_BIN)  ## Build the Go TUI binary (scripts/ruddervirt-setup)
 
 $(TUI_BIN): $(TUI_SRC)
-	cd tui && go build -ldflags "-X main.version=$(VERSION)" -o ../scripts/ruddervirt-setup .
+	cd ruddervirt-setup && go build -ldflags "-X main.version=$(VERSION)" -o ../scripts/ruddervirt-setup .
 
 test-tui:  ## Run the Go TUI's unit tests
-	cd tui && go test ./...
+	cd ruddervirt-setup && go test ./...
 
 ignition:  ## Render server.bu -> out/server.ign (via the Butane container)
 	@[ -n "$(RUNTIME)" ] || { echo "Error: neither docker nor podman found in PATH." >&2; exit 1; }

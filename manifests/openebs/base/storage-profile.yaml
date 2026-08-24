@@ -9,7 +9,7 @@
 # e.g. Aileron's build coordinator) then hangs forever.
 #
 # NOT part of base/kustomization.yaml: the StorageProfile CRD is
-# registered by the CDI operator, which tui/k3s.go's prepareK3sStep
+# registered by the CDI operator, which ruddervirt-setup/k3s.go's prepareK3sStep
 # applies well after the storage engine's own kustomize overlay - applying
 # this any earlier fails with "no matches for kind StorageProfile in
 # version cdi.kubevirt.io/v1beta1: ensure CRDs are installed first".

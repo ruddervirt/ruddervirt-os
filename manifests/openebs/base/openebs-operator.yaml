@@ -28,7 +28,7 @@ spec:
       enabled: false
 
     # snapshot-controller.yaml already owns the shared CSI VolumeSnapshot
-    # CRDs (see tui/k3s.go's prepareK3sStep) - openebs-crds must not try to
+    # CRDs (see ruddervirt-setup/k3s.go's prepareK3sStep) - openebs-crds must not try to
     # install/own them too, or helm's ownership-annotation check fails.
     openebs-crds:
       csi:

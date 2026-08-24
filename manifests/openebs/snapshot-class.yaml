@@ -1,5 +1,5 @@
 # Apply after the OpenEBS LVM CSI driver is healthy (handled by
-# tui/k3s.go's applyGenericStorageEngine + the trailing manifests loop in
+# ruddervirt-setup/k3s.go's applyGenericStorageEngine + the trailing manifests loop in
 # prepareK3sStep) - same convention as manifests/rook-ceph/snapshot-class.yaml
 # and manifests/longhorn/snapshot-class.yaml.
 apiVersion: snapshot.storage.k8s.io/v1

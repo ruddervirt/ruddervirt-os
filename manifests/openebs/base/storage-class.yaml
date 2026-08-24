@@ -1,4 +1,4 @@
-# References the thin-pool volume group tui/storage.go's
+# References the thin-pool volume group ruddervirt-setup/storage.go's
 # prepareOpenEBSDevice creates (pvcreate + vgcreate + lvcreate --type
 # thin-pool) before this gets applied. Thin-provisioned volumes are what
 # make CSI snapshots practical here - thick LVM snapshots need space

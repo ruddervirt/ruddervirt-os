@@ -213,7 +213,7 @@ storage:
             - "local-storage"
             - "network-policy"
       # Managed by ruddervirt-setup's "Automatic updates" setting after
-      # first boot (tui/config.go writeZincatiConfig) - this is just the
+      # first boot (ruddervirt-setup/config.go writeZincatiConfig) - this is just the
       # default before an operator changes it.
     - path: /etc/zincati/config.d/99-ruddervirt-updates.toml
       mode: 0644

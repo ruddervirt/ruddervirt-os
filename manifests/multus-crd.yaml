@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: GPL-3.0-only
+#
+# The NetworkAttachmentDefinition CRD, vendored from upstream
+# k8snetworkplumbingwg/multus-cni's deployments/multus-daemonset.yml (the
+# CRD document at the top of that file - RBAC/DaemonSet/etc. stripped out,
+# since those come from the rke2-multus chart applied via manifests/multus.yaml).
+#
+# On real RKE2, this CRD ships as one of RKE2's own built-in static
+# manifests, separate from (and applied before) the rke2-multus Helm chart -
+# so the chart itself doesn't bundle it (confirmed: no crds/ directory and
+# no CustomResourceDefinition template anywhere in the rke2-multus chart
+# tarball from https://rke2-charts.rancher.io). ruddervirt-setup runs plain
+# k3s and only borrows the rke2-multus chart via a HelmChart CR, so nothing
+# else in this stack ever installs it - apply it ourselves, ahead of
+# manifests/multus.yaml and Aileron (whose chart applies its own
+# NetworkAttachmentDefinition and fails outright if this CRD isn't
+# Established yet).
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: network-attachment-definitions.k8s.cni.cncf.io
+spec:
+  group: k8s.cni.cncf.io
+  scope: Namespaced
+  names:
+    plural: network-attachment-definitions
+    singular: network-attachment-definition
+    kind: NetworkAttachmentDefinition
+    shortNames:
+      - nad
+      - net-attach-def
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          description: 'NetworkAttachmentDefinition is a CRD schema specified by the Network Plumbing
+            Working Group to express the intent for attaching pods to one or more logical or physical
+            networks. More information available at: https://github.com/k8snetworkplumbingwg/multi-net-spec'
+          type: object
+          properties:
+            apiVersion:
+              description: 'APIVersion defines the versioned schema of this represen
+                tation of an object. Servers should convert recognized schemas to the
+                latest internal value, and may reject unrecognized values. More info:
+                https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+              type: string
+            kind:
+              description: 'Kind is a string value representing the REST resource this
+                object represents. Servers may infer this from the endpoint the client
+                submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: 'NetworkAttachmentDefinition spec defines the desired state of a network attachment'
+              type: object
+              properties:
+                config:
+                  description: 'NetworkAttachmentDefinition config is a JSON-formatted CNI configuration'
+                  type: string

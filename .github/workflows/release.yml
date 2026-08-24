@@ -49,7 +49,7 @@ jobs:
           generate_release_notes: true
 
       # ruddervirt-setup itself is an internal upgrade artifact (fetched by
-      # the running TUI's self-update flow, see tui/update.go), not something
+      # the running TUI's self-update flow, see ruddervirt-setup/update.go), not something
       # end users download - so it's pushed to a dedicated orphan branch
       # instead of the public Releases page, which should only ever show the
       # installer ISO. One folder per version, so older tags stay fetchable.

@@ -108,7 +108,7 @@ def render_server_bu(path: str, version: str, setup_checksum: str | None) -> str
     given (the common/default case, and always true for `make boot`/`make
     ignition`/`make test-rootfs`, none of which go through this script at
     all), or a rendered temp copy pointing ruddervirt-setup at the matching
-    release-binaries branch entry (see tui/update.go's setupBinaryURL - the
+    release-binaries branch entry (see ruddervirt-setup/update.go's setupBinaryURL - the
     binary isn't a public Release asset) with its SHA256 verification hash,
     when CI supplies a checksum for the binary it just built in this same
     job."""
