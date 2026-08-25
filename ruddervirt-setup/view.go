@@ -337,6 +337,21 @@ func (m model) View() string {
 		}
 		return s
 
+	case screenHostnameChange:
+		s := "\n" + titleStyle.Render("Set System Hostname") + "\n\n"
+		s += "This node is still using the default hostname. Set one that\n"
+		s += "identifies it on your network before continuing - the hostname\n"
+		s += "cannot be changed once installation proceeds, so this cannot\n"
+		s += "be skipped.\n\n"
+		s += fmt.Sprintf("Hostname:  %s\n", m.hostnameInput.View())
+		if m.hostnameSaving {
+			s += "\n" + helpStyle.Render("Saving...") + "\n"
+		} else if m.hostnameError != "" {
+			s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.hostnameError))
+		}
+		s += "\n" + hintBar([2]string{"Enter", "continue"}, [2]string{"Esc", "cancel"}) + "\n"
+		return s
+
 	case screenUpdateConfirm:
 		s := "\n" + titleStyle.Render("Update ruddervirt-setup") + "\n\n"
 		s += fmt.Sprintf("Current version: %s\nLatest version:  %s\n", version, m.updateLatestVersion)
@@ -441,12 +456,13 @@ func (m model) View() string {
 			}
 			return r.field.label
 		}
+		versions := versionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected}
 		rowValue := func(r updateVersionsRow) string {
 			if r.isSelfUpdate {
 				return version
 			}
 			if r.field.locked != nil {
-				if locked, reason := r.field.locked(&m.cfg); locked {
+				if locked, reason := r.field.locked(&m.cfg, versions); locked {
 					return reason
 				}
 			}
@@ -607,12 +623,13 @@ func (m model) View() string {
 				return r.field.label
 			}
 		}
+		versions := versionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected}
 		rowValue := func(r settingsRow) string {
 			if r.isNetworkToggle || r.isToggle {
 				return ""
 			}
 			if r.field.locked != nil {
-				if locked, reason := r.field.locked(&m.cfg); locked {
+				if locked, reason := r.field.locked(&m.cfg, versions); locked {
 					return reason
 				}
 			}

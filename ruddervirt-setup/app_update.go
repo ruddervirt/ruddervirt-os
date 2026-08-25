@@ -28,6 +28,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cachedAileronVersions = msg.versions
 		return m, nil
 
+	case stabilizerDetectedMsg:
+		m.cachedStabilizerDetected = msg.present
+		return m, nil
+
 	case serviceStatusMsg:
 		m.serviceStatuses = msg.statuses
 		m.serviceStatusUpdatedAt = time.Now()
@@ -182,6 +186,61 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.settingsError = ""
 		return m, nil
 
+	case hostnameSetMsg:
+		if msg.err != nil {
+			m.hostnameSaving = false
+			m.hostnameError = msg.err.Error()
+			return m, nil
+		}
+		return m, finalizeHostnameDeclaredCmd(m.cfg)
+
+	case hostnameDeclaredMsg:
+		if m.current != screenHostnameChange {
+			// Silent background reconciliation fired from Init() (the
+			// hostname was already non-default) - nothing on screen to
+			// update, just adopt the persisted flag if it saved.
+			if msg.err == nil {
+				m.cfg = msg.cfg
+			}
+			return m, nil
+		}
+		m.hostnameSaving = false
+		if msg.err != nil {
+			m.hostnameError = msg.err.Error()
+			return m, nil
+		}
+		m.cfg = msg.cfg
+		m.hostnameInput.SetValue("")
+		m.hostnameInput.Blur()
+		m.hostnameError = ""
+		if m.hostnameChangeForUpdate {
+			// Resume the "update" flow this was forced from (see
+			// hostnameChangeForUpdate's doc comment) - same reset as the
+			// "update" menu case itself, no password check, matching that
+			// path's existing behavior.
+			m.hostnameChangeForUpdate = false
+			m.current = screenUpdateVersions
+			m.updateVersionsCursor = 0
+			m.updateVersionsScroll = 0
+			m.updateVersionsPicking = false
+			m.settingsSaving = false
+			m.settingsError = ""
+			return m, nil
+		}
+		if !m.cfg.System.PasswordChanged {
+			m.current = screenPasswordCheck
+			m.passwordError = ""
+			return m, checkPasswordChangedCmd()
+		}
+		m.current = screenSettings
+		m.settingsCursor = 0
+		m.settingsScroll = 0
+		m.settingsEditing = false
+		m.settingsShowAdvanced = false
+		m.settingsShowNetwork = false
+		m.settingsError = ""
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.Type {
 
@@ -189,6 +248,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case tea.KeyCtrlS:
+			// screenHostnameChange deliberately has no skip: unlike the
+			// password (which can be changed again anytime from within
+			// Settings' first-boot flow), the hostname becomes permanently
+			// immutable the moment install proceeds (see hostnameLocked,
+			// hostname.go) - so the operator must declare one for real
+			// before ever reaching Settings/Apply, not defer it and risk
+			// installing under the default. Falls through to the generic
+			// no-op below.
 			if m.current == screenPasswordChange {
 				// Skip for now, not permanently - cfg.System.PasswordChanged
 				// stays false, so the next "configure" entry re-runs
@@ -338,6 +405,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.passwordNewInput.Blur()
 			m.passwordConfirmInput.SetValue("")
 			m.passwordConfirmInput.Blur()
+			m.hostnameSaving = false
+			m.hostnameError = ""
+			m.hostnameInput.SetValue("")
+			m.hostnameInput.Blur()
+			m.hostnameChangeForUpdate = false
 			return m, fetchServiceStatusesCmd(m.cfg)
 
 		case tea.KeyUp:
@@ -433,6 +505,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					case "logout":
 						return m, tea.Quit
 					case "configure":
+						if !m.cfg.System.HostnameDeclared && hostnameIsDefault() && !hostnameLocked() {
+							// Not yet declared, still the well-known default,
+							// and install hasn't proceeded far enough to lock
+							// it (see hostnameLocked, hostname.go) - same
+							// "force it before Settings" reasoning as the
+							// password check below, checked first (see
+							// initialModel's comment on ordering).
+							m.current = screenHostnameChange
+							m.hostnameError = ""
+							m.hostnameChangeForUpdate = false
+							m.hostnameInput.Focus()
+							return m, nil
+						}
 						if m.cfg.System.PasswordChanged {
 							m.current = screenSettings
 							// Land on the first real field row - Apply now
@@ -461,6 +546,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.k9sMode = true
 						return m, tea.Quit
 					case "update":
+						if !m.cfg.System.HostnameDeclared && hostnameIsDefault() && !hostnameLocked() {
+							// "update" can also reach the install pipeline
+							// (Apply upgrades re-runs installSteps, same as
+							// Settings' Apply) without ever visiting
+							// "configure" - same "force it before install
+							// can run" reasoning as the "configure" case
+							// above, just resuming here instead of Settings
+							// once declared (see hostnameChangeForUpdate).
+							m.current = screenHostnameChange
+							m.hostnameError = ""
+							m.hostnameChangeForUpdate = true
+							m.hostnameInput.Focus()
+							return m, nil
+						}
 						// Lands on screenUpdateVersions, not straight into
 						// the ruddervirt-setup check - that's now just the
 						// first row there, alongside the component
@@ -527,6 +626,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Apply - the fixed footer below the table, one cursor
 					// position past the last real row (see
 					// settingsScrollCursor).
+					//
+					// Defense-in-depth: the "configure" menu entry already
+					// forces screenHostnameChange before Settings is ever
+					// reachable, but guard the actual install trigger too,
+					// in case Settings was somehow reached another way -
+					// installing must never proceed without a declared
+					// hostname (see hostnameLocked, hostname.go).
+					if !m.cfg.System.HostnameDeclared && hostnameIsDefault() && !hostnameLocked() {
+						m.current = screenHostnameChange
+						m.hostnameError = ""
+						m.hostnameChangeForUpdate = false
+						m.hostnameInput.Focus()
+						return m, nil
+					}
 					if err := resolveNetworkForInstall(&m.cfg); err != nil {
 						m.settingsError = err.Error()
 						return m, nil
@@ -549,14 +662,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				field := row.field
+				versions := versionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected}
 				if field.locked != nil {
-					if locked, reason := field.locked(&m.cfg); locked {
+					if locked, reason := field.locked(&m.cfg, versions); locked {
 						m.settingsError = reason
 						return m, nil
 					}
 				}
 				if field.options != nil {
-					options := field.options(&m.cfg, versionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions})
+					options := field.options(&m.cfg, versions)
 					if len(options) == 0 {
 						return m, nil // nothing to pick yet - e.g. still fetching, or none detected
 					}
@@ -610,6 +724,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// one cursor position past the last real row (see
 					// updateVersionsScrollCursor). Same install pipeline
 					// Settings' Apply uses.
+					//
+					// Defense-in-depth: same guard as Settings' Apply above
+					// - the "update" menu entry already forces
+					// screenHostnameChange first, but this is the actual
+					// install trigger, so it's guarded here too.
+					if !m.cfg.System.HostnameDeclared && hostnameIsDefault() && !hostnameLocked() {
+						m.current = screenHostnameChange
+						m.hostnameError = ""
+						m.hostnameChangeForUpdate = true
+						m.hostnameInput.Focus()
+						return m, nil
+					}
 					if err := resolveNetworkForInstall(&m.cfg); err != nil {
 						m.settingsError = err.Error()
 						return m, nil
@@ -627,8 +753,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, checkForUpdateCmd()
 				}
 				field := row.field
+				versions := versionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected}
 				if field.locked != nil {
-					if locked, reason := field.locked(&m.cfg); locked {
+					if locked, reason := field.locked(&m.cfg, versions); locked {
 						m.settingsError = reason
 						return m, nil
 					}
@@ -636,7 +763,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Every updateScreen field is picker-only (all four
 				// component-version fields set options), so this always
 				// has something to open.
-				options := field.options(&m.cfg, versionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions})
+				options := field.options(&m.cfg, versions)
 				if len(options) == 0 {
 					return m, nil // nothing to pick yet - e.g. still fetching, or none detected
 				}
@@ -684,6 +811,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.passwordSaving = true
 				m.passwordError = ""
 				return m, setAdminPasswordCmd(newVal)
+			} else if m.current == screenHostnameChange {
+				newHostname, err := parseHostname(m.hostnameInput.Value())
+				if err != nil {
+					m.hostnameError = err.Error()
+					return m, nil
+				}
+				m.hostnameSaving = true
+				m.hostnameError = ""
+				return m, setHostnameCmd(newHostname)
 			}
 			return m, nil
 
@@ -720,6 +856,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.passwordNewInput, cmd = m.passwordNewInput.Update(msg)
 		}
+		return m, cmd
+	}
+
+	if m.current == screenHostnameChange {
+		var cmd tea.Cmd
+		m.hostnameInput, cmd = m.hostnameInput.Update(msg)
 		return m, cmd
 	}
 

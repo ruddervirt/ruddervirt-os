@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -152,5 +153,49 @@ func fetchAileronVersionsCmd() tea.Cmd {
 	return func() tea.Msg {
 		versions, _ := fetchAileronVersions() // best-effort - cycling just no-ops if this fails
 		return aileronVersionsFetchedMsg{versions: versions}
+	}
+}
+
+// stabilizerHelmChartName is the HelmChart object name that signals Aileron
+// is owned by a different chart than the one ruddervirt-setup applies
+// itself (manifests/aileron-helmchart.yaml's HelmChart is named "aileron")
+// - see stabilizerChartPresent.
+const stabilizerHelmChartName = "stabilizer"
+
+// stabilizerChartPresent reports whether a HelmChart object named
+// stabilizerHelmChartName exists anywhere on the cluster, via a bounded,
+// non-interactive kubectl call - same "sudo -n, never risk a password
+// prompt fighting bubbletea's raw-terminal mode" reasoning as the status
+// checks in status.go. Exit code alone isn't a usable signal here: `kubectl
+// get ... --field-selector` still exits 0 when nothing matches, so this
+// checks whether anything was actually returned.
+func stabilizerChartPresent() bool {
+	if !haveNonInteractiveSudo() {
+		return false
+	}
+	const kubectlBin = "/usr/local/bin/kubectl"
+	ctx, cancel := context.WithTimeout(context.Background(), statusCheckTimeout)
+	defer cancel()
+	out, err := runNonInteractive(ctx, kubectlBin, "get", "helmchart", "--all-namespaces",
+		"--field-selector", "metadata.name="+stabilizerHelmChartName, "-o", "name").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
+}
+
+// stabilizerDetectedMsg carries stabilizerChartPresent's result back into
+// Update - same reasoning as aileronVersionsFetchedMsg above.
+type stabilizerDetectedMsg struct {
+	present bool
+}
+
+// detectStabilizerCmd is fired once from Init(), same as
+// fetchAileronVersionsCmd - best-effort, since a slow/unreachable cluster
+// should just leave the Aileron settingFields unlocked rather than blocking
+// the TUI.
+func detectStabilizerCmd() tea.Cmd {
+	return func() tea.Msg {
+		return stabilizerDetectedMsg{present: stabilizerChartPresent()}
 	}
 }

@@ -24,6 +24,7 @@ const (
 	screenUpdate
 	screenPasswordCheck
 	screenPasswordChange
+	screenHostnameChange
 )
 
 type stepOutputMsg string
@@ -124,6 +125,22 @@ type model struct {
 	passwordSaving       bool
 	passwordError        string
 
+	// Forced hostname-declaration flow, gating entry into "configure" (and
+	// "update", and both Apply footers - see hostnameLocked/hostname.go)
+	// just like the password fields above.
+	hostnameInput  textinput.Model
+	hostnameSaving bool
+	hostnameError  string
+	// hostnameChangeForUpdate records which flow forced screenHostnameChange
+	// open, so the completion handlers (hostnameSetMsg/hostnameDeclaredMsg
+	// in app_update.go) know where to resume once the hostname is declared:
+	// false resumes the "configure" chain (password check, then Settings);
+	// true skips straight to screenUpdateVersions, mirroring how "update"
+	// already skips the password check entirely. Every entry point into
+	// screenHostnameChange sets this explicitly, so a stale value from an
+	// earlier visit can never leak into a later one.
+	hostnameChangeForUpdate bool
+
 	termWidth  int
 	termHeight int
 
@@ -143,6 +160,13 @@ type model struct {
 	// fetchK3sVersionsCmd/fetchAileronVersionsCmd.
 	cachedK3sVersions     []string
 	cachedAileronVersions []string
+
+	// cachedStabilizerDetected mirrors the two version caches above: whether
+	// a "stabilizer" HelmChart is on the cluster, populated once via Init's
+	// detectStabilizerCmd (aileron.go). Read by the Aileron settingFields'
+	// locked funcs (config.go) instead of shelling out to kubectl on every
+	// render - see stabilizerLocked/stabilizerChartPresent.
+	cachedStabilizerDetected bool
 }
 
 func initialModel() model {
@@ -162,6 +186,8 @@ func initialModel() model {
 	passwordConfirmInput.EchoMode = textinput.EchoPassword
 	passwordConfirmInput.EchoCharacter = '•'
 
+	hostnameInput := textinput.New()
+
 	cfg, _ := loadConfig(configPath)
 	if cfg.Network.InterfaceName == "" {
 		// Pre-fill with the internet-facing interface if one can be found,
@@ -179,8 +205,20 @@ func initialModel() model {
 	// "configure". Skip the home menu and land straight on the same
 	// password-check -> Settings flow selecting "configure" would trigger,
 	// instead of making them find and type it themselves.
+	//
+	// The hostname check (cfg.System.HostnameDeclared) takes priority over
+	// the password check - see hostname.go - so a fresh node walks the
+	// operator through declaring a hostname first, then the password, then
+	// finally into Settings. hostnameLocked() guards it too: the hostname
+	// is only ever offered for change before install has proceeded (see its
+	// doc comment) - once locked, there's nothing safe left to declare, so
+	// this falls straight through to the password check instead.
 	current := screenMenu
-	if !cfg.System.PasswordChanged {
+	switch {
+	case !cfg.System.HostnameDeclared && hostnameIsDefault() && !hostnameLocked():
+		current = screenHostnameChange
+		hostnameInput.Focus()
+	case !cfg.System.PasswordChanged:
 		current = screenPasswordCheck
 	}
 
@@ -191,6 +229,7 @@ func initialModel() model {
 		updateConfirmInput:   updateConfirmInput,
 		passwordNewInput:     passwordNewInput,
 		passwordConfirmInput: passwordConfirmInput,
+		hostnameInput:        hostnameInput,
 		cfg:                  cfg,
 		// Sane fallback until the first tea.WindowSizeMsg arrives.
 		termWidth:  80,
@@ -199,11 +238,26 @@ func initialModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink, fetchK3sVersionsCmd(), fetchAileronVersionsCmd(), fetchServiceStatusesCmd(m.cfg), tickServiceStatusCmd(), tickServiceStatusRenderCmd()}
+	cmds := []tea.Cmd{textinput.Blink, fetchK3sVersionsCmd(), fetchAileronVersionsCmd(), detectStabilizerCmd(), fetchServiceStatusesCmd(m.cfg), tickServiceStatusCmd(), tickServiceStatusRenderCmd()}
 	if m.current == screenPasswordCheck {
 		// initialModel() starts here on first boot (see its comment) -
 		// same command the menu's "configure" selection fires manually.
 		cmds = append(cmds, checkPasswordChangedCmd())
+	}
+	if !m.cfg.System.HostnameDeclared && (!hostnameIsDefault() || hostnameLocked()) {
+		// Checked directly against the live hostname/lock state rather than
+		// m.current == screenHostnameChange: main.go's boot-loop override
+		// can force m.current back to screenMenu on a skipped/still-default
+		// hostname (same as it does for screenPasswordCheck), and that must
+		// NOT be mistaken for "already customized" here. Only fire this
+		// when there's nothing left to safely declare - the hostname is
+		// already non-default (changed outside this flow) or install has
+		// already proceeded (hostnameLocked, see hostname.go) - to record
+		// it silently instead of forcing the operator through a screen that
+		// either has nothing to do or must never let them touch it again.
+		// Same reasoning as passwordCheckMsg's "already changed outside
+		// this flow" branch in password.go.
+		cmds = append(cmds, finalizeHostnameDeclaredCmd(m.cfg))
 	}
 	return tea.Batch(cmds...)
 }

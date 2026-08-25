@@ -20,18 +20,21 @@ func main() {
 	firstRun := true
 	for {
 		im := initialModel()
-		if !firstRun && im.current == screenPasswordCheck {
-			// initialModel forces the password-change flow whenever the
-			// password is still unchanged - right for this process's
-			// true first launch, but this loop also rebuilds a fresh
-			// model every time control returns here after handing off to
-			// k9s/shell/etc. Without this override, skipping the check
-			// (Ctrl+S on screenPasswordChange) instead of actually
-			// changing the password would force the operator straight
-			// back through it every single time they used k9s or shell,
-			// since the password would still be unchanged on the very
-			// next loop iteration. Land on the menu instead - selecting
-			// "configure" still re-checks and re-prompts as needed.
+		if !firstRun && (im.current == screenPasswordCheck || im.current == screenHostnameChange) {
+			// initialModel forces the password-change/hostname-declare
+			// flows whenever they're still outstanding - right for this
+			// process's true first launch, but this loop also rebuilds a
+			// fresh model every time control returns here after handing
+			// off to k9s/shell/etc. Without this override, deferring one
+			// (Ctrl+S on the password screen; Esc back to the menu, then
+			// k9s/shell, on the hostname screen - it has no skip, see
+			// hostname.go) instead of actually completing it would force
+			// the operator straight back through it every single time they
+			// used k9s or shell, since it would still be outstanding on the
+			// very next loop iteration. Land on the menu instead -
+			// selecting "configure"/"update" still re-checks and re-prompts
+			// as needed, and neither can ever reach the install pipeline
+			// without the hostname actually being declared first.
 			im.current = screenMenu
 		}
 		firstRun = false

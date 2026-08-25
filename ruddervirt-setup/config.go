@@ -49,6 +49,11 @@ type SystemConfig struct {
 	// entering "configure" skips the check (and its /etc/shadow read)
 	// instead of re-verifying every time.
 	PasswordChanged bool `yaml:"password_changed"`
+	// HostnameDeclared records that the operator has confirmed/set the
+	// system hostname away from (or explicitly kept) the well-known default
+	// baked into server.bu - see hostnameIsDefault in hostname.go. Once
+	// true, entering "configure" skips re-checking the live hostname.
+	HostnameDeclared bool `yaml:"hostname_declared"`
 	// AileronUIEnabled toggles the aileronUI.enabled Helm value (see
 	// applyAileron in aileron.go and manifests/aileron-helmchart.yaml).
 	// Defaults to true (matching the chart's own default), but the chart's
@@ -214,12 +219,17 @@ func writePrivileged(path string, data []byte) error {
 }
 
 // versionCache carries the model's in-flight k3s/aileron version-fetch
-// results into settingField.options - the model is the single source of
-// truth for these, so options reads them via this parameter instead of a
+// results, plus other live-detected cluster state, into settingField.options
+// and settingField.locked - the model is the single source of truth for
+// these, so those funcs read them via this parameter instead of a
 // package-level global.
 type versionCache struct {
 	K3s     []string
 	Aileron []string
+	// StabilizerDetected is true when a HelmChart object named "stabilizer"
+	// exists on the cluster - see stabilizerChartPresent (aileron.go). Locks
+	// the Aileron settingFields below.
+	StabilizerDetected bool
 }
 
 // settingField binds one editable Settings-screen row to the Config field it
@@ -247,7 +257,7 @@ type settingField struct {
 	// becomes a no-op and the row shows the returned reason instead of
 	// letting the operator edit/pick a new value. nil (the default for
 	// every existing field) always means editable.
-	locked func(cfg *Config) (bool, string)
+	locked func(cfg *Config, versions versionCache) (bool, string)
 }
 
 func parseRequiredIP(name, val string) (string, error) {
@@ -287,6 +297,18 @@ func parseDNSList(val string) ([]string, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// stabilizerLocked backs both Aileron settingFields' locked funcs: if
+// aileron is owned by a separate "stabilizer" Helm chart on this cluster
+// (see stabilizerChartPresent, aileron.go), ruddervirt-setup must not touch
+// it, so both fields report themselves as managed by ruddervirt instead of
+// letting the operator edit or pick a new value here.
+func stabilizerLocked(c *Config, versions versionCache) (bool, string) {
+	if versions.StabilizerDetected {
+		return true, "managed by ruddervirt"
+	}
+	return false, ""
 }
 
 var settingFields = []settingField{
@@ -475,6 +497,9 @@ var settingFields = []settingField{
 			c.Versions.Aileron = v
 			return nil
 		},
+		// Locks whenever a HelmChart named "stabilizer" is on the cluster -
+		// see stabilizerLocked.
+		locked: stabilizerLocked,
 	},
 	{
 		// UNAUTHENTICATED when on - see AileronUIEnabled's doc comment.
@@ -490,6 +515,9 @@ var settingFields = []settingField{
 			c.System.AileronUIEnabled = v == "on"
 			return nil
 		},
+		// Same reasoning as versions.aileron above - both Aileron fields
+		// lock together once a "stabilizer" chart is detected.
+		locked: stabilizerLocked,
 	},
 	{
 		key: "storage.engine", label: "Storage engine",
@@ -503,7 +531,7 @@ var settingFields = []settingField{
 		// engine (see storage.go) - switching engines on a node that
 		// may already hold VM data isn't a supported migration, so the
 		// operator can't even open the picker once that's happened.
-		locked: func(c *Config) (bool, string) {
+		locked: func(c *Config, versions versionCache) (bool, string) {
 			if storageEngineApplied() {
 				return true, "locked — disk already prepared for " + c.Storage.Engine + ", reinstall OS to change"
 			}
