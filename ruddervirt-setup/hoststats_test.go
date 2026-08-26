@@ -56,23 +56,6 @@ func TestReadMemStats(t *testing.T) {
 	}
 }
 
-func TestReadDiskStats(t *testing.T) {
-	free, total, ok := readDiskStats("/")
-	if !ok {
-		t.Fatalf(`readDiskStats("/") ok = false, want true`)
-	}
-	if total <= 0 {
-		t.Errorf(`readDiskStats("/") totalGiB = %v, want > 0`, total)
-	}
-	if free < 0 || free > total {
-		t.Errorf(`readDiskStats("/") freeGiB = %v, want within [0, %v]`, free, total)
-	}
-
-	if _, _, ok := readDiskStats("/no/such/path/ruddervirt-test"); ok {
-		t.Errorf("readDiskStats(nonexistent path) ok = true, want false")
-	}
-}
-
 func TestFormatGiB(t *testing.T) {
 	cases := []struct {
 		v    float64
@@ -128,7 +111,7 @@ func TestFetchVMCounts(t *testing.T) {
 	})
 }
 
-func TestFetchHostStatsSkipsVMCountsWhenUnconfigured(t *testing.T) {
+func TestFetchHostStatsSkipsClusterQueriesWhenUnconfigured(t *testing.T) {
 	r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
 		t.Errorf("unexpected command on an unconfigured system: %s %v", name, args)
 		return commandOutcome{}
@@ -139,6 +122,9 @@ func TestFetchHostStatsSkipsVMCountsWhenUnconfigured(t *testing.T) {
 	})
 	if stats.vmKnown {
 		t.Errorf("fetchHostStats() on an unconfigured system reported vmKnown = true, want false")
+	}
+	if stats.diskKnown {
+		t.Errorf("fetchHostStats() on an unconfigured system reported diskKnown = true, want false")
 	}
 }
 

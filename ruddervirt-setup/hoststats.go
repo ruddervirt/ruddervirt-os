@@ -9,7 +9,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -79,17 +78,17 @@ func fetchHostStats(cfg Config, prevSample cpuSample) (hostStats, cpuSample) {
 		stats.memKnown = true
 	}
 
-	if free, total, ok := readDiskStats(diskStatsPath); ok {
-		stats.diskFreeGiB = free
-		stats.diskTotalGiB = total
-		stats.diskKnown = true
-	}
-
-	// VM counts need a live cluster - same "nothing meaningful to report on
-	// a fresh/unconfigured system" and "no cached sudo ticket" gating as
-	// fetchServiceStatuses, since kubectl needs both a saved config and a
-	// root kubeconfig to answer.
+	// Disk capacity and VM counts both need a live cluster (or, for
+	// openebs, at least a root kubeconfig's worth of privilege to read the
+	// host's LVM state) - same "nothing meaningful to report on a
+	// fresh/unconfigured system" and "no cached sudo ticket" gating as
+	// fetchServiceStatuses.
 	if configSaved() && haveNonInteractiveSudo() {
+		if free, total, ok := storageEngineCapacity(kubectlBinPath, cfg.Storage.Engine); ok {
+			stats.diskFreeGiB = free
+			stats.diskTotalGiB = total
+			stats.diskKnown = true
+		}
 		if running, total, ok := fetchVMCounts(kubectlBinPath); ok {
 			stats.vmRunning = running
 			stats.vmTotal = total
@@ -162,8 +161,9 @@ func cpuPercentBetween(prev, cur cpuSample) (float64, bool) {
 	return (1 - float64(idleDelta)/float64(totalDelta)) * 100, true
 }
 
-// bytesPerGiB converts /proc/meminfo's kB figures and syscall.Statfs_t's
-// block counts into the GiB units renderHostStats displays.
+// bytesPerGiB converts /proc/meminfo's kB figures and the storage engines'
+// byte-denominated capacity figures into the GiB units hostStatsLine
+// displays.
 const bytesPerGiB = 1024 * 1024 * 1024
 
 func readMemStats() (usedGiB, totalGiB, percent float64, ok bool) {
@@ -199,22 +199,6 @@ func readMemStats() (usedGiB, totalGiB, percent float64, ok bool) {
 	usedGiB = float64(totalKB-availKB) * bytesPerKB / bytesPerGiB
 	percent = float64(totalKB-availKB) / float64(totalKB) * 100
 	return usedGiB, totalGiB, percent, true
-}
-
-// diskStatsPath is statfs'd for the home screen's "Disk" figure - "/" since
-// this is a single-disk all-in-one install (see README's Target Hardware
-// Requirements) and VM/cluster storage all lives under the same root
-// filesystem.
-const diskStatsPath = "/"
-
-func readDiskStats(path string) (freeGiB, totalGiB float64, ok bool) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, 0, false
-	}
-	freeGiB = float64(stat.Bavail) * float64(stat.Bsize) / bytesPerGiB
-	totalGiB = float64(stat.Blocks) * float64(stat.Bsize) / bytesPerGiB
-	return freeGiB, totalGiB, true
 }
 
 // fetchVMCounts asks KubeVirt how many VirtualMachineInstances exist and how

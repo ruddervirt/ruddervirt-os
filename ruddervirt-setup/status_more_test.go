@@ -180,3 +180,122 @@ func TestFetchServiceStatusesCmdDropsStorage(t *testing.T) {
 		t.Errorf("fetchServiceStatusesCmd()() = %+v, want %+v", got, want)
 	}
 }
+
+func TestCephClusterCapacity(t *testing.T) {
+	t.Run("reports available and total bytes", func(t *testing.T) {
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			if cmdContains(name, args, "cephcluster", "-n", "rook-ceph") {
+				return commandOutcome{out: []byte("107374182400 214748364800")}
+			}
+			return commandOutcome{}
+		}}
+		var free, total float64
+		var ok bool
+		withFakeRunner(r, func() { free, total, ok = cephClusterCapacity("/usr/local/bin/kubectl") })
+		if !ok || free != 100 || total != 200 {
+			t.Errorf("cephClusterCapacity() = (%v, %v, %v), want (100, 200, true)", free, total, ok)
+		}
+	})
+
+	t.Run("capacity not yet populated reports unknown", func(t *testing.T) {
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			return commandOutcome{out: []byte(" ")}
+		}}
+		var ok bool
+		withFakeRunner(r, func() { _, _, ok = cephClusterCapacity("/usr/local/bin/kubectl") })
+		if ok {
+			t.Errorf("cephClusterCapacity() ok = true, want false")
+		}
+	})
+
+	t.Run("kubectl error reports unknown", func(t *testing.T) {
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			return commandOutcome{err: errFake}
+		}}
+		var ok bool
+		withFakeRunner(r, func() { _, _, ok = cephClusterCapacity("/usr/local/bin/kubectl") })
+		if ok {
+			t.Errorf("cephClusterCapacity() ok = true, want false")
+		}
+	})
+}
+
+func TestLonghornCapacity(t *testing.T) {
+	t.Run("sums across nodes and disks", func(t *testing.T) {
+		body := `{"items":[
+			{"status":{"diskStatus":{"disk1":{"storageAvailable":53687091200,"storageMaximum":107374182400}}}},
+			{"status":{"diskStatus":{"disk1":{"storageAvailable":26843545600,"storageMaximum":53687091200}}}}
+		]}`
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			return commandOutcome{out: []byte(body)}
+		}}
+		var free, total float64
+		var ok bool
+		withFakeRunner(r, func() { free, total, ok = longhornCapacity("/usr/local/bin/kubectl") })
+		if !ok || free != 75 || total != 150 {
+			t.Errorf("longhornCapacity() = (%v, %v, %v), want (75, 150, true)", free, total, ok)
+		}
+	})
+
+	t.Run("no nodes reports unknown", func(t *testing.T) {
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			return commandOutcome{out: []byte(`{"items":[]}`)}
+		}}
+		var ok bool
+		withFakeRunner(r, func() { _, _, ok = longhornCapacity("/usr/local/bin/kubectl") })
+		if ok {
+			t.Errorf("longhornCapacity() ok = true, want false")
+		}
+	})
+
+	t.Run("kubectl error reports unknown", func(t *testing.T) {
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			return commandOutcome{err: errFake}
+		}}
+		var ok bool
+		withFakeRunner(r, func() { _, _, ok = longhornCapacity("/usr/local/bin/kubectl") })
+		if ok {
+			t.Errorf("longhornCapacity() ok = true, want false")
+		}
+	})
+}
+
+func TestOpenebsVGCapacity(t *testing.T) {
+	t.Run("reports free and total bytes", func(t *testing.T) {
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			if cmdContains(name, args, "vgs", openebsVGName) {
+				return commandOutcome{out: []byte("  107374182400  214748364800\n")}
+			}
+			return commandOutcome{}
+		}}
+		var free, total float64
+		var ok bool
+		withFakeRunner(r, func() { free, total, ok = openebsVGCapacity() })
+		if !ok || free != 100 || total != 200 {
+			t.Errorf("openebsVGCapacity() = (%v, %v, %v), want (100, 200, true)", free, total, ok)
+		}
+	})
+
+	t.Run("vgs error (volume group missing) reports unknown", func(t *testing.T) {
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			return commandOutcome{err: errFake}
+		}}
+		var ok bool
+		withFakeRunner(r, func() { _, _, ok = openebsVGCapacity() })
+		if ok {
+			t.Errorf("openebsVGCapacity() ok = true, want false")
+		}
+	})
+}
+
+func TestStorageEngineCapacityUnknownEngine(t *testing.T) {
+	r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+		t.Errorf("unexpected command for an unknown engine: %s %v", name, args)
+		return commandOutcome{}
+	}}
+	var ok bool
+	withFakeRunner(r, func() { _, _, ok = storageEngineCapacity("/usr/local/bin/kubectl", "unknown-engine") })
+	if ok {
+		t.Errorf("storageEngineCapacity() ok = true, want false")
+	}
+}

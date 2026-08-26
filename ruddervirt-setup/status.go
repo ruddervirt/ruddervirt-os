@@ -4,8 +4,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -263,6 +265,114 @@ func storageEngineReady(kubectlBin, engine string) bool {
 	default:
 		return false
 	}
+}
+
+// storageEngineCapacity asks the storage engine itself how much space is
+// left for VM data - unlike statfs("/") (this home screen's old approach),
+// this reflects the engine's own usable capacity rather than the root
+// filesystem, which for rook-ceph doesn't even have one: bluestore OSDs
+// consume the raw partition directly, never mounted, so df/statfs report
+// nothing meaningful about it at all.
+func storageEngineCapacity(kubectlBin, engine string) (freeGiB, totalGiB float64, ok bool) {
+	switch engine {
+	case "rook-ceph":
+		return cephClusterCapacity(kubectlBin)
+	case "longhorn":
+		return longhornCapacity(kubectlBin)
+	case "openebs":
+		return openebsVGCapacity()
+	default:
+		return 0, 0, false
+	}
+}
+
+// cephClusterCapacity reads the CephCluster CR's own capacity summary - the
+// rook operator periodically populates status.ceph.capacity from `ceph df`
+// itself, so this needs nothing beyond a single kubectl get (no toolbox pod
+// exec required).
+func cephClusterCapacity(kubectlBin string) (freeGiB, totalGiB float64, ok bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), statusCheckTimeout)
+	defer cancel()
+	out, err := runNonInteractive(ctx, kubectlBin, "get", "cephcluster", "-n", "rook-ceph", "rook-ceph",
+		"-o", "jsonpath={.status.ceph.capacity.bytesAvailable} {.status.ceph.capacity.bytesTotal}").Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) != 2 {
+		return 0, 0, false
+	}
+	avail, err1 := strconv.ParseFloat(fields[0], 64)
+	total, err2 := strconv.ParseFloat(fields[1], 64)
+	if err1 != nil || err2 != nil || total == 0 {
+		return 0, 0, false
+	}
+	return avail / bytesPerGiB, total / bytesPerGiB, true
+}
+
+// longhornNodeList is the handful of nodes.longhorn.io CR fields
+// longhornCapacity needs. Each node reports its own disks' capacity under
+// status.diskStatus, summed across every node/disk for a cluster-wide total
+// - this appliance is usually single-node, but a multi-node setup (see
+// README's network table) reports the same CR shape either way.
+type longhornNodeList struct {
+	Items []struct {
+		Status struct {
+			DiskStatus map[string]struct {
+				StorageAvailable int64 `json:"storageAvailable"`
+				StorageMaximum   int64 `json:"storageMaximum"`
+			} `json:"diskStatus"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+func longhornCapacity(kubectlBin string) (freeGiB, totalGiB float64, ok bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), statusCheckTimeout)
+	defer cancel()
+	out, err := runNonInteractive(ctx, kubectlBin, "get", "nodes.longhorn.io", "-n", "longhorn-system", "-o", "json").Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	var list longhornNodeList
+	if err := json.Unmarshal(out, &list); err != nil {
+		return 0, 0, false
+	}
+	var freeBytes, totalBytes int64
+	for _, item := range list.Items {
+		for _, disk := range item.Status.DiskStatus {
+			freeBytes += disk.StorageAvailable
+			totalBytes += disk.StorageMaximum
+		}
+	}
+	if totalBytes == 0 {
+		return 0, 0, false
+	}
+	return float64(freeBytes) / bytesPerGiB, float64(totalBytes) / bytesPerGiB, true
+}
+
+// openebsVGCapacity reads the LVM volume group's own free/total space
+// directly - the LVM LocalPV CSI driver has no capacity API of its own, and
+// the volume group already lives on this host (see prepareOpenEBSDevice,
+// storage.go), so there's no cluster round-trip needed at all. --units b
+// sidesteps LVM's g/G (binary vs. decimal GiB/GB) unit ambiguity entirely by
+// asking for exact bytes instead.
+func openebsVGCapacity() (freeGiB, totalGiB float64, ok bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), statusCheckTimeout)
+	defer cancel()
+	out, err := runNonInteractive(ctx, vgsBin, "--noheadings", "--units", "b", "--nosuffix", "-o", "vg_free,vg_size", openebsVGName).Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) != 2 {
+		return 0, 0, false
+	}
+	free, err1 := strconv.ParseFloat(fields[0], 64)
+	total, err2 := strconv.ParseFloat(fields[1], 64)
+	if err1 != nil || err2 != nil || total == 0 {
+		return 0, 0, false
+	}
+	return free / bytesPerGiB, total / bytesPerGiB, true
 }
 
 func readyState(ready bool) string {
