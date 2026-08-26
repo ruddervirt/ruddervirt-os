@@ -267,6 +267,13 @@ func downloadToPrivilegedPath(url, destPath string, mode os.FileMode) error {
 	if err := os.Chmod(tmpPath, mode); err != nil {
 		return err
 	}
+	// mkdir -p first, same as writePrivileged (config.go) - destPath's
+	// parent (/etc/ruddervirt/manifests/ for this func's only caller) isn't
+	// guaranteed to exist otherwise; nothing provisions it via Ignition (see
+	// server.bu).
+	if out, err := runPrivileged("/usr/bin/mkdir", "-p", filepath.Dir(destPath)).CombinedOutput(); err != nil {
+		return wrapCmdErr(out, err)
+	}
 	if out, err := runPrivileged("/usr/bin/mv", tmpPath, destPath).CombinedOutput(); err != nil {
 		return wrapCmdErr(out, err)
 	}

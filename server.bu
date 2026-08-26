@@ -85,48 +85,6 @@ storage:
           gpgcheck=1
           repo_gpgcheck=0
           gpgkey=https://rpm.rancher.io/public.key
-    # /etc/ruddervirt/manifests otherwise gets no Ignition provisioning at
-    # all: every solution manifest ruddervirt-setup applies (storage
-    # engines, kube-ovn, multus, snapshot-controller, aileron) is go:embed'd
-    # straight into the ruddervirt-setup binary (see
-    # ruddervirt-setup/embedded_manifests.go) and written to
-    # /etc/ruddervirt/manifests fresh on every "Applying manifests" run,
-    # immediately before it's read - never provisioned once and left to go
-    # stale. Ignition only ever runs at first boot, so a one-time copy here
-    # couldn't reach an already-provisioned host when a manifest changes in
-    # a later release; the ruddervirt-setup binary can, since it's always
-    # fetched fresh (see its own entry below) and an operator can pull and
-    # re-apply it anytime. The four KubeVirt/CDI placeholders just below are
-    # the one exception already on that same "never trust a first-boot
-    # copy" footing, just via a network download instead of an embed.
-    - path: /etc/ruddervirt/manifests/kubevirt-operator.yaml
-      mode: 0644
-      contents:
-        inline: |
-          # placeholder - overwritten by ruddervirt-setup's "Downloading
-          # KubeVirt/CDI manifests" step, which always downloads the
-          # version selected in Settings.
-    - path: /etc/ruddervirt/manifests/kubevirt-cr.yaml
-      mode: 0644
-      contents:
-        inline: |
-          # placeholder - overwritten by ruddervirt-setup's "Downloading
-          # KubeVirt/CDI manifests" step, which always downloads the
-          # version selected in Settings.
-    - path: /etc/ruddervirt/manifests/cdi-operator.yaml
-      mode: 0644
-      contents:
-        inline: |
-          # placeholder - overwritten by ruddervirt-setup's "Downloading
-          # KubeVirt/CDI manifests" step, which always downloads the
-          # version selected in Settings.
-    - path: /etc/ruddervirt/manifests/cdi-cr.yaml
-      mode: 0644
-      contents:
-        inline: |
-          # placeholder - overwritten by ruddervirt-setup's "Downloading
-          # KubeVirt/CDI manifests" step, which always downloads the
-          # version selected in Settings.
     - path: /etc/NetworkManager/conf.d/no-search-domains.conf
       mode: 0644
       contents:
