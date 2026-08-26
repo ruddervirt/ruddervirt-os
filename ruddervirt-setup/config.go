@@ -302,11 +302,13 @@ func parseDNSList(val string) ([]string, error) {
 // stabilizerLocked backs both Aileron settingFields' locked funcs: if
 // aileron is owned by a separate "stabilizer" Helm chart on this cluster
 // (see stabilizerChartPresent, aileron.go), ruddervirt-setup must not touch
-// it, so both fields report themselves as managed by ruddervirt instead of
-// letting the operator edit or pick a new value here.
+// it, so both fields report themselves as managed by stabilizer instead of
+// letting the operator edit or pick a new value here. prepareK3sStep (k3s.go)
+// re-checks this at apply time too, so it isn't just the interactive picker
+// that's guarded.
 func stabilizerLocked(c *Config, versions versionCache) (bool, string) {
 	if versions.StabilizerDetected {
-		return true, "managed by ruddervirt"
+		return true, "managed by stabilizer"
 	}
 	return false, ""
 }

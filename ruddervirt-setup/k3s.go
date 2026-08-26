@@ -693,14 +693,28 @@ func prepareK3sStep(cfg Config, ch chan<- tea.Msg) {
 		return
 	}
 
-	aileronVersion := strings.TrimSpace(cfg.Versions.Aileron)
-	if aileronVersion == "" {
-		aileronVersion = defaultAileronVersion
-	}
-	ch <- stepOutputMsg("Applying aileron...")
-	if err := applyAileron(ch, kubectlBin, aileronVersion, cfg.System.AileronUIEnabled); err != nil {
-		fail(err)
-		return
+	// Defense-in-depth, same reasoning as prepareStorageDevice's own
+	// re-check (storage.go): the Settings/Update screens' version field
+	// already refuses to let the operator pick a new Aileron version once a
+	// "stabilizer" HelmChart is on the cluster (see stabilizerLocked,
+	// config.go), but that only guards the interactive picker. Without this
+	// check here too, a hand-edited config - or simply hitting Apply with
+	// whatever version was already saved before stabilizer showed up -
+	// would still re-apply ruddervirt-setup's own "aileron" HelmChart every
+	// run, fighting stabilizer for ownership of the same Aileron
+	// installation.
+	if stabilizerChartPresent() {
+		ch <- stepOutputMsg("Aileron is managed by stabilizer - skipping")
+	} else {
+		aileronVersion := strings.TrimSpace(cfg.Versions.Aileron)
+		if aileronVersion == "" {
+			aileronVersion = defaultAileronVersion
+		}
+		ch <- stepOutputMsg("Applying aileron...")
+		if err := applyAileron(ch, kubectlBin, aileronVersion, cfg.System.AileronUIEnabled); err != nil {
+			fail(err)
+			return
+		}
 	}
 
 	if out, err := runPrivileged("/usr/bin/mkdir", "-p", "/var/lib/ruddervirt").CombinedOutput(); err != nil {
@@ -723,7 +737,7 @@ func prepareK3sStep(cfg Config, ch chan<- tea.Msg) {
 // skip-vs-do distinction worth predicting here, unlike installK3sStep's or
 // downloadKubeVirtCDIManifestsStep's on-disk version checks.
 func planApplyManifests(cfg Config) string {
-	return "will run - applies storage plus KubeVirt/CDI operators, CRDs, and custom resources (already-applied resources and Ready waits are no-ops)"
+	return "will run - applies storage plus KubeVirt/CDI operators, CRDs, and custom resources, and Aileron unless a \"stabilizer\" HelmChart already manages it (already-applied resources and Ready waits are no-ops)"
 }
 
 // applyStorageEngine applies the kustomize overlay for engine and blocks
