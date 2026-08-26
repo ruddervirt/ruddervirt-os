@@ -3,9 +3,9 @@
 Rudder Virt OS is an operating system that provides an all-in-one environment for building, hosting, and running cloneable virtual machines. It includes all the necessary software and configurations to run the open-source [aileron](https://github.com/Rudder Virt/aileron) project.
 
 ## Should I use this? 
-If you just want a simple way to build and use virtual machines, we recommend you use [Proxmox VE](https://www.proxmox.com/en/products/proxmox-virtual-environment/overview). Rudder Virt OS is built specifically for the use-case of deploying declaratively built virtual machines. We impose opinionated decisions on VM lifecycle, such as build manifests, scripted building, and isolated virtual private networks. You can read more about some of these decisions [here](https://Rudder Virt.com/docs/building/mental-model). 
+If you just want a simple way to build and use virtual machines, we recommend you use [Proxmox VE](https://www.proxmox.com/en/products/proxmox-virtual-environment/overview). Rudder Virt OS is built specifically for the use-case of deploying declaratively built virtual machines. We impose opinionated decisions on VM lifecycle, such as build manifests, scripted building, and isolated virtual private networks. You can read more about some of these decisions [here](https://ruddervirt.com/docs/building/mental-model). 
 
-This operating system is the foundation for running a self-hosted VM Deployment Zone on Rudder Virt.com. However, it cannot be used without coordination with Rudder Virt. Please contact us at [selfhosted@Rudder Virt.com](mailto:selfhosted@Rudder Virt.com) for more information.
+This operating system is the foundation for running a self-hosted VM Deployment Zone on ruddervirt.com. However, it cannot be used without coordination with Rudder Virt. Please contact us at [selfhosted@ruddervirt.com](mailto:selfhosted@ruddervirt.com) for more information.
 
 ## Getting Started
 
