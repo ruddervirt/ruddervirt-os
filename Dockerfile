@@ -16,6 +16,5 @@ WORKDIR /opt
 COPY create-iso.py .
 COPY server.bu .
 COPY scripts ./scripts
-COPY manifests ./manifests
 
 ENTRYPOINT ["python3", "./create-iso.py"]

@@ -413,6 +413,9 @@ func discoverMasterNodeIPs(kubectlBin string) ([]string, string, error) {
 // file's header comment) and applies the result.
 func applyKubeOvn(ch chan<- tea.Msg, kubectlBin, podCIDR, podGateway, svcCIDR string, masterIPs []string) error {
 	const templatePath = "/etc/ruddervirt/manifests/kube-ovn.yaml"
+	if err := writeManifestFile(ch, "kube-ovn.yaml"); err != nil {
+		return err
+	}
 	data, err := os.ReadFile(templatePath)
 	if err != nil {
 		return err
@@ -573,6 +576,10 @@ func prepareK3sStep(cfg Config, ch chan<- tea.Msg) {
 	// The CSI VolumeSnapshot CRDs/controller are shared infrastructure -
 	// every engine's VolumeSnapshotClass (applied below, after the engine
 	// itself is ready) depends on them being present.
+	if err := writeManifestFile(ch, "snapshot-controller.yaml"); err != nil {
+		fail(err)
+		return
+	}
 	ch <- stepOutputMsg("Applying snapshot-controller...")
 	if err := runStreamed(ch, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/snapshot-controller.yaml"); err != nil {
 		fail(err)
@@ -650,6 +657,10 @@ func prepareK3sStep(cfg Config, ch chan<- tea.Msg) {
 	// Established before applyAileron runs below, or its helm install fails
 	// with "no matches for kind NetworkAttachmentDefinition".
 	const multusCRD = "network-attachment-definitions.k8s.cni.cncf.io"
+	if err := writeManifestFile(ch, "multus-crd.yaml"); err != nil {
+		fail(err)
+		return
+	}
 	ch <- stepOutputMsg("Applying multus CRDs...")
 	if err := runStreamed(ch, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/multus-crd.yaml"); err != nil {
 		fail(err)
@@ -660,6 +671,10 @@ func prepareK3sStep(cfg Config, ch chan<- tea.Msg) {
 		return
 	}
 
+	if err := writeManifestFile(ch, "multus.yaml"); err != nil {
+		fail(err)
+		return
+	}
 	ch <- stepOutputMsg("Applying multus...")
 	if err := runStreamed(ch, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/multus.yaml"); err != nil {
 		fail(err)
@@ -712,6 +727,13 @@ func planApplyManifests(cfg Config) string {
 // CSI driver to register, then for every pod in their namespace to be
 // Ready.
 func applyStorageEngine(ch chan<- tea.Msg, kubectlBin, engine string) error {
+	// Refresh the on-disk manifests from this binary's embedded copy before
+	// kubectl reads them below - see writeStorageManifests's doc comment for
+	// why this, not Ignition, is what keeps an already-provisioned host's
+	// storage engine upgradable.
+	if err := writeStorageManifests(ch, engine); err != nil {
+		return err
+	}
 	switch engine {
 	case "rook-ceph":
 		return applyRookCeph(ch, kubectlBin)

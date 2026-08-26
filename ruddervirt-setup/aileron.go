@@ -106,6 +106,9 @@ func applyAileron(ch chan<- tea.Msg, kubectlBin, version string, uiEnabled bool)
 
 	chartVersion := strings.TrimPrefix(version, "v")
 
+	if err := writeManifestFile(ch, "aileron-helmchart.yaml"); err != nil {
+		return err
+	}
 	data, err := os.ReadFile(templatePath)
 	if err != nil {
 		return err

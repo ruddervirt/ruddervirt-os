@@ -10,6 +10,12 @@ scripts/dev
 # The setup TUI binary is fetched over HTTP at first boot (see server.bu), not
 # baked into the image, so keep it out of the build context.
 scripts/ruddervirt-setup
+# ruddervirt-setup/manifests/ used to be COPYed here for Ignition to embed
+# (see server.bu). Every manifest is now go:embed'd straight into the
+# ruddervirt-setup binary instead (ruddervirt-setup/embedded_manifests.go),
+# so this Go module is irrelevant to the ISO builder - it's built and
+# published separately (see release.yml).
+ruddervirt-setup
 *.md
 *.iso
 *.ign

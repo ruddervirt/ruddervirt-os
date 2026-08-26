@@ -13,7 +13,7 @@ spec:
   chart: openebs
   targetNamespace: openebs
   createNamespace: true
-  version: 4.2.0
+  version: 4.6.0
   valuesContent: |-
     engines:
       local:
@@ -21,10 +21,17 @@ spec:
           enabled: true
         zfs:
           enabled: false
+        hostpath:
+          enabled: false
       replicated:
         mayastor:
           enabled: false
-    localpv-provisioner:
+
+    # 4.4.0+ bundles an optional Loki/Alloy logging stack, on by default -
+    # keep it off, it's unrelated to LVM-LocalPV storage.
+    loki:
+      enabled: false
+    alloy:
       enabled: false
 
     # snapshot-controller.yaml already owns the shared CSI VolumeSnapshot
