@@ -729,7 +729,11 @@ func (m model) View() string {
 				s += fmt.Sprintf("Aileron UI:  %s\n\n", linkStyle.Render(url))
 			}
 		}
-		s += renderServiceStatuses(m.serviceStatuses, m.serviceStatusUpdatedAt)
+		statusUpdatedAt := m.serviceStatusUpdatedAt
+		if m.hostStatsUpdatedAt.After(statusUpdatedAt) {
+			statusUpdatedAt = m.hostStatsUpdatedAt
+		}
+		s += renderHomeStatus(m.serviceStatuses, m.hostStats, statusUpdatedAt)
 		// The ↑/↓ cursor only shows while input's empty - once the operator
 		// starts typing a number/word, that takes over on Enter (see the
 		// screenMenu case in app_update.go), so highlighting a cursor row

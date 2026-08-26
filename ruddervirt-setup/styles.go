@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -143,6 +144,22 @@ func styleState(state string) string {
 		return helpStyle.Render(state)
 	default:
 		return state
+	}
+}
+
+// styleUsagePercent color-codes a CPU/memory load percentage on the home
+// screen's "System" summary - green under 75%, yellow up to 90%, red above -
+// so a saturated host stands out without the operator doing the math
+// themselves.
+func styleUsagePercent(pct float64) string {
+	text := fmt.Sprintf("%.0f%%", pct)
+	switch {
+	case pct >= 90:
+		return errorStyle.Render(text)
+	case pct >= 75:
+		return warningStyle.Render(text)
+	default:
+		return successStyle.Render(text)
 	}
 }
 

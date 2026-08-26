@@ -154,6 +154,16 @@ type model struct {
 	serviceStatuses        []serviceStatus
 	serviceStatusUpdatedAt time.Time
 
+	// Home screen's "System" summary (hoststats.go) - CPU/mem/disk/VM
+	// counts, refreshed on the same cadence as serviceStatuses above.
+	// prevCPUSample is the raw /proc/stat reading from the last fetch,
+	// carried forward so the next one has a baseline to diff CPU% against
+	// (see cpuPercentBetween) - zero until the first fetch completes, which
+	// cpuPercentBetween treats as "no baseline yet" rather than a real 0%.
+	hostStats          hostStats
+	hostStatsUpdatedAt time.Time
+	prevCPUSample      cpuSample
+
 	// cachedK3sVersions/cachedAileronVersions hold the release tags
 	// fetchK3sVersions/fetchAileronVersions found, for the Settings screen's
 	// version fields to pick from - populated once, best-effort, via Init's
@@ -238,7 +248,7 @@ func initialModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink, fetchK3sVersionsCmd(), fetchAileronVersionsCmd(), detectStabilizerCmd(), fetchServiceStatusesCmd(m.cfg), tickServiceStatusCmd(), tickServiceStatusRenderCmd()}
+	cmds := []tea.Cmd{textinput.Blink, fetchK3sVersionsCmd(), fetchAileronVersionsCmd(), detectStabilizerCmd(), fetchServiceStatusesCmd(m.cfg), fetchHostStatsCmd(m.cfg, m.prevCPUSample), tickServiceStatusCmd(), tickServiceStatusRenderCmd()}
 	if m.current == screenPasswordCheck {
 		// initialModel() starts here on first boot (see its comment) -
 		// same command the menu's "configure" selection fires manually.

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/mattn/go-runewidth"
 )
 
 // statusCheckTimeout bounds every individual check below - short enough
@@ -107,27 +106,46 @@ func fetchServiceStatusesCmd(cfg Config) tea.Cmd {
 	}
 }
 
-// renderServiceStatuses formats the home screen's "Services" summary -
-// statuses is nil until fetchServiceStatusesCmd's first result lands, in
-// which case this renders nothing rather than a block of blank rows.
-func renderServiceStatuses(statuses []serviceStatus, updatedAt time.Time) string {
+// serviceStatusLine formats the home screen's Services row - all services
+// condensed onto one line (state conveyed by the bullet's color, see
+// stateBullet), or "" when statuses is nil (fetchServiceStatusesCmd's first
+// result hasn't landed yet). Combined with hostStatsLine (hoststats.go)
+// under a single "Status" header by renderHomeStatus (view.go) instead of
+// each getting its own header/blank-line overhead.
+func serviceStatusLine(statuses []serviceStatus) string {
 	if len(statuses) == 0 {
 		return ""
 	}
-	nameWidth := 0
-	for _, st := range statuses {
-		if l := runewidth.StringWidth(st.name); l > nameWidth {
-			nameWidth = l
-		}
+	parts := make([]string, len(statuses))
+	for i, st := range statuses {
+		parts[i] = fmt.Sprintf("%s %s", stateBullet(st.state), st.name)
 	}
-	header := "Services"
+	return strings.Join(parts, "   ")
+}
+
+// renderHomeStatus formats the home screen's combined "Status" block -
+// Services (serviceStatusLine) and System (hostStatsLine, hoststats.go)
+// used to render as two separate headered blocks; merged into one here so
+// their header/blank-line overhead isn't paid twice, leaving more room for
+// the menu below. Renders nothing until at least one of the two rows has
+// something to show.
+func renderHomeStatus(statuses []serviceStatus, hs hostStats, updatedAt time.Time) string {
+	svcLine := serviceStatusLine(statuses)
+	sysLine := hostStatsLine(hs)
+	if svcLine == "" && sysLine == "" {
+		return ""
+	}
+	header := "Status"
 	if !updatedAt.IsZero() {
-		header = fmt.Sprintf("Services (updated %s ago)", formatAge(time.Since(updatedAt)))
+		header = fmt.Sprintf("Status (updated %s ago)", formatAge(time.Since(updatedAt)))
 	}
 	var b strings.Builder
 	b.WriteString(helpStyle.Render(header) + "\n")
-	for _, st := range statuses {
-		fmt.Fprintf(&b, "  %s %s  %s\n", stateBullet(st.state), fitCell(st.name, nameWidth), styleState(st.state))
+	if svcLine != "" {
+		b.WriteString("  " + svcLine + "\n")
+	}
+	if sysLine != "" {
+		b.WriteString("  " + sysLine + "\n")
 	}
 	b.WriteString("\n")
 	return b.String()

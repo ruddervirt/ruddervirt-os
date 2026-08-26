@@ -37,9 +37,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.serviceStatusUpdatedAt = time.Now()
 		return m, nil
 
+	case hostStatsMsg:
+		m.hostStats = msg.stats
+		m.prevCPUSample = msg.sample
+		m.hostStatsUpdatedAt = time.Now()
+		return m, nil
+
 	case serviceStatusTickMsg:
 		if m.current == screenMenu {
-			return m, tea.Batch(fetchServiceStatusesCmd(m.cfg), tickServiceStatusCmd())
+			return m, tea.Batch(fetchServiceStatusesCmd(m.cfg), fetchHostStatsCmd(m.cfg, m.prevCPUSample), tickServiceStatusCmd())
 		}
 		return m, tickServiceStatusCmd()
 
@@ -410,7 +416,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.hostnameInput.SetValue("")
 			m.hostnameInput.Blur()
 			m.hostnameChangeForUpdate = false
-			return m, fetchServiceStatusesCmd(m.cfg)
+			return m, tea.Batch(fetchServiceStatusesCmd(m.cfg), fetchHostStatsCmd(m.cfg, m.prevCPUSample))
 
 		case tea.KeyUp:
 			if m.current == screenSettings && m.settingsPicking {

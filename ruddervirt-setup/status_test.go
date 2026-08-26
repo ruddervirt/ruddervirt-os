@@ -7,21 +7,46 @@ import (
 	"time"
 )
 
-func TestRenderServiceStatuses(t *testing.T) {
-	if got := renderServiceStatuses(nil, time.Time{}); got != "" {
-		t.Errorf("renderServiceStatuses(nil, ...) = %q, want empty string", got)
+func TestServiceStatusLine(t *testing.T) {
+	if got := serviceStatusLine(nil); got != "" {
+		t.Errorf("serviceStatusLine(nil) = %q, want empty string", got)
 	}
-	if got := renderServiceStatuses([]serviceStatus{}, time.Time{}); got != "" {
-		t.Errorf("renderServiceStatuses(empty, ...) = %q, want empty string", got)
+	if got := serviceStatusLine([]serviceStatus{}); got != "" {
+		t.Errorf("serviceStatusLine(empty) = %q, want empty string", got)
 	}
 
-	got := renderServiceStatuses([]serviceStatus{
+	got := serviceStatusLine([]serviceStatus{
 		{name: "k3s", state: "running"},
 		{name: "kube-ovn", state: "not ready"},
-	}, time.Time{})
-	want := "Services\n  ● k3s       running\n  ● kube-ovn  not ready\n\n"
+	})
+	want := "● k3s   ● kube-ovn"
 	if got != want {
-		t.Errorf("renderServiceStatuses(...) = %q, want %q", got, want)
+		t.Errorf("serviceStatusLine(...) = %q, want %q", got, want)
+	}
+}
+
+func TestRenderHomeStatus(t *testing.T) {
+	if got := renderHomeStatus(nil, hostStats{}, time.Time{}); got != "" {
+		t.Errorf("renderHomeStatus(nil, zero value, ...) = %q, want empty string", got)
+	}
+
+	statuses := []serviceStatus{
+		{name: "k3s", state: "running"},
+		{name: "kube-ovn", state: "not ready"},
+	}
+	hs := hostStats{cpuPercent: 12, cpuKnown: true}
+	got := renderHomeStatus(statuses, hs, time.Time{})
+	want := "Status\n  ● k3s   ● kube-ovn\n  CPU 12%\n\n"
+	if got != want {
+		t.Errorf("renderHomeStatus(...) = %q, want %q", got, want)
+	}
+
+	// Services alone (System not known yet) still renders, and vice versa.
+	if got := renderHomeStatus(statuses, hostStats{}, time.Time{}); got != "Status\n  ● k3s   ● kube-ovn\n\n" {
+		t.Errorf("renderHomeStatus(statuses, zero value, ...) = %q, want services-only block", got)
+	}
+	if got := renderHomeStatus(nil, hs, time.Time{}); got != "Status\n  CPU 12%\n\n" {
+		t.Errorf("renderHomeStatus(nil, hs, ...) = %q, want system-only block", got)
 	}
 }
 
