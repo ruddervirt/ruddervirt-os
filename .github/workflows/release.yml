@@ -40,19 +40,17 @@ jobs:
           make iso VERSION="${GITHUB_REF_NAME}" \
             ARGS="--setup-checksum ${{ steps.checksum.outputs.hash }}"
 
-      - name: Publish release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            out/ruddervirt-install-${{ github.ref_name }}-x86_64.iso
-          fail_on_unmatched_files: true
-          generate_release_notes: true
-
       # ruddervirt-setup itself is an internal upgrade artifact (fetched by
       # the running TUI's self-update flow, see ruddervirt-setup/update.go), not something
       # end users download - so it's pushed to a dedicated orphan branch
       # instead of the public Releases page, which should only ever show the
       # installer ISO. One folder per version, so older tags stay fetchable.
+      #
+      # This must run before "Publish release assets": the self-update flow
+      # discovers new versions via the GitHub release (/releases/latest) and
+      # then fetches the binary/checksum from release-binaries. If the
+      # release went live first, clients could see the new version before
+      # its binary existed on this branch and fail the update.
       - name: Publish ruddervirt-setup binary
         env:
           VERSION: ${{ github.ref_name }}
@@ -78,3 +76,11 @@ jobs:
           git -C "$workdir" add "$VERSION"
           git -C "$workdir" commit -m "Add ruddervirt-setup $VERSION"
           git -C "$workdir" push origin HEAD:release-binaries
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/ruddervirt-install-${{ github.ref_name }}-x86_64.iso
+          fail_on_unmatched_files: true
+          generate_release_notes: true

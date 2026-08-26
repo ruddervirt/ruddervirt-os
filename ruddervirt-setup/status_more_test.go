@@ -261,22 +261,43 @@ func TestLonghornCapacity(t *testing.T) {
 }
 
 func TestOpenebsVGCapacity(t *testing.T) {
-	t.Run("reports free and total bytes", func(t *testing.T) {
+	t.Run("brand new pool with no data written reports fully free, not fully used", func(t *testing.T) {
+		// prepareOpenEBSDevice (storage.go) allocates the thin pool as
+		// 95%VG up front - vg_free/vg_size would read this as ~5% free
+		// immediately on a new install regardless of actual data written,
+		// which is exactly the bug this test guards against. data_percent
+		// (how much of the pool's own size is actually written) is what
+		// should drive the reported free/used split instead.
 		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
-			if cmdContains(name, args, "vgs", openebsVGName) {
-				return commandOutcome{out: []byte("  107374182400  214748364800\n")}
+			if cmdContains(name, args, "lvs", openebsVGName+"/"+openebsThinPoolLV) {
+				return commandOutcome{out: []byte("  214748364800  0.00\n")}
 			}
 			return commandOutcome{}
 		}}
 		var free, total float64
 		var ok bool
 		withFakeRunner(r, func() { free, total, ok = openebsVGCapacity() })
-		if !ok || free != 100 || total != 200 {
-			t.Errorf("openebsVGCapacity() = (%v, %v, %v), want (100, 200, true)", free, total, ok)
+		if !ok || free != 200 || total != 200 {
+			t.Errorf("openebsVGCapacity() = (%v, %v, %v), want (200, 200, true)", free, total, ok)
 		}
 	})
 
-	t.Run("vgs error (volume group missing) reports unknown", func(t *testing.T) {
+	t.Run("reports free proportional to data_percent", func(t *testing.T) {
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			if cmdContains(name, args, "lvs", openebsVGName+"/"+openebsThinPoolLV) {
+				return commandOutcome{out: []byte("  214748364800  25.00\n")}
+			}
+			return commandOutcome{}
+		}}
+		var free, total float64
+		var ok bool
+		withFakeRunner(r, func() { free, total, ok = openebsVGCapacity() })
+		if !ok || free != 150 || total != 200 {
+			t.Errorf("openebsVGCapacity() = (%v, %v, %v), want (150, 200, true)", free, total, ok)
+		}
+	})
+
+	t.Run("lvs error (thin pool missing) reports unknown", func(t *testing.T) {
 		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
 			return commandOutcome{err: errFake}
 		}}

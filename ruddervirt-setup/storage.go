@@ -51,6 +51,7 @@ const (
 	blkidBin    = "/usr/sbin/blkid"
 	mkfsExt4Bin = "/usr/sbin/mkfs.ext4"
 	vgsBin      = "/usr/sbin/vgs"
+	lvsBin      = "/usr/sbin/lvs"
 	pvcreateBin = "/usr/sbin/pvcreate"
 	vgcreateBin = "/usr/sbin/vgcreate"
 	lvcreateBin = "/usr/sbin/lvcreate"

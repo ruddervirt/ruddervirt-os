@@ -350,16 +350,27 @@ func longhornCapacity(kubectlBin string) (freeGiB, totalGiB float64, ok bool) {
 	return float64(freeBytes) / bytesPerGiB, float64(totalBytes) / bytesPerGiB, true
 }
 
-// openebsVGCapacity reads the LVM volume group's own free/total space
-// directly - the LVM LocalPV CSI driver has no capacity API of its own, and
-// the volume group already lives on this host (see prepareOpenEBSDevice,
-// storage.go), so there's no cluster round-trip needed at all. --units b
-// sidesteps LVM's g/G (binary vs. decimal GiB/GB) unit ambiguity entirely by
-// asking for exact bytes instead.
+// openebsVGCapacity reads the LVM thin pool's own size and data usage -
+// vg_free/vg_size (the VG's unallocated space) was tried first, but that's
+// wrong for a thin pool: prepareOpenEBSDevice (storage.go) allocates the
+// pool as 95%VG up front, so vg_free reports ~5% free immediately on a
+// brand new install regardless of how much data any thin volume has
+// actually written, reading as a nearly-full disk from day one. The pool
+// LV's own data_percent - how much of its provisioned size is actually
+// written - is what tracks real usage; lv_size is the pool's own size (the
+// 95%VG), i.e. the real ceiling for VM data even though the underlying VG
+// is technically 100%"used" the moment the pool exists.
+//
+// The LVM LocalPV CSI driver has no capacity API of its own, and the
+// volume group already lives on this host (see prepareOpenEBSDevice), so
+// there's no cluster round-trip needed at all. --units b sidesteps LVM's
+// g/G (binary vs. decimal GiB/GB) unit ambiguity entirely by asking for
+// exact bytes instead - data_percent isn't a size field, so --units doesn't
+// touch it.
 func openebsVGCapacity() (freeGiB, totalGiB float64, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), statusCheckTimeout)
 	defer cancel()
-	out, err := runNonInteractive(ctx, vgsBin, "--noheadings", "--units", "b", "--nosuffix", "-o", "vg_free,vg_size", openebsVGName).Output()
+	out, err := runNonInteractive(ctx, lvsBin, "--noheadings", "--units", "b", "--nosuffix", "-o", "lv_size,data_percent", openebsVGName+"/"+openebsThinPoolLV).Output()
 	if err != nil {
 		return 0, 0, false
 	}
@@ -367,12 +378,14 @@ func openebsVGCapacity() (freeGiB, totalGiB float64, ok bool) {
 	if len(fields) != 2 {
 		return 0, 0, false
 	}
-	free, err1 := strconv.ParseFloat(fields[0], 64)
-	total, err2 := strconv.ParseFloat(fields[1], 64)
-	if err1 != nil || err2 != nil || total == 0 {
+	sizeBytes, err1 := strconv.ParseFloat(fields[0], 64)
+	dataPercent, err2 := strconv.ParseFloat(fields[1], 64)
+	if err1 != nil || err2 != nil || sizeBytes == 0 {
 		return 0, 0, false
 	}
-	return free / bytesPerGiB, total / bytesPerGiB, true
+	totalGiB = sizeBytes / bytesPerGiB
+	freeGiB = totalGiB * (1 - dataPercent/100)
+	return freeGiB, totalGiB, true
 }
 
 func readyState(ready bool) string {
