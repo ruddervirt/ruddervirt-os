@@ -194,9 +194,7 @@ type stabilizerDetectedMsg struct {
 }
 
 // detectStabilizerCmd is fired once from Init(), same as
-// fetchAileronVersionsCmd - best-effort, since a slow/unreachable cluster
-// should just leave the Aileron settingFields unlocked rather than blocking
-// the TUI.
+// fetchAileronVersionsCmd 
 func detectStabilizerCmd() tea.Cmd {
 	return func() tea.Msg {
 		return stabilizerDetectedMsg{present: stabilizerChartPresent()}

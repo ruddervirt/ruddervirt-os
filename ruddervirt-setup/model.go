@@ -173,9 +173,10 @@ type model struct {
 
 	// cachedStabilizerDetected mirrors the two version caches above: whether
 	// a "stabilizer" HelmChart is on the cluster, populated once via Init's
-	// detectStabilizerCmd (aileron.go). Read by the Aileron settingFields'
-	// locked funcs (config.go) instead of shelling out to kubectl on every
-	// render - see stabilizerLocked/stabilizerChartPresent.
+	// detectStabilizerCmd (aileron.go) - see its doc comment for why this
+	// deliberately isn't refreshed periodically. Read by the Aileron
+	// settingFields' locked funcs (config.go) instead of shelling out to
+	// kubectl on every render - see stabilizerLocked/stabilizerChartPresent.
 	cachedStabilizerDetected bool
 }
 
