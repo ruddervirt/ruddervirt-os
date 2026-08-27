@@ -724,6 +724,9 @@ func (m model) View() string {
 
 	default:
 		s := "\n" + bigTitle(m.termWidth) + "\n\n"
+		if m.cachedStabilizerDetected {
+			s += helpStyle.Render("This system is connected to and managed by ruddervirt.com") + "\n\n"
+		}
 		if configSaved() {
 			if url := aileronUIURL(m.cfg); url != "" {
 				s += fmt.Sprintf("Aileron UI:  %s\n\n", linkStyle.Render(url))

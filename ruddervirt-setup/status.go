@@ -246,10 +246,38 @@ func fetchServiceStatuses(cfg Config) []serviceStatus {
 		nonInteractiveSucceeds(kubectlBin, "wait", "--for=condition=Available", "cdi/cdi", "--timeout=1s")
 	statuses = append(statuses, serviceStatus{name: "kubevirt", state: readyState(kubevirtReady)})
 
-	aileronReady := nonInteractiveSucceeds(kubectlBin, "-n", "kube-system", "wait", "--for=condition=complete", "job/helm-install-aileron", "--timeout=1s")
-	statuses = append(statuses, serviceStatus{name: "aileron", state: readyState(aileronReady)})
+	statuses = append(statuses, serviceStatus{name: "aileron", state: readyState(aileronReady(kubectlBin))})
+
+	// Only shown for a stabilizer-managed install (see stabilizerChartPresent,
+	// aileron.go) - a plain self-hosted node has no "stabilizer" Deployment
+	// at all, so unconditionally waiting on it would just read as a
+	// permanently "not ready" row for everyone else.
+	if stabilizerChartPresent() {
+		statuses = append(statuses, serviceStatus{name: "stabilizer", state: readyState(stabilizerReady(kubectlBin))})
+	}
 
 	return statuses
+}
+
+// stabilizerReady reports whether the stabilizer Deployment - alongside
+// Aileron's own, in the same ruddervirt-system namespace - has become
+// Available.
+func stabilizerReady(kubectlBin string) bool {
+	return nonInteractiveSucceeds(kubectlBin, "-n", "ruddervirt-system", "wait", "--for=condition=Available", "deployment.apps/stabilizer", "--timeout=1s")
+}
+
+// aileronReady reports whether Aileron itself is up - not just whether
+// ruddervirt-setup's own install of it succeeded. Waiting on the
+// "helm-install-aileron" Job applyAileron (aileron.go) creates only reflects
+// that; once a "stabilizer" HelmChart takes over Aileron's management (see
+// stabilizerChartPresent), the "aileron" HelmChart and that Job may no
+// longer exist at all, which would otherwise always read as "not ready"
+// regardless of Aileron's actual health. Waiting on the Deployment directly
+// instead - in ruddervirt-system, aileron-helmchart.yaml's targetNamespace -
+// works either way, since that's where it lands regardless of which chart
+// put it there.
+func aileronReady(kubectlBin string) bool {
+	return nonInteractiveSucceeds(kubectlBin, "-n", "ruddervirt-system", "wait", "--for=condition=Available", "deployment.apps/aileron", "--timeout=1s")
 }
 
 // storageEngineReady mirrors applyStorageEngine's (k3s.go) per-engine

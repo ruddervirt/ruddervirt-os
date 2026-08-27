@@ -155,6 +155,50 @@ func TestFetchServiceStatuses(t *testing.T) {
 			t.Errorf("fetchServiceStatuses() = %+v, want %+v", got, want)
 		}
 	})
+
+	t.Run("stabilizer-managed install adds a stabilizer row", func(t *testing.T) {
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			if cmdContains(name, args, "get", "helmchart", "stabilizer") {
+				return commandOutcome{out: []byte("helmchart.helm.cattle.io/stabilizer")}
+			}
+			return commandOutcome{}
+		}}
+		cfg := Config{Storage: StorageConfig{Engine: "rook-ceph"}}
+		var got []serviceStatus
+		withConfigSaved(true, func() {
+			withFakeRunner(r, func() { got = fetchServiceStatuses(cfg) })
+		})
+		want := []serviceStatus{
+			{name: "k3s", state: "running"},
+			{name: "kube-ovn", state: "ready"},
+			{name: "storage (rook-ceph)", state: "ready"},
+			{name: "kubevirt", state: "ready"},
+			{name: "aileron", state: "ready"},
+			{name: "stabilizer", state: "ready"},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("fetchServiceStatuses() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("plain self-hosted install (no stabilizer) omits the stabilizer row entirely", func(t *testing.T) {
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			if cmdContains(name, args, "-n", "ruddervirt-system", "wait", "deployment.apps/stabilizer") {
+				t.Errorf("unexpected wait on deployment.apps/stabilizer with no stabilizer HelmChart present: %s %v", name, args)
+			}
+			return commandOutcome{}
+		}}
+		cfg := Config{Storage: StorageConfig{Engine: "rook-ceph"}}
+		var got []serviceStatus
+		withConfigSaved(true, func() {
+			withFakeRunner(r, func() { got = fetchServiceStatuses(cfg) })
+		})
+		for _, st := range got {
+			if st.name == "stabilizer" {
+				t.Errorf("fetchServiceStatuses() = %+v, want no stabilizer row", got)
+			}
+		}
+	})
 }
 
 // TestFetchServiceStatusesCmdDropsStorage confirms the storage row is
@@ -319,4 +363,32 @@ func TestStorageEngineCapacityUnknownEngine(t *testing.T) {
 	if ok {
 		t.Errorf("storageEngineCapacity() ok = true, want false")
 	}
+}
+
+func TestAileronReady(t *testing.T) {
+	t.Run("deployment available", func(t *testing.T) {
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			if cmdContains(name, args, "-n", "ruddervirt-system", "wait", "deployment.apps/aileron") {
+				return commandOutcome{}
+			}
+			t.Errorf("unexpected command: %s %v", name, args)
+			return commandOutcome{}
+		}}
+		var ready bool
+		withFakeRunner(r, func() { ready = aileronReady("/usr/local/bin/kubectl") })
+		if !ready {
+			t.Errorf("aileronReady() = false, want true")
+		}
+	})
+
+	t.Run("deployment not available", func(t *testing.T) {
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			return commandOutcome{err: errFake}
+		}}
+		var ready bool
+		withFakeRunner(r, func() { ready = aileronReady("/usr/local/bin/kubectl") })
+		if ready {
+			t.Errorf("aileronReady() = true, want false")
+		}
+	})
 }
