@@ -12,6 +12,18 @@ import (
 )
 
 func main() {
+	// Non-interactive subcommand dispatch, checked before anything else -
+	// `ruddervirt-setup settings ...` (see stabilizer_settings_cli.go) is
+	// meant to be run directly over SSH (`ssh admin@host ruddervirt-setup
+	// settings --set build_max_cpu=16`), which reaches here without ever
+	// going through ruddervirt-shell.sh's interactive-login TUI-launch
+	// branch (that script's own `-c` branch execs a given command
+	// directly). Nothing below this needs to run for it - no TUI, no
+	// RUDDERVIRT_SHELL, no self-update loop.
+	if len(os.Args) > 1 && os.Args[1] == "settings" {
+		os.Exit(runSettingsCLI(os.Args[2:]))
+	}
+
 	// RUDDERVIRT_SHELL tells ruddervirt-shell.sh not to re-launch this menu
 	// when a login shell starts inside one of the runShell() sessions below.
 	os.Setenv("RUDDERVIRT_SHELL", "1")

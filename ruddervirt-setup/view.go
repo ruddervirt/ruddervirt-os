@@ -6,8 +6,33 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/mattn/go-runewidth"
 )
+
+// stabilizerFieldScreenInfo returns the title/label/input/help text for
+// whichever of the "Adopt to ruddervirt.com" wizard's plain-text input
+// screens m.current currently is (screenStabilizerZone/NatsPassword/
+// Nebula) - factored out since those screens share an identical
+// single-field layout, differing only in these details. Every value here
+// is something ruddervirt provides, not something the operator picks or
+// needs explained - so the help text is deliberately just "enter the value
+// provided by ruddervirt for X", not a description of what X does.
+func stabilizerFieldScreenInfo(m model) (title, label string, input textinput.Model, help string) {
+	switch m.current {
+	case screenStabilizerZone:
+		return "Adopt to ruddervirt.com: Zone Name", "Zone name", m.stabilizerZoneInput,
+			"Enter the value provided by ruddervirt for zone name.\n\n"
+	case screenStabilizerNatsPassword:
+		return "Adopt to ruddervirt.com: NATS Password", "NATS password", m.stabilizerNatsPasswordInput,
+			"Enter the value provided by ruddervirt for the NATS password.\n\n"
+	case screenStabilizerNebula:
+		return "Adopt to ruddervirt.com: Nebula Mesh Config", "Path or URL", m.stabilizerNebulaInput,
+			"Enter the value (a local file path or http(s):// URL) provided by\nruddervirt for the nebula mesh config.\n\n"
+	default:
+		return "", "", textinput.Model{}, ""
+	}
+}
 
 // settingsChromeLines is the number of lines the Settings screen spends on
 // its header, footer/help text, scroll indicators, table borders/header
@@ -46,6 +71,13 @@ type settingsRow struct {
 	isNetworkToggle bool
 	isToggle        bool
 	nested          bool
+	// isStabilizerAction marks the synthetic "Adopt to ruddervirt.com"
+	// action row - see settingsRows below.
+	isStabilizerAction bool
+	// isStabilizerSettingsAction marks the synthetic "Stabilizer Settings"
+	// action row that replaces isStabilizerAction once adopted - see
+	// settingsRows below.
+	isStabilizerSettingsAction bool
 }
 
 // settingsRows lays out the Settings table in display order:
@@ -98,6 +130,18 @@ func (m model) settingsRows() []settingsRow {
 	if m.settingsShowAdvanced {
 		for _, f := range advanced {
 			rows = append(rows, settingsRow{field: f, nested: true})
+		}
+		// Nested under Advanced, not a plain row - this is a rare,
+		// high-consequence, coordinated-with-ruddervirt action, not
+		// something that belongs alongside everyday settings. Once already
+		// adopted, this slot becomes "Stabilizer Settings" instead - there's
+		// nothing left for the adopt action to do once
+		// cachedStabilizerDetected is true, but there's now a live release
+		// whose settings (stabilizerSettingDefs) are worth exposing here.
+		if m.cachedStabilizerDetected {
+			rows = append(rows, settingsRow{isStabilizerSettingsAction: true, nested: true})
+		} else {
+			rows = append(rows, settingsRow{isStabilizerAction: true, nested: true})
 		}
 	}
 	return rows
@@ -350,6 +394,249 @@ func (m model) View() string {
 			s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.hostnameError))
 		}
 		s += "\n" + hintBar([2]string{"Enter", "continue"}, [2]string{"Esc", "cancel"}) + "\n"
+		return s
+
+	case screenStabilizerAileronCheck:
+		return "\nChecking that aileron is installed and running...\n"
+
+	case screenStabilizerWarning:
+		s := "\n" + titleStyle.Render("Adopt to ruddervirt.com") + "\n\n"
+		s += errorStyle.Render("This cannot be done without coordination from selfhosted@ruddervirt.com.") + "\n\n"
+		s += "ruddervirt needs to provide secrets (zone name, NATS password, and a\n"
+		s += "Nebula mesh config) before this will work - contact\n"
+		s += "selfhosted@ruddervirt.com first if you haven't already.\n"
+		s += "\n" + hintBar([2]string{"Enter", "continue"}, [2]string{"Esc", "cancel"}) + "\n"
+		return s
+
+	case screenStabilizerZone, screenStabilizerNatsPassword, screenStabilizerNebula:
+		title, label, input, help := stabilizerFieldScreenInfo(m)
+		s := "\n" + titleStyle.Render(title) + "\n\n"
+		s += help
+		s += fmt.Sprintf("%s:  %s\n", label, input.View())
+		if m.stabilizerNebulaResolving {
+			s += "\n" + helpStyle.Render("Fetching...") + "\n"
+		} else if m.stabilizerError != "" {
+			s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.stabilizerError))
+		}
+		s += "\n" + hintBar([2]string{"Enter", "continue"}, [2]string{"Esc", "cancel"}) + "\n"
+		return s
+
+	case screenStabilizerPlanning:
+		return "\nComputing adoption plan...\n"
+
+	case screenStabilizerConfirm:
+		s := "\n" + titleStyle.Render("Confirm Adoption to ruddervirt.com") + "\n\n"
+		s += fmt.Sprintf("Zone: %s\nNATS: %s\nNATS user: %s (= zone name)\n\n", m.cfg.Stabilizer.Zone, defaultStabilizerNatsURL, m.cfg.Stabilizer.Zone)
+		s += fmt.Sprintf("This will create the %s and %s Secrets in %s, then:\n", natsAuthSecretName, nebulaSecretName, stabilizerNamespace)
+		if m.stabilizerWillAdopt {
+			s += "  adopt the existing standalone Aileron release - its operator,\n"
+			s += "  vncgateway, and UI Deployments will be deleted and recreated\n"
+			s += "  (a few seconds of console/API disruption; running VMs are\n"
+			s += "  unaffected).\n"
+		} else {
+			s += "  install stabilizer fresh (no standalone Aileron release was found\n"
+			s += "  to adopt).\n"
+		}
+		s += "then apply the stabilizer chart and wait for it to become ready.\n"
+		s += fmt.Sprintf("\n%s\n  %s\n", helpStyle.Render("Type \"yes\" to proceed, or Esc to cancel:"), m.stabilizerConfirmInput.View())
+		if m.stabilizerConfirmError != "" {
+			s += fmt.Sprintf("\n%s\n", errorStyle.Render(m.stabilizerConfirmError))
+		}
+		return s
+
+	case screenStabilizerAdopt:
+		s := "\n" + titleStyle.Render("Adopting to ruddervirt.com...") + "\n\n"
+		visible := m.installVisibleLogLines()
+		lines := m.stabilizerLogs
+		if len(lines) > visible {
+			lines = lines[len(lines)-visible:]
+		}
+		for _, line := range lines {
+			s += line + "\n"
+		}
+		if m.stabilizerDone {
+			s += "\n" + successStyle.Render("This node is now connected to ruddervirt.com.") + " " + helpStyle.Render("Press Esc to return to menu.") + "\n"
+		} else if m.stabilizerFailed {
+			s += "\n" + errorStyle.Render("Adoption failed.") + " " + helpStyle.Render("Press Esc to return to menu.") + "\n"
+		} else if m.stabilizerStepIdx < len(stabilizerSteps) {
+			s += "\n" + helpStyle.Render(fmt.Sprintf("Running: %s...", stabilizerSteps[m.stabilizerStepIdx].label)) + "\n"
+		}
+		return s
+
+	case screenStabilizerSettingsLoading:
+		return "\nLoading stabilizer settings...\n"
+
+	case screenStabilizerSettingsList:
+		state := m.stabilizerSettingsState
+		if state == nil {
+			return "\nNo stabilizer settings loaded. Press Esc to go back.\n"
+		}
+
+		if m.stabilizerSettingsPicking {
+			def := stabilizerSettingDefs[m.stabilizerSettingsCursor]
+			options := m.stabilizerSettingsPickOptions
+
+			width := runewidth.StringWidth(def.Key) + 4
+			for _, o := range options {
+				if l := runewidth.StringWidth(o) + 4; l > width {
+					width = l
+				}
+			}
+			termWidth := m.termWidth
+			if termWidth <= 0 {
+				termWidth = 80
+			}
+			if width > termWidth-2 {
+				width = termWidth - 2
+			}
+			if width < 20 {
+				width = 20
+			}
+
+			topBorder := "╭" + strings.Repeat("─", width) + "╮"
+			bottomBorder := "╰" + strings.Repeat("─", width) + "╯"
+
+			s := "\n" + titleStyle.Render("Stabilizer Settings") + fmt.Sprintf("\n\nSelect %s:\n\n", def.Key)
+			s += colorBorders(topBorder) + "\n"
+			for i, o := range options {
+				selected := i == m.stabilizerSettingsPickCursor
+				cursor := "  "
+				cell := fitCell(o, width-2)
+				if selected {
+					cursor = cursorStyle.Render(">") + " "
+					cell = selectedStyle.Render(cell)
+				}
+				s += fmt.Sprintf("%s%s%s%s\n", colorBorders("│"), cursor, cell, colorBorders("│"))
+			}
+			s += colorBorders(bottomBorder) + "\n"
+			if m.stabilizerSettingsError != "" {
+				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.stabilizerSettingsError))
+			}
+			s += "\n" + hintBar([2]string{"↑/↓", "navigate"}, [2]string{"Enter", "select"}, [2]string{"Esc", "cancel"}) + "\n"
+			return s
+		}
+
+		total := len(stabilizerSettingDefs)
+		labelWidth := len("Setting")
+		valueWidth := len("Value")
+		for _, d := range stabilizerSettingDefs {
+			value, _ := stabilizerSettingListValue(d, state)
+			if l := runewidth.StringWidth(d.Key); l > labelWidth {
+				labelWidth = l
+			}
+			if l := runewidth.StringWidth(value); l > valueWidth {
+				valueWidth = l
+			}
+		}
+
+		termWidth := m.termWidth
+		if termWidth <= 0 {
+			termWidth = 80
+		}
+		const tableOverhead = 11 // "│" + cursor(3) + "│ " + " │ " + " │"
+		for labelWidth+valueWidth+tableOverhead > termWidth && valueWidth > 12 {
+			valueWidth--
+		}
+		for labelWidth+valueWidth+tableOverhead > termWidth && labelWidth > 20 {
+			labelWidth--
+		}
+
+		topBorder := "╭───┬" + strings.Repeat("─", labelWidth+2) + "┬" + strings.Repeat("─", valueWidth+2) + "╮"
+		sepBorder := "├───┼" + strings.Repeat("─", labelWidth+2) + "┼" + strings.Repeat("─", valueWidth+2) + "┤"
+		bottomBorder := "╰───┴" + strings.Repeat("─", labelWidth+2) + "┴" + strings.Repeat("─", valueWidth+2) + "╯"
+
+		s := "\n" + titleStyle.Render("Stabilizer Settings") + "\n\n"
+
+		visible := m.settingsVisibleRows()
+		start := m.stabilizerSettingsScroll
+		end := start + visible
+		if end > total {
+			end = total
+		}
+		if start > end {
+			start = end
+		}
+		if start > 0 {
+			s += helpStyle.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n"
+		}
+
+		s += colorBorders(topBorder) + "\n"
+		s += colorBorders(fmt.Sprintf("│   │ %s │ %s │", fitCell("Setting", labelWidth), fitCell("Value", valueWidth))) + "\n"
+		s += colorBorders(sepBorder) + "\n"
+		for i := start; i < end; i++ {
+			selected := i == m.stabilizerSettingsCursor
+			d := stabilizerSettingDefs[i]
+			value, _ := stabilizerSettingListValue(d, state)
+			label := fitCell(d.Key, labelWidth)
+			valueCell := fitCell(value, valueWidth)
+			if selected {
+				label = selectedStyle.Render(label)
+				valueCell = selectedStyle.Render(valueCell)
+			}
+			s += fmt.Sprintf("%s%s%s %s %s %s %s\n", colorBorders("│"), cursorArrow(selected), colorBorders("│"), label, colorBorders("│"), valueCell, colorBorders("│"))
+		}
+		s += colorBorders(bottomBorder) + "\n"
+		if end < total {
+			s += helpStyle.Render(fmt.Sprintf("  ↓ %d more below", total-end)) + "\n"
+		}
+
+		if total > 0 {
+			s += "\n" + helpStyle.Render(stabilizerSettingDefs[m.stabilizerSettingsCursor].Summary) + "\n"
+		}
+
+		if m.stabilizerSettingsEditing {
+			def := stabilizerSettingDefs[m.stabilizerSettingsCursor]
+			hint := ""
+			if def.hasUnlimited() {
+				hint = " (or \"unlimited\")"
+			}
+			s += fmt.Sprintf("\nEnter the value provided by ruddervirt for %s%s:\n  %s\n", def.Key, hint, m.stabilizerSettingsEditInput.View())
+			if m.stabilizerSettingsError != "" {
+				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.stabilizerSettingsError))
+			}
+			s += "\n" + hintBar([2]string{"Enter", "continue"}, [2]string{"Esc", "cancel"}) + "\n"
+		} else {
+			if m.stabilizerSettingsError != "" {
+				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.stabilizerSettingsError))
+			}
+			s += "\n" + hintBar([2]string{"↑/↓", "navigate"}, [2]string{"Enter", "edit"}, [2]string{"Esc", "back"}) + "\n"
+		}
+		return s
+
+	case screenStabilizerSettingsConfirm:
+		def := m.stabilizerSettingsPendingDef
+		curDisplay := "(not set - chart default)"
+		if m.stabilizerSettingsPendingCurrent != nil {
+			curDisplay = formatStabilizerSettingValue(def, m.stabilizerSettingsPendingCurrent)
+		}
+		s := "\n" + titleStyle.Render("Confirm Stabilizer Setting Change") + "\n\n"
+		s += fmt.Sprintf("%s:  %s -> %s\n\n", def.Key, curDisplay, formatStabilizerSettingValue(def, m.stabilizerSettingsPendingValue))
+		s += "Applying this RESTARTS THE WHOLE RELEASE: stabilizer, vncauthproxy, the\n"
+		s += "aileron operator, and the VNC gateway all restart (roughly 30-90 seconds).\n"
+		s += "Consoles drop and the zone goes quiet to the cloud UI during that window.\n"
+		s += "Running VMs are NOT affected. This is not a hot-reload.\n"
+		s += fmt.Sprintf("\n%s\n  %s\n", helpStyle.Render("Type \"yes\" to proceed, or Esc to cancel:"), m.stabilizerSettingsConfirmInput.View())
+		if m.stabilizerSettingsConfirmError != "" {
+			s += fmt.Sprintf("\n%s\n", errorStyle.Render(m.stabilizerSettingsConfirmError))
+		}
+		return s
+
+	case screenStabilizerSettingsApply:
+		s := "\n" + titleStyle.Render("Applying Stabilizer Setting...") + "\n\n"
+		if m.stabilizerSettingsApplyDone {
+			if m.stabilizerSettingsApplyErr != nil {
+				s += errorStyle.Render("Failed: "+m.stabilizerSettingsApplyErr.Error()) + "\n"
+				s += "\n" + helpStyle.Render("Press Esc to go back.") + "\n"
+			} else if m.stabilizerSettingsState != nil {
+				s += successStyle.Render("Applied.") + " Watch the rollout with:\n"
+				s += fmt.Sprintf("  kubectl -n %s get job helm-install-%s -w\n", m.stabilizerSettingsState.helmChartNamespace, m.stabilizerSettingsState.helmChartName)
+				s += "\n" + helpStyle.Render("Press Esc to go back.") + "\n"
+			} else {
+				s += successStyle.Render("Applied.") + "\n" + helpStyle.Render("Press Esc to go back.") + "\n"
+			}
+		} else {
+			s += helpStyle.Render("Applying...") + "\n"
+		}
 		return s
 
 	case screenUpdateConfirm:
@@ -617,6 +904,12 @@ func (m model) View() string {
 				return networkSetupLabel(m.settingsShowNetwork)
 			case r.isToggle:
 				return advancedSettingsLabel(m.settingsShowAdvanced)
+			case r.isStabilizerAction:
+				// Nested (see settingsRows), so indented like every other
+				// advanced field for consistent alignment.
+				return "  Adopt to ruddervirt.com"
+			case r.isStabilizerSettingsAction:
+				return "  Stabilizer Settings"
 			case r.nested:
 				return "  " + r.field.label
 			default:
@@ -625,7 +918,7 @@ func (m model) View() string {
 		}
 		versions := versionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected}
 		rowValue := func(r settingsRow) string {
-			if r.isNetworkToggle || r.isToggle {
+			if r.isNetworkToggle || r.isToggle || r.isStabilizerAction || r.isStabilizerSettingsAction {
 				return ""
 			}
 			if r.field.locked != nil {

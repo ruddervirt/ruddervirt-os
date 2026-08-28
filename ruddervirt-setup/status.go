@@ -171,6 +171,22 @@ func nonInteractiveSucceeds(name string, args ...string) bool {
 	return runNonInteractive(ctx, name, args...).Run() == nil
 }
 
+// k3sServiceActive reports whether the k3s.service systemd unit is
+// currently active. This is the mandatory gate before trusting ANY kubectl
+// call, not just an optimization: before "Installing k3s" has actually run,
+// /usr/local/bin/k3s is only a placeholder text file with no `#!` shebang
+// (see server.bu) - POSIX shell's ENOEXEC fallback silently reinterprets an
+// unrecognized-but-executable file as a no-op shell script instead of
+// failing, so `kubectl` (which execs through the /usr/local/bin/kubectl
+// wrapper's `exec k3s kubectl "$@"`) reports a false SUCCESS (exit 0, no
+// output) instead of a real "k3s not found" error. Checking k3s.service
+// first means a kubectl-based check can never be fooled by that placeholder
+// into reporting a resource as present/ready when k3s was never installed
+// at all.
+func k3sServiceActive() bool {
+	return nonInteractiveSucceeds("/usr/bin/systemctl", "is-active", "--quiet", "k3s.service")
+}
+
 // haveNonInteractiveSudo reports whether a cached sudo ticket lets
 // nonInteractiveSucceeds's checks actually reach kubectl/systemctl - if
 // not (e.g. a fresh boot, or the ticket has expired), every check below
@@ -215,7 +231,7 @@ func fetchServiceStatuses(cfg Config) []serviceStatus {
 
 	const kubectlBin = "/usr/local/bin/kubectl"
 
-	if !nonInteractiveSucceeds("/usr/bin/systemctl", "is-active", "--quiet", "k3s.service") {
+	if !k3sServiceActive() {
 		out := unknown()
 		out[0].state = "not running"
 		for i := 1; i < len(out); i++ {

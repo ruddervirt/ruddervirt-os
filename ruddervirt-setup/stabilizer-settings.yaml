@@ -1,0 +1,195 @@
+# THE STABILIZER CONFIGURABLE SETTINGS
+#
+# This file is the single definition of every chart value that can be changed
+# remotely, and it is shared by four consumers:
+#
+#   stabilizer (Go)  embeds it; internal/handler/upgrade.go reads each setting's
+#                    path, type and bounds from here rather than restating them
+#   stabilizer chart templates/deployment.yaml renders one SETTING_* env var per
+#                    entry so the agent can report the APPLIED value
+#   ruddervirt-os    the on-box tool reads it to know what it may change and how
+#                    to validate input, without hardcoding chart paths
+#   rudder-ui        gets it through generated/commands.json (the `settings`
+#                    key), which the UI already vendors
+#
+# WHY ONE FILE. Every setting here has two writers — someone on the box and the
+# cloud UI — and they meet at `spec.values` on the release's helm.cattle.io
+# HelmChart resource, which is the source of truth. A consumer that disagrees
+# about a path writes to the wrong place and the two directions silently stop
+# being the same setting. Tests in this repo fail if the Go bindings, the wire
+# structs, or the chart's env block drift from this list.
+#
+# THIS LIST IS AN ALLOWLIST, AND IT IS CLOSED. Everything absent is
+# install.sh-only on purpose: deploymentZone and nats.url are the cluster's
+# identity on a shared bus, nats.authSecret and the VPN egress secret name are
+# credentials, and image repositories decide what code runs. None of those
+# should be settable by whoever holds a publish permission on vm.request.{zone}.
+# Adding an entry here widens what the bus can do to a cluster, so it is a
+# reviewed change, not a config tweak.
+#
+# APPLYING ANY OF THESE RESTARTS THE RELEASE. The agent's pod template carries a
+# `timestamp: {{ now }}` annotation, so changing a value re-runs the helm release
+# and every pod in it restarts — stabilizer, vncauthproxy, the aileron operator,
+# the VNC gateway. Roughly 30-90 seconds, during which consoles drop and the zone
+# goes quiet to the cloud. Running VMs are unaffected. Every consumer should say
+# so before writing, and should skip a write that would change nothing.
+#
+# FIELDS
+#   key        wire field name, in ZoneSettingsPatch (requests) and ZoneSettings
+#              (reported applied state). Snake case; stable — renaming one is a
+#              breaking contract change.
+#   path       dotted location under the HelmChart resource's spec.values.
+#   env        env var the chart renders so the agent can report what helm
+#              actually resolved for the running pod.
+#   type       bool | int | quantity. `quantity` is a Kubernetes resource
+#              quantity string such as "16Gi", validated with ParseQuantity.
+#   min/max    inclusive bounds for `int`. Sanity rails against a fat-fingered
+#              request, not policy.
+#   unlimited  the value meaning "no limit", when the setting has one. Note this
+#              is why request fields are POINTERS: for these, 0 (or "") is a
+#              deliberate choice, not "unset".
+#   component  which subsystem enforces it. `aileron` settings are inert when
+#              the aileron subchart is disabled, and report as zero values —
+#              helm does not coalesce a disabled subchart's defaults, so there
+#              is genuinely nothing to report rather than a value being hidden.
+#   default    the chart default as of the pinned aileron version, for display
+#              only. The authoritative current value is always the applied state
+#              in the ZONE_STATUS heartbeat; this can go stale when a subchart
+#              changes its own defaults.
+
+settings:
+  - key: ollama_enabled
+    path: ollama.enabled
+    env: SETTING_OLLAMA_ENABLED
+    type: bool
+    default: false
+    component: stabilizer
+    summary: In-cluster Ollama LLM, proxied by the `ollama` command.
+    detail: >-
+      Off by default because it requests 32Gi of memory — more than some zones
+      have allocatable in total. Enabling it on a small cluster will leave the
+      pod Pending rather than failing loudly.
+
+  - key: aileron_ui_enabled
+    path: aileron.aileronUI.enabled
+    env: SETTING_AILERON_UI_ENABLED
+    type: bool
+    default: true
+    component: aileron
+    summary: Aileron's own web UI.
+    detail: >-
+      UNAUTHENTICATED. Anyone who can reach it can create and delete VMs and
+      open any console. Reported as false whenever the aileron subchart itself
+      is disabled, since there is then no UI to enable.
+
+  - key: build_max_cpu
+    path: aileron.buildLimits.maxCPU
+    env: SETTING_BUILD_MAX_CPU
+    type: int
+    min: 0
+    max: 1024
+    unlimited: 0
+    default: 8
+    component: aileron
+    summary: Maximum CPU cores per VM in a build.
+    detail: >-
+      Enforced by the aileron operator when a build is admitted. Lowering it can
+      break builds that currently succeed.
+
+  - key: build_max_memory
+    path: aileron.buildLimits.maxMemory
+    env: SETTING_BUILD_MAX_MEMORY
+    type: quantity
+    unlimited: ""
+    default: "16Gi"
+    component: aileron
+    summary: Maximum memory per VM in a build.
+
+  - key: build_max_disk_size
+    path: aileron.buildLimits.maxDiskSize
+    env: SETTING_BUILD_MAX_DISK_SIZE
+    type: quantity
+    unlimited: ""
+    default: "50Gi"
+    component: aileron
+    summary: Maximum size of a SINGLE disk, not the total per VM.
+
+  - key: build_max_disk_count
+    path: aileron.buildLimits.maxDiskCount
+    env: SETTING_BUILD_MAX_DISK_COUNT
+    type: int
+    min: 0
+    max: 64
+    unlimited: 0
+    default: 3
+    component: aileron
+    summary: Maximum disks per VM.
+    detail: Exceeding this FAILS the build rather than clamping it.
+
+  - key: build_max_vm_count
+    path: aileron.buildLimits.maxVMCount
+    env: SETTING_BUILD_MAX_VM_COUNT
+    type: int
+    min: 0
+    max: 64
+    unlimited: 0
+    default: 4
+    component: aileron
+    summary: Maximum VMs per build.
+    detail: Exceeding this FAILS the build rather than clamping it.
+
+  - key: grading_max_concurrent
+    path: aileron.grading.maxConcurrent
+    env: SETTING_GRADING_MAX_CONCURRENT
+    type: int
+    min: 0
+    max: 1000
+    unlimited: 0
+    default: 10
+    component: aileron
+    summary: Grades running concurrently cluster-wide.
+    detail: >-
+      A slot is held by any VM the grader is booting-for-grade (including the
+      boot wait) as well as one actively grading, so a mass grade of powered-off
+      machines drains in batches instead of booting every VM at once. Requests
+      beyond the limit queue in FIFO order. Unlimited means a mass grade boots
+      every VM at once, which is how you brown out a small cluster.
+
+  - key: watchdog_enabled
+    path: watchdog.enabled
+    env: SETTING_WATCHDOG_ENABLED
+    type: bool
+    default: true
+    component: stabilizer
+    summary: The sweeper that reclaims idle and over-age resources.
+    detail: >-
+      Shuts down idle VMs, deletes over-age clone VMs, garbage-collects orphaned
+      PersistentVolumes, and reaps terminal GradeRequests. Turning it off lets a
+      cluster fill up. This is also the only way to express "no runtime limit",
+      since the timeouts below cannot be set to zero.
+
+  - key: watchdog_vm_timeout_minutes
+    path: watchdog.vmTimeoutMinutes
+    env: SETTING_WATCHDOG_VM_TIMEOUT_MINUTES
+    type: int
+    min: 1
+    max: 5256000
+    default: 43200
+    component: stabilizer
+    summary: How long a VM may sit idle before the watchdog powers it off.
+    detail: >-
+      Minimum 1, not 0: the agent reads this with a positive-only parse, so a 0
+      would silently resolve to the chart default and the reported value would
+      then disagree with what the resource declares. Use watchdog_enabled to
+      switch the sweeper off entirely.
+
+  - key: watchdog_max_vm_runtime_minutes
+    path: watchdog.maxVMRuntimeMinutes
+    env: SETTING_WATCHDOG_MAX_VM_RUNTIME_MINUTES
+    type: int
+    min: 1
+    max: 5256000
+    default: 120
+    component: stabilizer
+    summary: Hard cap on a VM's total runtime, idle or not.
+    detail: Minimum 1 for the same reason as watchdog_vm_timeout_minutes.

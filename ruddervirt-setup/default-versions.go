@@ -15,21 +15,24 @@ var defaultVersionsYAML []byte
 // defaultVersionsFile is default-versions.yaml's shape - see that file for
 // what these values mean and how to bump them.
 type defaultVersionsFile struct {
-	K3s      string `yaml:"k3s"`
-	Aileron  string `yaml:"aileron"`
-	KubeVirt string `yaml:"kubevirt"`
-	CDI      string `yaml:"cdi"`
+	K3s        string `yaml:"k3s"`
+	Aileron    string `yaml:"aileron"`
+	KubeVirt   string `yaml:"kubevirt"`
+	CDI        string `yaml:"cdi"`
+	Stabilizer string `yaml:"stabilizer"`
 }
 
-// defaultK3sVersion, defaultAileronVersion, defaultKubeVirtVersion and
-// defaultCDIVersion are populated from default-versions.yaml in init below -
-// same "compiled-in, parsed once at startup" role the former hardcoded
-// consts played, just editable without touching Go source.
+// defaultK3sVersion, defaultAileronVersion, defaultKubeVirtVersion,
+// defaultCDIVersion and defaultStabilizerVersion are populated from
+// default-versions.yaml in init below - same "compiled-in, parsed once at
+// startup" role the former hardcoded consts played, just editable without
+// touching Go source.
 var (
-	defaultK3sVersion      string
-	defaultAileronVersion  string
-	defaultKubeVirtVersion string
-	defaultCDIVersion      string
+	defaultK3sVersion        string
+	defaultAileronVersion    string
+	defaultKubeVirtVersion   string
+	defaultCDIVersion        string
+	defaultStabilizerVersion string
 )
 
 func init() {
@@ -49,6 +52,7 @@ func init() {
 		{"aileron", dv.Aileron},
 		{"kubevirt", dv.KubeVirt},
 		{"cdi", dv.CDI},
+		{"stabilizer", dv.Stabilizer},
 	} {
 		if _, ok := parseSemver(v.value); !ok {
 			panic(fmt.Sprintf("ruddervirt-setup/default-versions.yaml: %s version %q doesn't match vMAJOR.MINOR.PATCH", v.name, v.value))
@@ -59,4 +63,5 @@ func init() {
 	defaultAileronVersion = dv.Aileron
 	defaultKubeVirtVersion = dv.KubeVirt
 	defaultCDIVersion = dv.CDI
+	defaultStabilizerVersion = dv.Stabilizer
 }

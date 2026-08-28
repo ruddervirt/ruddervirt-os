@@ -115,8 +115,108 @@ func TestSettingsRows(t *testing.T) {
 		m := base
 		m.settingsShowAdvanced = true
 		expanded := m.settingsRows()
-		if len(expanded) != len(collapsed)+2 { // pod_cidr, svc_cidr
-			t.Errorf("expanded rows = %d, collapsed = %d, want a difference of 2", len(expanded), len(collapsed))
+		// pod_cidr, svc_cidr, and (not yet detected) the stabilizer action
+		// row - all three now live under Advanced.
+		if len(expanded) != len(collapsed)+3 {
+			t.Errorf("expanded rows = %d, collapsed = %d, want a difference of 3", len(expanded), len(collapsed))
 		}
 	})
+
+	t.Run("stabilizer action row lives under Advanced, shown until detected", func(t *testing.T) {
+		collapsed := base
+		collapsed.settingsShowAdvanced = false
+		if hasStabilizerActionRow(collapsed.settingsRows()) {
+			t.Error("stabilizer action row must not appear while Advanced is collapsed")
+		}
+
+		notDetected := base
+		notDetected.settingsShowAdvanced = true
+		notDetected.cachedStabilizerDetected = false
+		if !hasStabilizerActionRow(notDetected.settingsRows()) {
+			t.Error("stabilizer action row missing while not yet detected (Advanced expanded)")
+		}
+
+		detected := base
+		detected.settingsShowAdvanced = true
+		detected.cachedStabilizerDetected = true
+		if hasStabilizerActionRow(detected.settingsRows()) {
+			t.Error("stabilizer action row still present after stabilizer was detected")
+		}
+		if !hasStabilizerSettingsActionRow(detected.settingsRows()) {
+			t.Error("\"Stabilizer Settings\" row missing once stabilizer was detected")
+		}
+		if hasStabilizerSettingsActionRow(notDetected.settingsRows()) {
+			t.Error("\"Stabilizer Settings\" row must not appear before adoption")
+		}
+	})
+}
+
+func hasStabilizerActionRow(rows []settingsRow) bool {
+	for _, r := range rows {
+		if r.isStabilizerAction {
+			return true
+		}
+	}
+	return false
+}
+
+func hasStabilizerSettingsActionRow(rows []settingsRow) bool {
+	for _, r := range rows {
+		if r.isStabilizerSettingsAction {
+			return true
+		}
+	}
+	return false
+}
+
+// TestStabilizerScreensRender is a lightweight smoke test (matches this
+// file's existing coverage style) asserting View() doesn't panic for any of
+// the "Adopt to ruddervirt.com" wizard's screens at a minimal terminal size.
+func TestStabilizerScreensRender(t *testing.T) {
+	m := model{cfg: Config{Network: NetworkConfig{Addressing: "dhcp"}}, termWidth: 80, termHeight: 24}
+	screens := []screen{
+		screenStabilizerAileronCheck, screenStabilizerWarning, screenStabilizerZone,
+		screenStabilizerNatsPassword, screenStabilizerNebula, screenStabilizerPlanning,
+		screenStabilizerConfirm, screenStabilizerAdopt,
+		screenStabilizerSettingsLoading, screenStabilizerSettingsList,
+		screenStabilizerSettingsConfirm, screenStabilizerSettingsApply,
+	}
+	render := func(s screen) {
+		m.current = s
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("View() panicked for screen %d: %v", s, r)
+			}
+		}()
+		_ = m.View()
+	}
+	for _, s := range screens {
+		render(s)
+	}
+
+	// screenStabilizerSettingsList also renders very differently depending
+	// on state - nil (before load), browsing, picking, and editing all take
+	// separate paths in View().
+	m.stabilizerSettingsState = &stabilizerSettingsState{
+		appliedEnv:     baseAppliedEnv(),
+		declaredValues: map[string]any{},
+	}
+	render(screenStabilizerSettingsList)
+
+	m.stabilizerSettingsPicking = true
+	m.stabilizerSettingsPickOptions = []string{"true", "false"}
+	render(screenStabilizerSettingsList)
+	m.stabilizerSettingsPicking = false
+
+	m.stabilizerSettingsEditing = true
+	render(screenStabilizerSettingsList)
+	m.stabilizerSettingsEditing = false
+
+	// screenStabilizerSettingsApply's "done, success" branch reads
+	// m.stabilizerSettingsState directly - exercise it explicitly.
+	m.stabilizerSettingsApplyDone = true
+	m.stabilizerSettingsApplyErr = nil
+	render(screenStabilizerSettingsApply)
+	m.stabilizerSettingsApplyErr = errFake
+	render(screenStabilizerSettingsApply)
 }

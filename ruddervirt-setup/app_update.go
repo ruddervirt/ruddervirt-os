@@ -58,14 +58,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickServiceStatusRenderCmd()
 
 	case stepOutputMsg:
-		if m.current == screenUpdate {
+		switch m.current {
+		case screenUpdate:
 			m.updateLogs = append(m.updateLogs, string(msg))
 			return m, readFromCh(m.updateCh)
+		case screenStabilizerAdopt:
+			m.stabilizerLogs = append(m.stabilizerLogs, string(msg))
+			return m, readFromCh(m.stabilizerCh)
+		default:
+			m.installLogs = append(m.installLogs, string(msg))
+			return m, readFromCh(m.installCh)
 		}
-		m.installLogs = append(m.installLogs, string(msg))
-		return m, readFromCh(m.installCh)
 
 	case stepDoneMsg:
+		if m.current == screenStabilizerAdopt {
+			if msg.err != nil {
+				m.stabilizerLogs = append(m.stabilizerLogs, fmt.Sprintf("✗ %s: %s", msg.label, msg.err.Error()))
+				m.stabilizerFailed = true
+				clearPendingStabilizerSecrets()
+				return m, nil
+			}
+			m.stabilizerLogs = append(m.stabilizerLogs, fmt.Sprintf("✓ %s", msg.label))
+			m.stabilizerStepIdx++
+			if m.stabilizerStepIdx >= len(stabilizerSteps) {
+				m.stabilizerDone = true
+				clearPendingStabilizerSecrets()
+				// Refresh the otherwise-stale cachedStabilizerDetected
+				// (populated once in Init, never re-fired on its own -
+				// see its doc comment) immediately, so the Settings
+				// screen's Aileron field locks and this action row's own
+				// visibility update without needing a restart.
+				return m, detectStabilizerCmd()
+			}
+			ch, cmd := launchStep(stabilizerSteps[m.stabilizerStepIdx], m.cfg)
+			m.stabilizerCh = ch
+			return m, cmd
+		}
 		if m.current == screenUpdate {
 			if msg.err != nil {
 				m.updateLogs = append(m.updateLogs, fmt.Sprintf("✗ %s: %s", msg.label, msg.err.Error()))
@@ -102,6 +130,63 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ch, cmd := launchStep(installSteps[m.installStepIdx], m.cfg)
 		m.installCh = ch
 		return m, cmd
+
+	case aileronReadyCheckMsg:
+		if !msg.ready {
+			m.current = screenSettings
+			m.settingsError = "aileron isn't installed and running yet - finish Apply first, then try again"
+			return m, nil
+		}
+		m.current = screenStabilizerWarning
+		return m, nil
+
+	case stabilizerSettingsLoadedMsg:
+		if msg.err != nil {
+			m.current = screenSettings
+			m.settingsError = msg.err.Error()
+			return m, nil
+		}
+		m.stabilizerSettingsState = msg.state
+		m.stabilizerSettingsCursor = 0
+		m.stabilizerSettingsScroll = 0
+		m.stabilizerSettingsError = ""
+		m.current = screenStabilizerSettingsList
+		return m, nil
+
+	case stabilizerSettingsApplyResultMsg:
+		m.stabilizerSettingsApplyDone = true
+		m.stabilizerSettingsApplyErr = msg.err
+		if msg.err == nil && m.stabilizerSettingsState != nil {
+			// Optimistically reflect the just-applied change locally, so
+			// returning to the list shows "rollout pending -> X" immediately
+			// instead of the (now stale) previous declared value, without
+			// needing another kubectl round trip. Also mark a release
+			// operation as in flight, so a rapid second edit is correctly
+			// refused without needing a fresh fetch either.
+			setByPath(m.stabilizerSettingsState.declaredValues, m.stabilizerSettingsPendingDef.Path, m.stabilizerSettingsPendingValue)
+			m.stabilizerSettingsState.jobActive = true
+		}
+		return m, nil
+
+	case nebulaConfigResolvedMsg:
+		m.stabilizerNebulaResolving = false
+		if msg.err != nil {
+			m.stabilizerError = msg.err.Error()
+			return m, nil
+		}
+		m.stabilizerNebulaContent = msg.content
+		m.stabilizerNebulaInput.Blur()
+		m.stabilizerError = ""
+		m.current = screenStabilizerPlanning
+		return m, computeStabilizerPlanCmd(kubectlBinPath)
+
+	case stabilizerPlanMsg:
+		m.stabilizerWillAdopt = msg.willAdopt
+		m.current = screenStabilizerConfirm
+		m.stabilizerConfirmInput.SetValue("")
+		m.stabilizerConfirmInput.Focus()
+		m.stabilizerConfirmError = ""
+		return m, nil
 
 	case updateCheckMsg:
 		m.updateChecking = false
@@ -306,6 +391,75 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.current == screenUpdate && !m.updateDone && !m.updateFailed {
 				return m, nil
 			}
+			if m.current == screenStabilizerAdopt && !m.stabilizerDone && !m.stabilizerFailed {
+				return m, nil
+			}
+			if m.current == screenStabilizerPlanning || m.current == screenStabilizerAileronCheck {
+				return m, nil
+			}
+			if isStabilizerWizardScreen(m.current) {
+				// Cancel straight back to Settings, clearing every wizard
+				// input - these are one-way, single-shot entries (unlike
+				// screenPasswordChange's two-field back-navigation), so
+				// there's no intermediate "step back one field" to support.
+				m.current = screenSettings
+				m.stabilizerZoneInput.SetValue("")
+				m.stabilizerZoneInput.Blur()
+				m.stabilizerNatsPasswordInput.SetValue("")
+				m.stabilizerNatsPasswordInput.Blur()
+				m.stabilizerNebulaInput.SetValue("")
+				m.stabilizerNebulaInput.Blur()
+				m.stabilizerNebulaResolving = false
+				m.stabilizerNebulaContent = ""
+				m.stabilizerConfirmInput.SetValue("")
+				m.stabilizerConfirmInput.Blur()
+				m.stabilizerConfirmError = ""
+				m.stabilizerError = ""
+				return m, nil
+			}
+			if m.current == screenStabilizerSettingsLoading {
+				return m, nil
+			}
+			if m.current == screenStabilizerSettingsApply && !m.stabilizerSettingsApplyDone {
+				return m, nil
+			}
+			if m.current == screenStabilizerSettingsApply {
+				// Done (success or failure) - back to the list, which
+				// already reflects the outcome (optimistic update on
+				// success, unchanged on failure).
+				m.current = screenStabilizerSettingsList
+				m.stabilizerSettingsApplyDone = false
+				m.stabilizerSettingsApplyErr = nil
+				return m, nil
+			}
+			if m.current == screenStabilizerSettingsConfirm {
+				// Cancel back to the list, not all the way to Settings -
+				// the fetched state (and cursor position) are still good.
+				m.current = screenStabilizerSettingsList
+				m.stabilizerSettingsConfirmInput.SetValue("")
+				m.stabilizerSettingsConfirmInput.Blur()
+				m.stabilizerSettingsConfirmError = ""
+				return m, nil
+			}
+			if m.current == screenStabilizerSettingsList && m.stabilizerSettingsPicking {
+				m.stabilizerSettingsPicking = false
+				m.stabilizerSettingsError = ""
+				return m, nil
+			}
+			if m.current == screenStabilizerSettingsList && m.stabilizerSettingsEditing {
+				m.stabilizerSettingsEditing = false
+				m.stabilizerSettingsError = ""
+				m.stabilizerSettingsEditInput.Blur()
+				return m, nil
+			}
+			if m.current == screenStabilizerSettingsList {
+				m.current = screenSettings
+				m.stabilizerSettingsState = nil
+				m.stabilizerSettingsCursor = 0
+				m.stabilizerSettingsScroll = 0
+				m.stabilizerSettingsError = ""
+				return m, nil
+			}
 			if m.current == screenSettings && m.settingsPicking {
 				m.settingsPicking = false
 				m.settingsError = ""
@@ -416,6 +570,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.hostnameInput.SetValue("")
 			m.hostnameInput.Blur()
 			m.hostnameChangeForUpdate = false
+			m.stabilizerZoneInput.SetValue("")
+			m.stabilizerZoneInput.Blur()
+			m.stabilizerNatsPasswordInput.SetValue("")
+			m.stabilizerNatsPasswordInput.Blur()
+			m.stabilizerNebulaInput.SetValue("")
+			m.stabilizerNebulaInput.Blur()
+			m.stabilizerNebulaResolving = false
+			m.stabilizerNebulaContent = ""
+			m.stabilizerError = ""
+			m.stabilizerWillAdopt = false
+			m.stabilizerConfirmInput.SetValue("")
+			m.stabilizerConfirmInput.Blur()
+			m.stabilizerConfirmError = ""
+			m.stabilizerStepIdx = 0
+			m.stabilizerLogs = nil
+			m.stabilizerDone = false
+			m.stabilizerFailed = false
+			m.stabilizerCh = nil
+			clearPendingStabilizerSecrets()
+			m.stabilizerSettingsState = nil
+			m.stabilizerSettingsCursor = 0
+			m.stabilizerSettingsScroll = 0
+			m.stabilizerSettingsError = ""
+			m.stabilizerSettingsEditing = false
+			m.stabilizerSettingsEditInput.SetValue("")
+			m.stabilizerSettingsEditInput.Blur()
+			m.stabilizerSettingsPicking = false
+			m.stabilizerSettingsPickCursor = 0
+			m.stabilizerSettingsPickOptions = nil
+			m.stabilizerSettingsPendingDef = stabilizerSettingDef{}
+			m.stabilizerSettingsPendingValue = nil
+			m.stabilizerSettingsPendingCurrent = nil
+			m.stabilizerSettingsConfirmInput.SetValue("")
+			m.stabilizerSettingsConfirmInput.Blur()
+			m.stabilizerSettingsConfirmError = ""
+			m.stabilizerSettingsApplyErr = nil
+			m.stabilizerSettingsApplyDone = false
 			return m, tea.Batch(fetchServiceStatusesCmd(m.cfg), fetchHostStatsCmd(m.cfg, m.prevCPUSample))
 
 		case tea.KeyUp:
@@ -445,6 +636,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.updateVersionsCursor--
 				}
 				m.updateVersionsScroll = clampScroll(m.updateVersionsScroll, m.updateVersionsScrollCursor(), m.settingsVisibleRows())
+				return m, nil
+			}
+			if m.current == screenStabilizerSettingsList && m.stabilizerSettingsPicking {
+				if m.stabilizerSettingsPickCursor > 0 {
+					m.stabilizerSettingsPickCursor--
+				}
+				return m, nil
+			}
+			if m.current == screenStabilizerSettingsList && !m.stabilizerSettingsEditing {
+				if m.stabilizerSettingsCursor > 0 {
+					m.stabilizerSettingsCursor--
+				}
+				m.stabilizerSettingsScroll = clampScroll(m.stabilizerSettingsScroll, m.stabilizerSettingsCursor, m.settingsVisibleRows())
 				return m, nil
 			}
 			if m.current == screenMenu {
@@ -487,6 +691,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.updateVersionsCursor++
 				}
 				m.updateVersionsScroll = clampScroll(m.updateVersionsScroll, m.updateVersionsScrollCursor(), m.settingsVisibleRows())
+				return m, nil
+			}
+			if m.current == screenStabilizerSettingsList && m.stabilizerSettingsPicking {
+				if m.stabilizerSettingsPickCursor < len(m.stabilizerSettingsPickOptions)-1 {
+					m.stabilizerSettingsPickCursor++
+				}
+				return m, nil
+			}
+			if m.current == screenStabilizerSettingsList && !m.stabilizerSettingsEditing {
+				if m.stabilizerSettingsCursor < len(stabilizerSettingDefs)-1 {
+					m.stabilizerSettingsCursor++
+				}
+				m.stabilizerSettingsScroll = clampScroll(m.stabilizerSettingsScroll, m.stabilizerSettingsCursor, m.settingsVisibleRows())
 				return m, nil
 			}
 			if m.current == screenMenu {
@@ -656,6 +873,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, computeInstallPlanCmd(m.cfg)
 				}
 				row := rows[m.settingsCursor]
+				if row.isStabilizerAction {
+					// Checks aileron is actually installed and running
+					// before anything else - adopting against an aileron
+					// that was never installed, or isn't healthy, would
+					// re-stamp ownership of resources that aren't really
+					// there. Only once that passes does it move on to the
+					// coordination warning (this can't proceed without
+					// selfhosted@ruddervirt.com providing secrets first).
+					m.current = screenStabilizerAileronCheck
+					m.settingsError = ""
+					m.stabilizerError = ""
+					return m, checkAileronReadyCmd(kubectlBinPath)
+				}
+				if row.isStabilizerSettingsAction {
+					m.current = screenStabilizerSettingsLoading
+					m.settingsError = ""
+					m.stabilizerSettingsError = ""
+					return m, loadStabilizerSettingsStateCmd()
+				}
 				if row.isNetworkToggle {
 					m.settingsShowNetwork = !m.settingsShowNetwork
 					return m, nil
@@ -826,6 +1062,180 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.hostnameSaving = true
 				m.hostnameError = ""
 				return m, setHostnameCmd(newHostname)
+			} else if m.current == screenStabilizerWarning {
+				m.current = screenStabilizerZone
+				m.stabilizerZoneInput.SetValue(m.cfg.Stabilizer.Zone)
+				m.stabilizerZoneInput.CursorEnd()
+				m.stabilizerZoneInput.Focus()
+				m.stabilizerError = ""
+				return m, nil
+			} else if m.current == screenStabilizerZone {
+				zone, err := stabilizerNonEmptyField("zone name", m.stabilizerZoneInput.Value())
+				if err != nil {
+					m.stabilizerError = err.Error()
+					return m, nil
+				}
+				m.cfg.Stabilizer.Zone = zone
+				m.stabilizerZoneInput.Blur()
+				// NATS URL is fixed (defaultStabilizerNatsURL) and the NATS
+				// username is always the zone name - ruddervirt provides
+				// both implicitly by providing the zone and a password, so
+				// neither gets its own input screen.
+				m.current = screenStabilizerNatsPassword
+				m.stabilizerNatsPasswordInput.SetValue("")
+				m.stabilizerNatsPasswordInput.Focus()
+				m.stabilizerError = ""
+				return m, nil
+			} else if m.current == screenStabilizerNatsPassword {
+				if _, err := stabilizerNonEmptyField("NATS password", m.stabilizerNatsPasswordInput.Value()); err != nil {
+					m.stabilizerError = err.Error()
+					return m, nil
+				}
+				m.stabilizerNatsPasswordInput.Blur()
+				m.current = screenStabilizerNebula
+				m.stabilizerNebulaInput.SetValue("")
+				m.stabilizerNebulaInput.Focus()
+				m.stabilizerError = ""
+				return m, nil
+			} else if m.current == screenStabilizerNebula {
+				pathOrURL, err := stabilizerNonEmptyField("nebula config path/URL", m.stabilizerNebulaInput.Value())
+				if err != nil {
+					m.stabilizerError = err.Error()
+					return m, nil
+				}
+				m.stabilizerNebulaResolving = true
+				m.stabilizerError = ""
+				return m, resolveNebulaConfigCmd(pathOrURL)
+			} else if m.current == screenStabilizerConfirm {
+				if strings.EqualFold(strings.TrimSpace(m.stabilizerConfirmInput.Value()), "yes") {
+					// NATS URL is always the fixed shared bus address, and
+					// the NATS username is always the zone name - see
+					// screenStabilizerZone above.
+					m.cfg.Stabilizer.NatsURL = defaultStabilizerNatsURL
+					pendingStabilizerNatsUser = m.cfg.Stabilizer.Zone
+					pendingStabilizerNatsPassword = m.stabilizerNatsPasswordInput.Value()
+					pendingStabilizerNebulaConfig = m.stabilizerNebulaContent
+					m.cfg.Stabilizer.Version = defaultStabilizerVersion
+					m.current = screenStabilizerAdopt
+					m.stabilizerStepIdx = 0
+					m.stabilizerLogs = nil
+					m.stabilizerDone = false
+					m.stabilizerFailed = false
+					m.stabilizerConfirmInput.Blur()
+					m.stabilizerNatsPasswordInput.SetValue("")
+					m.stabilizerNatsPasswordInput.Blur()
+					m.stabilizerNebulaInput.SetValue("")
+					m.stabilizerNebulaInput.Blur()
+					m.stabilizerNebulaContent = ""
+					ch, cmd := launchStep(stabilizerSteps[0], m.cfg)
+					m.stabilizerCh = ch
+					return m, tea.Batch(saveSettingCmd(m.cfg), cmd)
+				}
+				m.stabilizerConfirmError = `Type "yes" to proceed, or Esc to cancel.`
+			} else if m.current == screenStabilizerSettingsList {
+				state := m.stabilizerSettingsState
+				if state == nil {
+					return m, nil
+				}
+				switch {
+				case m.stabilizerSettingsPicking:
+					def := stabilizerSettingDefs[m.stabilizerSettingsCursor]
+					chosen := m.stabilizerSettingsPickOptions[m.stabilizerSettingsPickCursor]
+					value, current, err := resolveStabilizerSettingChange(state, def, chosen)
+					if err != nil {
+						m.stabilizerSettingsError = err.Error()
+						return m, nil
+					}
+					if current != nil && stabilizerSettingValuesEqual(def, value, current) {
+						m.stabilizerSettingsPicking = false
+						m.stabilizerSettingsError = fmt.Sprintf("%s is already %s - no change", def.Key, formatStabilizerSettingValue(def, value))
+						return m, nil
+					}
+					m.stabilizerSettingsPicking = false
+					m.stabilizerSettingsPendingDef = def
+					m.stabilizerSettingsPendingValue = value
+					m.stabilizerSettingsPendingCurrent = current
+					m.current = screenStabilizerSettingsConfirm
+					m.stabilizerSettingsConfirmInput.SetValue("")
+					m.stabilizerSettingsConfirmInput.Focus()
+					m.stabilizerSettingsConfirmError = ""
+					m.stabilizerSettingsError = ""
+					return m, nil
+
+				case m.stabilizerSettingsEditing:
+					def := stabilizerSettingDefs[m.stabilizerSettingsCursor]
+					value, current, err := resolveStabilizerSettingChange(state, def, m.stabilizerSettingsEditInput.Value())
+					if err != nil {
+						m.stabilizerSettingsError = err.Error()
+						return m, nil
+					}
+					if current != nil && stabilizerSettingValuesEqual(def, value, current) {
+						m.stabilizerSettingsEditing = false
+						m.stabilizerSettingsEditInput.Blur()
+						m.stabilizerSettingsError = fmt.Sprintf("%s is already %s - no change", def.Key, formatStabilizerSettingValue(def, value))
+						return m, nil
+					}
+					m.stabilizerSettingsEditing = false
+					m.stabilizerSettingsEditInput.Blur()
+					m.stabilizerSettingsPendingDef = def
+					m.stabilizerSettingsPendingValue = value
+					m.stabilizerSettingsPendingCurrent = current
+					m.current = screenStabilizerSettingsConfirm
+					m.stabilizerSettingsConfirmInput.SetValue("")
+					m.stabilizerSettingsConfirmInput.Focus()
+					m.stabilizerSettingsConfirmError = ""
+					m.stabilizerSettingsError = ""
+					return m, nil
+
+				default:
+					if len(stabilizerSettingDefs) == 0 {
+						return m, nil
+					}
+					def := stabilizerSettingDefs[m.stabilizerSettingsCursor]
+					if state.jobActive {
+						m.stabilizerSettingsError = fmt.Sprintf("a stabilizer release operation is already in progress (helm-install-%s job is active) - wait for it to finish and try again", state.helmChartName)
+						return m, nil
+					}
+					if _, _, editable := stabilizerSettingRowDisplay(def, state); !editable {
+						m.stabilizerSettingsError = fmt.Sprintf("%s can't be changed right now", def.Key)
+						return m, nil
+					}
+					m.stabilizerSettingsError = ""
+					if def.Type == stabilizerSettingBool {
+						m.stabilizerSettingsPickOptions = []string{"true", "false"}
+						m.stabilizerSettingsPickCursor = 0
+						if appliedRaw, ok := state.appliedEnv[def.Env]; ok {
+							for i, o := range m.stabilizerSettingsPickOptions {
+								if strings.EqualFold(o, appliedRaw) {
+									m.stabilizerSettingsPickCursor = i
+									break
+								}
+							}
+						}
+						m.stabilizerSettingsPicking = true
+						return m, nil
+					}
+					prefill := state.appliedEnv[def.Env]
+					m.stabilizerSettingsEditInput.SetValue(prefill)
+					m.stabilizerSettingsEditInput.CursorEnd()
+					m.stabilizerSettingsEditInput.Focus()
+					m.stabilizerSettingsEditing = true
+					return m, nil
+				}
+			} else if m.current == screenStabilizerSettingsConfirm {
+				if strings.EqualFold(strings.TrimSpace(m.stabilizerSettingsConfirmInput.Value()), "yes") {
+					if m.stabilizerSettingsState == nil {
+						return m, nil
+					}
+					m.stabilizerSettingsConfirmInput.Blur()
+					m.stabilizerSettingsApplyDone = false
+					m.stabilizerSettingsApplyErr = nil
+					m.current = screenStabilizerSettingsApply
+					return m, applyStabilizerSettingPatchCmd(
+						m.stabilizerSettingsState.helmChartNamespace, m.stabilizerSettingsState.helmChartName,
+						m.stabilizerSettingsPendingDef, m.stabilizerSettingsPendingValue)
+				}
+				m.stabilizerSettingsConfirmError = `Type "yes" to proceed, or Esc to cancel.`
 			}
 			return m, nil
 
@@ -868,6 +1278,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.current == screenHostnameChange {
 		var cmd tea.Cmd
 		m.hostnameInput, cmd = m.hostnameInput.Update(msg)
+		return m, cmd
+	}
+
+	if m.current == screenStabilizerZone {
+		var cmd tea.Cmd
+		m.stabilizerZoneInput, cmd = m.stabilizerZoneInput.Update(msg)
+		return m, cmd
+	}
+
+	if m.current == screenStabilizerNatsPassword {
+		var cmd tea.Cmd
+		m.stabilizerNatsPasswordInput, cmd = m.stabilizerNatsPasswordInput.Update(msg)
+		return m, cmd
+	}
+
+	if m.current == screenStabilizerNebula {
+		var cmd tea.Cmd
+		m.stabilizerNebulaInput, cmd = m.stabilizerNebulaInput.Update(msg)
+		return m, cmd
+	}
+
+	if m.current == screenStabilizerConfirm {
+		var cmd tea.Cmd
+		m.stabilizerConfirmInput, cmd = m.stabilizerConfirmInput.Update(msg)
+		return m, cmd
+	}
+
+	if m.current == screenStabilizerSettingsList && m.stabilizerSettingsEditing {
+		var cmd tea.Cmd
+		m.stabilizerSettingsEditInput, cmd = m.stabilizerSettingsEditInput.Update(msg)
+		return m, cmd
+	}
+
+	if m.current == screenStabilizerSettingsConfirm {
+		var cmd tea.Cmd
+		m.stabilizerSettingsConfirmInput, cmd = m.stabilizerSettingsConfirmInput.Update(msg)
 		return m, cmd
 	}
 

@@ -25,7 +25,36 @@ const (
 	screenPasswordCheck
 	screenPasswordChange
 	screenHostnameChange
+	screenStabilizerAileronCheck
+	screenStabilizerWarning
+	screenStabilizerZone
+	screenStabilizerNatsPassword
+	screenStabilizerNebula
+	screenStabilizerPlanning
+	screenStabilizerConfirm
+	screenStabilizerAdopt
+	screenStabilizerSettingsLoading
+	screenStabilizerSettingsList
+	screenStabilizerSettingsConfirm
+	screenStabilizerSettingsApply
 )
+
+// isStabilizerWizardScreen reports whether s is one of the "Adopt to
+// ruddervirt.com" wizard's pre-execution screens - used by app_update.go's
+// shared Esc-cancel handling. Deliberately excludes
+// screenStabilizerAileronCheck/screenStabilizerPlanning (brief,
+// non-interactive checks, same as screenInstallPlanning - Esc is simply
+// blocked there) and screenStabilizerAdopt (guarded separately, only
+// cancelable once done/failed).
+func isStabilizerWizardScreen(s screen) bool {
+	switch s {
+	case screenStabilizerWarning, screenStabilizerZone, screenStabilizerNatsPassword,
+		screenStabilizerNebula, screenStabilizerConfirm:
+		return true
+	default:
+		return false
+	}
+}
 
 type stepOutputMsg string
 type stepDoneMsg struct {
@@ -177,7 +206,76 @@ type model struct {
 	// deliberately isn't refreshed periodically. Read by the Aileron
 	// settingFields' locked funcs (config.go) instead of shelling out to
 	// kubectl on every render - see stabilizerLocked/stabilizerChartPresent.
+	// Explicitly re-fired once the "Adopt to ruddervirt.com" flow
+	// (stabilizer.go) finishes, so this doesn't stay stale for the rest of
+	// the process's life the way its own doc comment says it deliberately
+	// otherwise does.
 	cachedStabilizerDetected bool
+
+	// "Adopt to ruddervirt.com" wizard (Settings -> Advanced -> new action
+	// row, see settingsRow.isStabilizerAction) - collects the secrets
+	// adopt.go/stabilizer.go need, then runs stabilizerSteps. Mirrors the
+	// shape of the install*/installConfirm* fields above, just for this
+	// flow's own screens instead of screenInstall/screenInstallConfirm.
+	// NATS URL is fixed (defaultStabilizerNatsURL, stabilizer.go) and the
+	// NATS username is always the zone name, so neither gets its own input
+	// screen/field - only zone, the NATS password, and the Nebula config
+	// path/URL are ever typed by the operator.
+	stabilizerZoneInput         textinput.Model
+	stabilizerNatsPasswordInput textinput.Model
+	stabilizerNebulaInput       textinput.Model
+	stabilizerNebulaResolving   bool
+	// stabilizerNebulaContent holds the fetched-and-validated Nebula config
+	// only until screenStabilizerConfirm launches stabilizerSteps, at which
+	// point it's copied into pendingStabilizerNebulaConfig (stabilizer.go)
+	// and cleared here - never persisted to Config.
+	stabilizerNebulaContent string
+	stabilizerError         string
+
+	// stabilizerWillAdopt carries computeStabilizerPlanCmd's result
+	// (stabilizer.go) into screenStabilizerConfirm's plan summary.
+	stabilizerWillAdopt    bool
+	stabilizerConfirmInput textinput.Model
+	stabilizerConfirmError string
+
+	stabilizerStepIdx int
+	stabilizerLogs    []string
+	stabilizerDone    bool
+	stabilizerFailed  bool
+	stabilizerCh      chan tea.Msg
+
+	// "Stabilizer Settings" screen (Settings -> Advanced -> the row that
+	// replaces "Adopt to ruddervirt.com" once cachedStabilizerDetected is
+	// true) - browses and edits every setting in stabilizerSettingDefs
+	// against LIVE cluster state, not Config, so it doesn't fit the
+	// settingField/settingsRows() shape the rest of Settings uses; this is
+	// its own parallel set of fields, mirroring that shape as closely as
+	// the different data source allows (settingsPicking/settingsEditing ->
+	// stabilizerSettingsPicking/stabilizerSettingsEditing, etc).
+	stabilizerSettingsState  *stabilizerSettingsState // nil until loadStabilizerSettingsStateCmd (stabilizer_settings_tui.go) returns
+	stabilizerSettingsCursor int
+	stabilizerSettingsScroll int
+	stabilizerSettingsError  string
+
+	stabilizerSettingsEditing   bool
+	stabilizerSettingsEditInput textinput.Model
+
+	stabilizerSettingsPicking     bool
+	stabilizerSettingsPickCursor  int
+	stabilizerSettingsPickOptions []string
+
+	// stabilizerSettingsPending* hold one validated, not-yet-applied change
+	// from screenStabilizerSettingsList's edit/pick step through
+	// screenStabilizerSettingsConfirm's "yes" to
+	// applyStabilizerSettingPatchCmd.
+	stabilizerSettingsPendingDef     stabilizerSettingDef
+	stabilizerSettingsPendingValue   any
+	stabilizerSettingsPendingCurrent any
+	stabilizerSettingsConfirmInput   textinput.Model
+	stabilizerSettingsConfirmError   string
+
+	stabilizerSettingsApplyErr  error
+	stabilizerSettingsApplyDone bool
 }
 
 func initialModel() model {
@@ -198,6 +296,16 @@ func initialModel() model {
 	passwordConfirmInput.EchoCharacter = '•'
 
 	hostnameInput := textinput.New()
+
+	stabilizerZoneInput := textinput.New()
+	stabilizerNatsPasswordInput := textinput.New()
+	stabilizerNatsPasswordInput.EchoMode = textinput.EchoPassword
+	stabilizerNatsPasswordInput.EchoCharacter = '•'
+	stabilizerNebulaInput := textinput.New()
+	stabilizerConfirmInput := textinput.New()
+
+	stabilizerSettingsEditInput := textinput.New()
+	stabilizerSettingsConfirmInput := textinput.New()
 
 	cfg, _ := loadConfig(configPath)
 	if cfg.Network.InterfaceName == "" {
@@ -234,14 +342,20 @@ func initialModel() model {
 	}
 
 	return model{
-		current:              current,
-		settingsInput:        settingsInput,
-		installConfirmInput:  installConfirmInput,
-		updateConfirmInput:   updateConfirmInput,
-		passwordNewInput:     passwordNewInput,
-		passwordConfirmInput: passwordConfirmInput,
-		hostnameInput:        hostnameInput,
-		cfg:                  cfg,
+		current:                        current,
+		settingsInput:                  settingsInput,
+		installConfirmInput:            installConfirmInput,
+		updateConfirmInput:             updateConfirmInput,
+		passwordNewInput:               passwordNewInput,
+		passwordConfirmInput:           passwordConfirmInput,
+		hostnameInput:                  hostnameInput,
+		stabilizerZoneInput:            stabilizerZoneInput,
+		stabilizerNatsPasswordInput:    stabilizerNatsPasswordInput,
+		stabilizerNebulaInput:          stabilizerNebulaInput,
+		stabilizerConfirmInput:         stabilizerConfirmInput,
+		stabilizerSettingsEditInput:    stabilizerSettingsEditInput,
+		stabilizerSettingsConfirmInput: stabilizerSettingsConfirmInput,
+		cfg:                            cfg,
 		// Sane fallback until the first tea.WindowSizeMsg arrives.
 		termWidth:  80,
 		termHeight: 24,

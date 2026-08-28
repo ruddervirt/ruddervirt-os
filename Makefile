@@ -26,7 +26,10 @@ ROOTFS    := $(OUT_DIR)/test-rootfs
 # is the QEMU user-net gateway that maps to the host loopback). It's a real file
 # target so make only rebuilds it when its sources change.
 TUI_BIN   := scripts/ruddervirt-setup
-TUI_SRC   := ruddervirt-setup/model.go ruddervirt-setup/app_update.go ruddervirt-setup/view.go ruddervirt-setup/install_steps.go ruddervirt-setup/exec.go ruddervirt-setup/main.go ruddervirt-setup/config.go ruddervirt-setup/k3s.go ruddervirt-setup/network.go ruddervirt-setup/storage.go ruddervirt-setup/kubevirt.go ruddervirt-setup/aileron.go ruddervirt-setup/update.go ruddervirt-setup/status.go ruddervirt-setup/password.go ruddervirt-setup/hostname.go ruddervirt-setup/version.go ruddervirt-setup/default-versions.go ruddervirt-setup/default-versions.yaml ruddervirt-setup/supported-versions.yaml ruddervirt-setup/go.mod ruddervirt-setup/go.sum
+TUI_SRC   := $(filter-out %_test.go,$(wildcard ruddervirt-setup/*.go)) \
+             ruddervirt-setup/go.mod ruddervirt-setup/go.sum \
+             $(wildcard ruddervirt-setup/*.yaml) \
+             $(shell find ruddervirt-setup/manifests -type f 2>/dev/null)
 # Port for the dev binary-serving HTTP server (must match the URL in server.bu).
 TUI_SERVE_PORT ?= 8080
 # Host port forwarded to the guest's aileron-ui NodePort (30806 - the

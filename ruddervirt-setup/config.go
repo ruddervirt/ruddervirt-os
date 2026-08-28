@@ -80,11 +80,23 @@ type StorageConfig struct {
 	Engine string `yaml:"engine"`
 }
 
+// StabilizerConfig holds only the non-secret values needed to (re-)apply the
+// stabilizer HelmChart - e.g. on a future version bump. Zone and NatsURL are
+// plain orchestration config, not secrets. NATS credentials and the Nebula
+// mesh identity are NEVER stored here, or anywhere else in Config - see
+// pendingStabilizer* in stabilizer.go.
+type StabilizerConfig struct {
+	Zone    string `yaml:"zone"`
+	NatsURL string `yaml:"nats_url"`
+	Version string `yaml:"version"`
+}
+
 type Config struct {
-	Network  NetworkConfig  `yaml:"network"`
-	System   SystemConfig   `yaml:"system"`
-	Versions VersionsConfig `yaml:"versions"`
-	Storage  StorageConfig  `yaml:"storage"`
+	Network    NetworkConfig    `yaml:"network"`
+	System     SystemConfig     `yaml:"system"`
+	Versions   VersionsConfig   `yaml:"versions"`
+	Storage    StorageConfig    `yaml:"storage"`
+	Stabilizer StabilizerConfig `yaml:"stabilizer"`
 }
 
 func defaultConfig() Config {
@@ -111,6 +123,9 @@ func defaultConfig() Config {
 		},
 		Storage: StorageConfig{
 			Engine: "openebs",
+		},
+		Stabilizer: StabilizerConfig{
+			Version: defaultStabilizerVersion,
 		},
 	}
 }

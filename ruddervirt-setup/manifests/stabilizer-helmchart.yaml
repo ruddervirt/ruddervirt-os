@@ -1,0 +1,24 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: stabilizer
+  namespace: kube-system
+spec:
+  chart: oci://ghcr.io/ruddervirt/charts/stabilizer
+  version: __STABILIZER_VERSION__
+  targetNamespace: ruddervirt-system
+  createNamespace: true
+  takeOwnership: false
+  valuesContent: |-
+    aileron:
+      enabled: true
+    deploymentZone: "__STABILIZER_ZONE__"
+    nats:
+      url: "__NATS_URL__"
+      authSecret: stabilizer-nats-auth
+      userKey: user
+      passwordKey: password
+    nebula:
+      enabled: true
+      configSecret: stabilizer-nebula
+      configKey: config.yml
