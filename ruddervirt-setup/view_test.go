@@ -115,10 +115,10 @@ func TestSettingsRows(t *testing.T) {
 		m := base
 		m.settingsShowAdvanced = true
 		expanded := m.settingsRows()
-		// pod_cidr, svc_cidr, and (not yet detected) the stabilizer action
-		// row - all three now live under Advanced.
-		if len(expanded) != len(collapsed)+3 {
-			t.Errorf("expanded rows = %d, collapsed = %d, want a difference of 3", len(expanded), len(collapsed))
+		// pod_cidr, svc_cidr, storage.engine, and (not yet detected) the
+		// stabilizer action row - all four now live under Advanced.
+		if len(expanded) != len(collapsed)+4 {
+			t.Errorf("expanded rows = %d, collapsed = %d, want a difference of 4", len(expanded), len(collapsed))
 		}
 	})
 
@@ -135,6 +135,9 @@ func TestSettingsRows(t *testing.T) {
 		if !hasStabilizerActionRow(notDetected.settingsRows()) {
 			t.Error("stabilizer action row missing while not yet detected (Advanced expanded)")
 		}
+		if countStabilizerDefRows(notDetected.settingsRows()) != 0 {
+			t.Error("no stabilizer setting rows should appear before adoption")
+		}
 
 		detected := base
 		detected.settingsShowAdvanced = true
@@ -142,11 +145,44 @@ func TestSettingsRows(t *testing.T) {
 		if hasStabilizerActionRow(detected.settingsRows()) {
 			t.Error("stabilizer action row still present after stabilizer was detected")
 		}
-		if !hasStabilizerSettingsActionRow(detected.settingsRows()) {
-			t.Error("\"Stabilizer Settings\" row missing once stabilizer was detected")
+		// Every stabilizer setting becomes an in-situ row once detected -
+		// no separate action row leading anywhere.
+		if got, want := countStabilizerDefRows(detected.settingsRows()), len(stabilizerSettingDefs); got != want {
+			t.Errorf("stabilizer setting rows = %d, want %d (one per stabilizerSettingDefs entry)", got, want)
 		}
-		if hasStabilizerSettingsActionRow(notDetected.settingsRows()) {
-			t.Error("\"Stabilizer Settings\" row must not appear before adoption")
+	})
+
+	t.Run("aileron_ui_enabled is replaced in place once detected, never duplicated", func(t *testing.T) {
+		notDetected := base
+		notDetected.settingsShowAdvanced = true
+		notDetected.cachedStabilizerDetected = false
+		if hasStabilizerDefRow(notDetected.settingsRows(), "aileron_ui_enabled") {
+			t.Error("aileron_ui_enabled shouldn't be stabilizer-backed before adoption")
+		}
+		if !hasConfigFieldRow(notDetected.settingsRows(), "system.aileron_ui_enabled") {
+			t.Error("the Config-backed system.aileron_ui_enabled row should still be present before adoption")
+		}
+
+		detected := base
+		detected.settingsShowAdvanced = true
+		detected.cachedStabilizerDetected = true
+		rows := detected.settingsRows()
+		if hasConfigFieldRow(rows, "system.aileron_ui_enabled") {
+			t.Error("the old Config-backed row must be gone once stabilizer is detected - not shown twice")
+		}
+		var aileronUIRows int
+		var aileronUINested bool
+		for _, r := range rows {
+			if r.stabilizerDef != nil && r.stabilizerDef.Key == "aileron_ui_enabled" {
+				aileronUIRows++
+				aileronUINested = r.nested
+			}
+		}
+		if aileronUIRows != 1 {
+			t.Errorf("aileron_ui_enabled appears %d times, want exactly 1", aileronUIRows)
+		}
+		if aileronUINested {
+			t.Error("aileron_ui_enabled should stay in its original plain (non-nested) slot, not move under Advanced")
 		}
 	})
 }
@@ -160,9 +196,28 @@ func hasStabilizerActionRow(rows []settingsRow) bool {
 	return false
 }
 
-func hasStabilizerSettingsActionRow(rows []settingsRow) bool {
+func countStabilizerDefRows(rows []settingsRow) int {
+	n := 0
 	for _, r := range rows {
-		if r.isStabilizerSettingsAction {
+		if r.stabilizerDef != nil {
+			n++
+		}
+	}
+	return n
+}
+
+func hasStabilizerDefRow(rows []settingsRow, key string) bool {
+	for _, r := range rows {
+		if r.stabilizerDef != nil && r.stabilizerDef.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func hasConfigFieldRow(rows []settingsRow, key string) bool {
+	for _, r := range rows {
+		if r.stabilizerDef == nil && !r.isNetworkToggle && !r.isToggle && !r.isStabilizerAction && r.field.key == key {
 			return true
 		}
 	}
@@ -178,8 +233,8 @@ func TestStabilizerScreensRender(t *testing.T) {
 		screenStabilizerAileronCheck, screenStabilizerWarning, screenStabilizerZone,
 		screenStabilizerNatsPassword, screenStabilizerNebula, screenStabilizerPlanning,
 		screenStabilizerConfirm, screenStabilizerAdopt,
-		screenStabilizerSettingsLoading, screenStabilizerSettingsList,
 		screenStabilizerSettingsConfirm, screenStabilizerSettingsApply,
+		screenStabilizerVersionInput, screenStabilizerVersionConfirm, screenStabilizerVersionApply,
 	}
 	render := func(s screen) {
 		m.current = s
@@ -194,29 +249,36 @@ func TestStabilizerScreensRender(t *testing.T) {
 		render(s)
 	}
 
-	// screenStabilizerSettingsList also renders very differently depending
-	// on state - nil (before load), browsing, picking, and editing all take
+	// screenStabilizerSettingsApply's running/done/failed branches all take
 	// separate paths in View().
-	m.stabilizerSettingsState = &stabilizerSettingsState{
-		appliedEnv:     baseAppliedEnv(),
-		declaredValues: map[string]any{},
-	}
-	render(screenStabilizerSettingsList)
+	def, _ := stabilizerSettingByKey("build_max_cpu")
+	m.stabilizerSettingsPendingDef = def
+	m.stabilizerSettingsApplyPipeline = stabilizerSettingsApplySteps("kube-system", "stabilizer", def, 16)
+	render(screenStabilizerSettingsApply)
 
-	m.stabilizerSettingsPicking = true
-	m.stabilizerSettingsPickOptions = []string{"true", "false"}
-	render(screenStabilizerSettingsList)
-	m.stabilizerSettingsPicking = false
-
-	m.stabilizerSettingsEditing = true
-	render(screenStabilizerSettingsList)
-	m.stabilizerSettingsEditing = false
-
-	// screenStabilizerSettingsApply's "done, success" branch reads
-	// m.stabilizerSettingsState directly - exercise it explicitly.
 	m.stabilizerSettingsApplyDone = true
-	m.stabilizerSettingsApplyErr = nil
 	render(screenStabilizerSettingsApply)
-	m.stabilizerSettingsApplyErr = errFake
+	m.stabilizerSettingsApplyDone = false
+
+	m.stabilizerSettingsApplyFailed = true
 	render(screenStabilizerSettingsApply)
+	m.stabilizerSettingsApplyFailed = false
+
+	// screenStabilizerVersionApply's running/done/failed branches, same as
+	// above - and screenStabilizerVersionConfirm with a nil
+	// stabilizerSettingsState (must not panic; only Enter-dispatch requires
+	// the state to already be loaded, View() must tolerate not having it).
+	render(screenStabilizerVersionConfirm)
+
+	m.stabilizerVersionTarget = "1.3.0"
+	m.stabilizerVersionClearedPins = []string{"aileron.image.tag"}
+	m.stabilizerVersionApplyPipeline = stabilizerVersionApplySteps("kube-system", "stabilizer", []byte(`{}`), "1.3.0")
+	render(screenStabilizerVersionApply)
+
+	m.stabilizerVersionApplyDone = true
+	render(screenStabilizerVersionApply)
+	m.stabilizerVersionApplyDone = false
+
+	m.stabilizerVersionApplyFailed = true
+	render(screenStabilizerVersionApply)
 }

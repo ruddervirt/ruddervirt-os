@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -38,15 +39,19 @@ func tuiKubectlExec(args ...string) ([]byte, error) {
 }
 
 // stabilizerSettingsLoadedMsg carries loadStabilizerSettingsStateCmd's
-// result back into Update.
+// result back into Update - handled silently in the background (see
+// app_update.go's stabilizerDetectedMsg/stepDoneMsg cases that fire it),
+// never navigating on its own; Settings just re-renders with fresher data
+// once it lands.
 type stabilizerSettingsLoadedMsg struct {
 	state *stabilizerSettingsState
 	err   error
 }
 
 // loadStabilizerSettingsStateCmd fetches live cluster state off the UI
-// thread, so screenStabilizerSettingsLoading's message can actually show
-// while the (possibly sudo-prompting) kubectl calls run.
+// thread - fired once stabilizerDetectedMsg confirms stabilizer is
+// present, and again after a successful settings change - never
+// unconditionally, since the underlying kubectl calls can prompt for sudo.
 func loadStabilizerSettingsStateCmd() tea.Cmd {
 	return func() tea.Msg {
 		state, err := loadStabilizerSettingsState(tuiKubectlExec)
@@ -121,31 +126,64 @@ func stabilizerSettingListValue(d stabilizerSettingDef, state *stabilizerSetting
 	}
 }
 
-// stabilizerSettingsApplyResultMsg carries applyStabilizerSettingPatchCmd's
-// result back into Update.
-type stabilizerSettingsApplyResultMsg struct {
-	err error
-}
-
-// applyStabilizerSettingPatchCmd writes exactly one setting's leaf under
-// spec.values via a JSON merge patch - same shape/rules as the CLI's own
-// patch (buildNestedPatch-equivalent via setByPath, real JSON types, never
-// spec.set, never any field but spec.values) - just one leaf at a time
-// since this screen edits one setting per confirm, and via runPrivileged
-// (interactive sudo) rather than the CLI's unprivileged settingsKubectl.
-func applyStabilizerSettingPatchCmd(helmChartNamespace, helmChartName string, def stabilizerSettingDef, value any) tea.Cmd {
-	return func() tea.Msg {
-		patch := map[string]any{}
-		setByPath(patch, def.Path, value)
-		patchJSON, err := json.Marshal(map[string]any{"spec": map[string]any{"values": patch}})
-		if err != nil {
-			return stabilizerSettingsApplyResultMsg{err: err}
-		}
-		out, err := runPrivileged(kubectlBinPath, "-n", helmChartNamespace, "patch", "helmchart.helm.cattle.io", helmChartName,
-			"--type=merge", "-p", string(patchJSON)).CombinedOutput()
-		if err != nil {
-			return stabilizerSettingsApplyResultMsg{err: wrapCmdErr(out, err)}
-		}
-		return stabilizerSettingsApplyResultMsg{}
+// stabilizerSettingsApplySteps builds the two-step installStep pipeline
+// screenStabilizerSettingsApply runs after a confirmed edit: patch, then
+// actually WATCH the rollout to completion from inside the TUI. A plain
+// "run `kubectl ... -w` yourself to watch it" message (which is what the
+// SSH `settings` CLI prints - stabilizer_settings_cli.go - since it exits
+// back to a real shell prompt) makes no sense here: the TUI holds the
+// terminal in raw mode, so there's no shell for the operator to run that
+// command in. This reuses exactly the same installStep/launchStep/
+// stepOutputMsg/stepDoneMsg machinery the "Adopt to ruddervirt.com" flow
+// (stabilizerSteps, stabilizer.go) already streams progress through, and
+// its second step is intentionally the same shape as that flow's own
+// waitForStabilizerReadyStep - wait for the helm-install job, then for the
+// stabilizer Deployment to become Available again.
+//
+// Built fresh per confirmed edit (closures capturing helmChartNamespace/
+// helmChartName/def/value) rather than a static package var like
+// stabilizerSteps, since those vary per invocation and installStep.run's
+// signature (func(cfg Config, ch chan<- tea.Msg)) has no other way to carry
+// them in.
+func stabilizerSettingsApplySteps(helmChartNamespace, helmChartName string, def stabilizerSettingDef, value any) []installStep {
+	return []installStep{
+		{
+			label: fmt.Sprintf("Applying %s", def.Key),
+			run: func(cfg Config, ch chan<- tea.Msg) {
+				label := fmt.Sprintf("Applying %s", def.Key)
+				patch := map[string]any{}
+				setByPath(patch, def.Path, value)
+				patchJSON, err := json.Marshal(map[string]any{"spec": map[string]any{"values": patch}})
+				if err != nil {
+					ch <- stepDoneMsg{label: label, err: err}
+					return
+				}
+				ch <- stepOutputMsg(fmt.Sprintf("Patching %s/%s...", helmChartNamespace, helmChartName))
+				err = runStreamed(ch, kubectlBinPath, "-n", helmChartNamespace, "patch", "helmchart.helm.cattle.io", helmChartName,
+					"--type=merge", "-p", string(patchJSON))
+				ch <- stepDoneMsg{label: label, err: err}
+			},
+		},
+		{
+			label: "Waiting for the rollout to complete",
+			run: func(cfg Config, ch chan<- tea.Msg) {
+				const label = "Waiting for the rollout to complete"
+				jobName := "job/helm-install-" + helmChartName
+				if err := pollUntil(ch, "Waiting for the stabilizer helm-install job", 60, 5*time.Second, func() bool {
+					return runPrivileged(kubectlBinPath, "-n", helmChartNamespace, "get", jobName).Run() == nil
+				}); err != nil {
+					ch <- stepDoneMsg{label: label, err: err}
+					return
+				}
+				if err := runStreamed(ch, kubectlBinPath, "-n", helmChartNamespace, "wait", "--for=condition=complete", jobName, "--timeout=600s"); err != nil {
+					ch <- stepDoneMsg{label: label, err: err}
+					return
+				}
+				ch <- stepOutputMsg("Waiting for stabilizer to become ready again...")
+				err := runStreamed(ch, kubectlBinPath, "-n", stabilizerNamespace, "wait",
+					"--for=condition=Available", "deployment.apps/stabilizer", "--timeout=600s")
+				ch <- stepDoneMsg{label: label, err: err}
+			},
+		},
 	}
 }

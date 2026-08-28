@@ -167,6 +167,26 @@ func getByPath(values map[string]any, path string) (v any, ok bool) {
 	return cur, true
 }
 
+// mergeInto deep-merges src over dst, recursing into nested maps so an
+// override doesn't discard its siblings - ports mergeInto (stabilizer's own
+// internal/handler/upgrade.go) verbatim. Used to combine spec.valuesContent
+// (as a base) with spec.values (which wins) into one effective view; see
+// loadStabilizerSettingsState (stabilizer_settings_cli.go).
+func mergeInto(dst, src map[string]any) {
+	for k, v := range src {
+		if sub, ok := v.(map[string]any); ok {
+			existing, _ := dst[k].(map[string]any)
+			if existing == nil {
+				existing = map[string]any{}
+			}
+			mergeInto(existing, sub)
+			dst[k] = existing
+			continue
+		}
+		dst[k] = v
+	}
+}
+
 // setByPath writes value into dst at path's dotted segments, creating
 // intermediate map[string]any nodes as needed and merging into any that
 // already exist (so two settings sharing a path prefix, e.g.

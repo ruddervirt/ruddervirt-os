@@ -158,10 +158,17 @@ func TestStabilizerSettingListValue(t *testing.T) {
 	}
 }
 
-func TestApplyStabilizerSettingPatchCmd(t *testing.T) {
+func TestStabilizerSettingsApplySteps(t *testing.T) {
 	def, _ := stabilizerSettingByKey("build_max_cpu")
 
-	t.Run("success writes a merge patch under spec.values only", func(t *testing.T) {
+	t.Run("has exactly two steps: patch, then wait for rollout", func(t *testing.T) {
+		steps := stabilizerSettingsApplySteps("kube-system", "stabilizer", def, 16)
+		if len(steps) != 2 {
+			t.Fatalf("got %d steps, want 2", len(steps))
+		}
+	})
+
+	t.Run("step 1 writes a merge patch under spec.values only", func(t *testing.T) {
 		var patchArg string
 		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
 			if cmdContains(name, args, "patch", "helmchart.helm.cattle.io", "stabilizer") {
@@ -170,15 +177,15 @@ func TestApplyStabilizerSettingPatchCmd(t *testing.T) {
 						patchArg = args[i+1]
 					}
 				}
-				return commandOutcome{}
 			}
 			return commandOutcome{}
 		}}
-		var msg tea.Msg
-		withFakeRunner(r, func() { msg = applyStabilizerSettingPatchCmd("kube-system", "stabilizer", def, 16)() })
-		got, ok := msg.(stabilizerSettingsApplyResultMsg)
-		if !ok || got.err != nil {
-			t.Fatalf("applyStabilizerSettingPatchCmd() = %#v, want a nil-error result", msg)
+		steps := stabilizerSettingsApplySteps("kube-system", "stabilizer", def, 16)
+		ch := make(chan tea.Msg, 100)
+		withFakeRunner(r, func() { steps[0].run(Config{}, ch) })
+		done := lastStepDone(t, ch)
+		if done.err != nil {
+			t.Fatalf("step 1 err = %v, want nil", done.err)
 		}
 		if patchArg == "" {
 			t.Fatal("no patch body captured")
@@ -200,15 +207,68 @@ func TestApplyStabilizerSettingPatchCmd(t *testing.T) {
 		}
 	})
 
-	t.Run("failure is reported, not swallowed", func(t *testing.T) {
+	t.Run("step 1 failure is reported, not swallowed", func(t *testing.T) {
 		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
 			return commandOutcome{out: []byte("boom"), err: errFake}
 		}}
-		var msg tea.Msg
-		withFakeRunner(r, func() { msg = applyStabilizerSettingPatchCmd("kube-system", "stabilizer", def, 16)() })
-		got, ok := msg.(stabilizerSettingsApplyResultMsg)
-		if !ok || got.err == nil {
-			t.Fatalf("applyStabilizerSettingPatchCmd() = %#v, want a non-nil error", msg)
+		steps := stabilizerSettingsApplySteps("kube-system", "stabilizer", def, 16)
+		ch := make(chan tea.Msg, 100)
+		withFakeRunner(r, func() { steps[0].run(Config{}, ch) })
+		done := lastStepDone(t, ch)
+		if done.err == nil {
+			t.Fatal("step 1 err = nil, want non-nil")
+		}
+	})
+
+	t.Run("step 2 waits for the job then for stabilizer to become Available again", func(t *testing.T) {
+		var sawJobWait, sawDeployWait bool
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			switch {
+			case cmdContains(name, args, "get", "job/helm-install-stabilizer"):
+				return commandOutcome{}
+			case cmdContains(name, args, "wait", "--for=condition=complete", "job/helm-install-stabilizer"):
+				sawJobWait = true
+				return commandOutcome{}
+			case cmdContains(name, args, "wait", "--for=condition=Available", "deployment.apps/stabilizer"):
+				sawDeployWait = true
+				return commandOutcome{}
+			}
+			return commandOutcome{}
+		}}
+		steps := stabilizerSettingsApplySteps("kube-system", "stabilizer", def, 16)
+		ch := make(chan tea.Msg, 100)
+		withFakeRunner(r, func() { steps[1].run(Config{}, ch) })
+		done := lastStepDone(t, ch)
+		if done.err != nil {
+			t.Fatalf("step 2 err = %v, want nil", done.err)
+		}
+		if !sawJobWait || !sawDeployWait {
+			t.Errorf("step 2 didn't wait for both the job and the deployment: job=%v deploy=%v", sawJobWait, sawDeployWait)
+		}
+	})
+
+	t.Run("step 2 propagates a job failure without waiting on the deployment", func(t *testing.T) {
+		var sawDeployWait bool
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			switch {
+			case cmdContains(name, args, "get", "job/helm-install-stabilizer"):
+				return commandOutcome{}
+			case cmdContains(name, args, "wait", "--for=condition=complete", "job/helm-install-stabilizer"):
+				return commandOutcome{out: []byte("job failed"), err: errFake}
+			case cmdContains(name, args, "wait", "--for=condition=Available", "deployment.apps/stabilizer"):
+				sawDeployWait = true
+			}
+			return commandOutcome{}
+		}}
+		steps := stabilizerSettingsApplySteps("kube-system", "stabilizer", def, 16)
+		ch := make(chan tea.Msg, 100)
+		withFakeRunner(r, func() { steps[1].run(Config{}, ch) })
+		done := lastStepDone(t, ch)
+		if done.err == nil {
+			t.Fatal("step 2 err = nil, want non-nil")
+		}
+		if sawDeployWait {
+			t.Error("must not wait on the deployment after the job itself failed")
 		}
 	})
 }

@@ -32,6 +32,21 @@ func helmChartJSON(values map[string]any) string {
 	return string(out)
 }
 
+// helmChartJSONFull is helmChartJSON plus the version/chart/valuesContent
+// fields the guarded version-upgrade flow (stabilizer_upgrade.go) and the
+// effectiveValues merge (loadStabilizerSettingsState) also need - kept
+// separate from helmChartJSON rather than changing its signature, since most
+// existing tests only care about spec.values.
+func helmChartJSONFull(version, chart, valuesContent string, values map[string]any) string {
+	out, _ := json.Marshal(map[string]any{"spec": map[string]any{
+		"values":        values,
+		"valuesContent": valuesContent,
+		"version":       version,
+		"chart":         chart,
+	}})
+	return string(out)
+}
+
 // baseAppliedEnv is a full set of applied SETTING_* values matching every
 // vendored setting's default, plus a fixed HELM_CHART_NAMESPACE/NAME pair -
 // the steady-state, fully-settled starting point most tests build on.
@@ -162,6 +177,85 @@ func TestLoadStabilizerSettingsState(t *testing.T) {
 		withFakeRunner(r, func() { state, _ = loadStabilizerSettingsState(settingsKubectl) })
 		if !state.jobActive {
 			t.Error("jobActive = false, want true")
+		}
+	})
+
+	t.Run("effective declaredValues merges valuesContent (base) with values (override), and version/chart/self-upgrade env are captured", func(t *testing.T) {
+		env := baseAppliedEnv()
+		env["SELF_UPGRADE_ENABLED"] = "true"
+		env["SELF_UPGRADE_ALLOWED_CHART"] = "oci://ghcr.io/ruddervirt/charts/stabilizer"
+		env["SELF_UPGRADE_ALLOW_DOWNGRADE"] = "false"
+		env["CHART_VERSION"] = "1.2.3"
+		valuesContent := "aileron:\n  image:\n    tag: \"1.2.3\"\n  buildLimits:\n    maxCPU: 8\n"
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			switch {
+			case cmdContains(name, args, "get", "deploy"):
+				return commandOutcome{out: []byte(deploymentJSON(env))}
+			case cmdContains(name, args, "get", "helmchart"):
+				return commandOutcome{out: []byte(helmChartJSONFull("1.2.4", "oci://ghcr.io/ruddervirt/charts/stabilizer", valuesContent,
+					map[string]any{"aileron": map[string]any{"buildLimits": map[string]any{"maxCPU": float64(16)}}}))}
+			case cmdContains(name, args, "get", "job"):
+				return commandOutcome{out: []byte("not found"), err: errFake}
+			}
+			return commandOutcome{}
+		}}
+		var state *stabilizerSettingsState
+		var err error
+		withFakeRunner(r, func() { state, err = loadStabilizerSettingsState(settingsKubectl) })
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		// values (maxCPU: 16) must win over valuesContent (maxCPU: 8) - the
+		// override side of the merge.
+		cpu, ok := getByPath(state.declaredValues, "aileron.buildLimits.maxCPU")
+		if !ok || cpu != float64(16) {
+			t.Errorf("aileron.buildLimits.maxCPU = %v (ok=%v), want 16 (values overrides valuesContent)", cpu, ok)
+		}
+		// image.tag only lives in valuesContent - must still be visible in
+		// the merged view (this was the exact gap the merge fixes).
+		tag, ok := getByPath(state.declaredValues, "aileron.image.tag")
+		if !ok || tag != "1.2.3" {
+			t.Errorf("aileron.image.tag = %v (ok=%v), want \"1.2.3\" from valuesContent alone", tag, ok)
+		}
+		if state.declaredVersion != "1.2.4" {
+			t.Errorf("declaredVersion = %q, want 1.2.4", state.declaredVersion)
+		}
+		if state.declaredChart != "oci://ghcr.io/ruddervirt/charts/stabilizer" {
+			t.Errorf("declaredChart = %q, want the OCI chart ref", state.declaredChart)
+		}
+		if state.hasLocalChartContent {
+			t.Error("hasLocalChartContent = true, want false (no spec.chartContent set)")
+		}
+		if !state.selfUpgradeEnabled {
+			t.Error("selfUpgradeEnabled = false, want true (SELF_UPGRADE_ENABLED=true)")
+		}
+		if state.allowedChart != "oci://ghcr.io/ruddervirt/charts/stabilizer" {
+			t.Errorf("allowedChart = %q, want the OCI chart ref", state.allowedChart)
+		}
+		if state.allowDowngrade {
+			t.Error("allowDowngrade = true, want false")
+		}
+		if state.appliedChartVersion != "1.2.3" {
+			t.Errorf("appliedChartVersion = %q, want 1.2.3 (from CHART_VERSION)", state.appliedChartVersion)
+		}
+	})
+
+	t.Run("malformed valuesContent YAML is a hard error, not silently ignored", func(t *testing.T) {
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			switch {
+			case cmdContains(name, args, "get", "deploy"):
+				return commandOutcome{out: []byte(deploymentJSON(baseAppliedEnv()))}
+			case cmdContains(name, args, "get", "helmchart"):
+				return commandOutcome{out: []byte(helmChartJSONFull("1.0.0", "", "not: valid: yaml: [", map[string]any{}))}
+			case cmdContains(name, args, "get", "job"):
+				return commandOutcome{out: []byte("not found"), err: errFake}
+			}
+			return commandOutcome{}
+		}}
+		var err error
+		withFakeRunner(r, func() { _, err = loadStabilizerSettingsState(settingsKubectl) })
+		if err == nil {
+			t.Fatal("err = nil, want an error for malformed spec.valuesContent YAML")
 		}
 	})
 }

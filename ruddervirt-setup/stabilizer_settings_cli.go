@@ -14,6 +14,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // This is the non-interactive `ruddervirt-setup settings` subcommand,
@@ -175,6 +177,14 @@ type k8sDeploymentGetJSON struct {
 type k8sHelmChartGetJSON struct {
 	Spec struct {
 		Values map[string]any `json:"values"`
+		// ValuesContent/Version/Chart/ChartContent back the guarded
+		// chart-version-upgrade flow (stabilizer_upgrade.go) - see
+		// loadStabilizerSettingsState's effectiveValues merge below for why
+		// ValuesContent can't just be ignored the way it was before.
+		ValuesContent string `json:"valuesContent"`
+		Version       string `json:"version"`
+		Chart         string `json:"chart"`
+		ChartContent  string `json:"chartContent"`
 	} `json:"spec"`
 }
 
@@ -193,14 +203,46 @@ type stabilizerSettingsState struct {
 	// authoritative "what's actually running" state, since helm already
 	// collapsed the entire values precedence stack to produce it.
 	appliedEnv map[string]string
-	// declaredValues is the HelmChart resource's spec.values tree, decoded
-	// from JSON (nested objects as map[string]any). A setting's path
-	// missing from this tree means "no explicit value declared; the chart
-	// default applies" - NOT "off"/zero.
+	// declaredValues is the EFFECTIVE values tree helm-controller would
+	// actually resolve: spec.valuesContent (the previous run's
+	// user-supplied values, carried forward verbatim by install.sh) merged
+	// with spec.values (which wins) on top - mirrors stabilizer's own
+	// effectiveValues/mergeInto (internal/handler/upgrade.go) exactly, since
+	// comparing against spec.values alone would miss anything only ever
+	// written into valuesContent. A setting's path missing from this tree
+	// means "no explicit value declared; the chart default applies" - NOT
+	// "off"/zero. spec.set is deliberately never merged in - see
+	// buildUpgradePatch's doc comment in stabilizer_upgrade.go for why nothing
+	// on this side ever reads or writes it either.
 	declaredValues map[string]any
 
 	helmChartNamespace string
 	helmChartName      string
+
+	// declaredVersion/declaredChart/hasLocalChartContent are the HelmChart
+	// resource's own spec.version/spec.chart/spec.chartContent - read here
+	// (rather than by a second kubectl round trip) because
+	// stabilizer_upgrade.go's guards need all three for exactly the checks
+	// stabilizer's own preflight (internal/handler/upgrade.go) applies.
+	declaredVersion      string
+	declaredChart        string
+	hasLocalChartContent bool
+
+	// selfUpgradeEnabled/allowedChart/allowDowngrade mirror the running
+	// agent's own SelfUpgradeConfig, read off the same Deployment env this
+	// state already parses (SELF_UPGRADE_ENABLED/SELF_UPGRADE_ALLOWED_CHART/
+	// SELF_UPGRADE_ALLOW_DOWNGRADE - chart/stabilizer/templates/deployment.yaml)
+	// - the guard this box-side tool must apply is exactly the guard the
+	// agent itself would apply to the same request arriving over NATS.
+	selfUpgradeEnabled bool
+	allowedChart       string
+	allowDowngrade     bool
+
+	// appliedChartVersion is CHART_VERSION - the chart version actually
+	// rendering the running pod, as opposed to declaredVersion (what the
+	// HelmChart resource currently asks for): the two differ while an
+	// upgrade is in flight or has failed.
+	appliedChartVersion string
 
 	// jobActive mirrors `kubectl get job helm-install-<name>
 	// -o jsonpath='{.status.active}'` being non-zero - an upgrade or
@@ -281,6 +323,20 @@ func loadStabilizerSettingsState(exec kubectlExecFunc) (*stabilizerSettingsState
 		cr.Spec.Values = map[string]any{}
 	}
 
+	// effectiveValues: spec.valuesContent as the base, spec.values merged
+	// over it - ports effectiveValues/mergeInto (internal/handler/upgrade.go)
+	// exactly, so a value only ever carried in valuesContent isn't invisible
+	// to either the settings report or the version-upgrade image-pin check.
+	effective := map[string]any{}
+	if cr.Spec.ValuesContent != "" {
+		var base map[string]any
+		if err := yaml.Unmarshal([]byte(cr.Spec.ValuesContent), &base); err != nil {
+			return nil, fmt.Errorf("parsing %s/%s HelmChart resource's spec.valuesContent as YAML: %w", helmChartNamespace, helmChartName, err)
+		}
+		mergeInto(effective, base)
+	}
+	mergeInto(effective, cr.Spec.Values)
+
 	jobActive := false
 	jobOut, jobErr := exec("-n", helmChartNamespace, "get", "job", "helm-install-"+helmChartName, "-o", "json")
 	switch {
@@ -307,12 +363,19 @@ func loadStabilizerSettingsState(exec kubectlExecFunc) (*stabilizerSettingsState
 	}
 
 	return &stabilizerSettingsState{
-		appliedEnv:         appliedEnv,
-		declaredValues:     cr.Spec.Values,
-		helmChartNamespace: helmChartNamespace,
-		helmChartName:      helmChartName,
-		jobActive:          jobActive,
-		aileronDisabled:    !aileronPresent,
+		appliedEnv:           appliedEnv,
+		declaredValues:       effective,
+		helmChartNamespace:   helmChartNamespace,
+		helmChartName:        helmChartName,
+		declaredVersion:      cr.Spec.Version,
+		declaredChart:        cr.Spec.Chart,
+		hasLocalChartContent: cr.Spec.ChartContent != "",
+		selfUpgradeEnabled:   appliedEnv["SELF_UPGRADE_ENABLED"] == "true",
+		allowedChart:         appliedEnv["SELF_UPGRADE_ALLOWED_CHART"],
+		allowDowngrade:       appliedEnv["SELF_UPGRADE_ALLOW_DOWNGRADE"] == "true",
+		appliedChartVersion:  appliedEnv["CHART_VERSION"],
+		jobActive:            jobActive,
+		aileronDisabled:      !aileronPresent,
 	}, nil
 }
 

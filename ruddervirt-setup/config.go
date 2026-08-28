@@ -537,7 +537,7 @@ var settingFields = []settingField{
 		locked: stabilizerLocked,
 	},
 	{
-		key: "storage.engine", label: "Storage engine",
+		key: "storage.engine", label: "Storage engine", advanced: true,
 		get:     func(c *Config) string { return c.Storage.Engine },
 		options: func(c *Config, versions versionCache) []string { return []string{"openebs", "longhorn", "rook-ceph"} },
 		set: func(c *Config, v string) error {

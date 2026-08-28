@@ -30,6 +30,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case stabilizerDetectedMsg:
 		m.cachedStabilizerDetected = msg.present
+		if msg.present {
+			// Only fetch stabilizer's own settings state once we actually
+			// know stabilizer is present - never unconditionally on every
+			// launch, so a node that never adopted stabilizer never pays
+			// for the extra kubectl round trip (or an unwanted sudo
+			// prompt) just from opening the menu.
+			return m, loadStabilizerSettingsStateCmd()
+		}
 		return m, nil
 
 	case serviceStatusMsg:
@@ -65,12 +73,67 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case screenStabilizerAdopt:
 			m.stabilizerLogs = append(m.stabilizerLogs, string(msg))
 			return m, readFromCh(m.stabilizerCh)
+		case screenStabilizerSettingsApply:
+			m.stabilizerSettingsApplyLogs = append(m.stabilizerSettingsApplyLogs, string(msg))
+			return m, readFromCh(m.stabilizerSettingsApplyCh)
+		case screenStabilizerVersionApply:
+			m.stabilizerVersionApplyLogs = append(m.stabilizerVersionApplyLogs, string(msg))
+			return m, readFromCh(m.stabilizerVersionApplyCh)
 		default:
 			m.installLogs = append(m.installLogs, string(msg))
 			return m, readFromCh(m.installCh)
 		}
 
 	case stepDoneMsg:
+		if m.current == screenStabilizerVersionApply {
+			if msg.err != nil {
+				m.stabilizerVersionApplyLogs = append(m.stabilizerVersionApplyLogs, fmt.Sprintf("✗ %s: %s", msg.label, msg.err.Error()))
+				m.stabilizerVersionApplyFailed = true
+				return m, nil
+			}
+			m.stabilizerVersionApplyLogs = append(m.stabilizerVersionApplyLogs, fmt.Sprintf("✓ %s", msg.label))
+			m.stabilizerVersionApplyStepIdx++
+			if m.stabilizerVersionApplyStepIdx >= len(m.stabilizerVersionApplyPipeline) {
+				m.stabilizerVersionApplyDone = true
+				// Re-fetch for real, off the UI thread - the rollout wait
+				// step already confirmed stabilizer is Available again, so
+				// this picks up CHART_VERSION/spec.version as they actually
+				// landed rather than leaving a guess as the last word.
+				return m, loadStabilizerSettingsStateCmd()
+			}
+			ch, cmd := launchStep(m.stabilizerVersionApplyPipeline[m.stabilizerVersionApplyStepIdx], m.cfg)
+			m.stabilizerVersionApplyCh = ch
+			return m, cmd
+		}
+		if m.current == screenStabilizerSettingsApply {
+			if msg.err != nil {
+				m.stabilizerSettingsApplyLogs = append(m.stabilizerSettingsApplyLogs, fmt.Sprintf("✗ %s: %s", msg.label, msg.err.Error()))
+				m.stabilizerSettingsApplyFailed = true
+				return m, nil
+			}
+			m.stabilizerSettingsApplyLogs = append(m.stabilizerSettingsApplyLogs, fmt.Sprintf("✓ %s", msg.label))
+			m.stabilizerSettingsApplyStepIdx++
+			if m.stabilizerSettingsApplyStepIdx >= len(m.stabilizerSettingsApplyPipeline) {
+				m.stabilizerSettingsApplyDone = true
+				if m.stabilizerSettingsState != nil {
+					// Optimistically reflect the just-applied change
+					// locally, so Settings shows "rollout pending -> X"
+					// (or, once the rollout's done, the new value outright)
+					// immediately instead of the stale previous state,
+					// without needing another kubectl round trip.
+					setByPath(m.stabilizerSettingsState.declaredValues, m.stabilizerSettingsPendingDef.Path, m.stabilizerSettingsPendingValue)
+				}
+				// Re-fetch for real too, off the UI thread - the rollout
+				// wait step already confirmed stabilizer is Available
+				// again, so this picks up its actual current applied env
+				// rather than leaving the optimistic guess as the last
+				// word.
+				return m, loadStabilizerSettingsStateCmd()
+			}
+			ch, cmd := launchStep(m.stabilizerSettingsApplyPipeline[m.stabilizerSettingsApplyStepIdx], m.cfg)
+			m.stabilizerSettingsApplyCh = ch
+			return m, cmd
+		}
 		if m.current == screenStabilizerAdopt {
 			if msg.err != nil {
 				m.stabilizerLogs = append(m.stabilizerLogs, fmt.Sprintf("✗ %s: %s", msg.label, msg.err.Error()))
@@ -141,31 +204,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case stabilizerSettingsLoadedMsg:
+		// Fetched silently in the background (fired once
+		// stabilizerDetectedMsg confirms stabilizer is present, or after a
+		// successful apply - see below) - never navigates on its own. An
+		// error only matters if the operator is actually looking at
+		// Settings right now to see it; on any other screen it's dropped
+		// and the rows just keep showing "loading..." until the next
+		// successful fetch.
 		if msg.err != nil {
-			m.current = screenSettings
-			m.settingsError = msg.err.Error()
+			if m.current == screenSettings {
+				m.settingsError = msg.err.Error()
+			}
 			return m, nil
 		}
 		m.stabilizerSettingsState = msg.state
-		m.stabilizerSettingsCursor = 0
-		m.stabilizerSettingsScroll = 0
-		m.stabilizerSettingsError = ""
-		m.current = screenStabilizerSettingsList
-		return m, nil
-
-	case stabilizerSettingsApplyResultMsg:
-		m.stabilizerSettingsApplyDone = true
-		m.stabilizerSettingsApplyErr = msg.err
-		if msg.err == nil && m.stabilizerSettingsState != nil {
-			// Optimistically reflect the just-applied change locally, so
-			// returning to the list shows "rollout pending -> X" immediately
-			// instead of the (now stale) previous declared value, without
-			// needing another kubectl round trip. Also mark a release
-			// operation as in flight, so a rapid second edit is correctly
-			// refused without needing a fresh fetch either.
-			setByPath(m.stabilizerSettingsState.declaredValues, m.stabilizerSettingsPendingDef.Path, m.stabilizerSettingsPendingValue)
-			m.stabilizerSettingsState.jobActive = true
-		}
 		return m, nil
 
 	case nebulaConfigResolvedMsg:
@@ -417,47 +469,67 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.stabilizerError = ""
 				return m, nil
 			}
-			if m.current == screenStabilizerSettingsLoading {
-				return m, nil
-			}
 			if m.current == screenStabilizerSettingsApply && !m.stabilizerSettingsApplyDone {
 				return m, nil
 			}
 			if m.current == screenStabilizerSettingsApply {
-				// Done (success or failure) - back to the list, which
-				// already reflects the outcome (optimistic update on
-				// success, unchanged on failure).
-				m.current = screenStabilizerSettingsList
+				// Done (success or failure) - straight back to Settings,
+				// which already reflects the outcome (optimistic update on
+				// success, unchanged on failure - see the stepDoneMsg
+				// handler above).
+				m.current = screenSettings
 				m.stabilizerSettingsApplyDone = false
-				m.stabilizerSettingsApplyErr = nil
+				m.stabilizerSettingsApplyFailed = false
+				m.stabilizerSettingsApplyLogs = nil
+				m.stabilizerSettingsApplyPipeline = nil
+				m.stabilizerSettingsApplyStepIdx = 0
+				m.stabilizerSettingsApplyCh = nil
 				return m, nil
 			}
 			if m.current == screenStabilizerSettingsConfirm {
-				// Cancel back to the list, not all the way to Settings -
-				// the fetched state (and cursor position) are still good.
-				m.current = screenStabilizerSettingsList
+				// Cancel back to Settings - it's an ordinary row there
+				// (see settingsRows), not a separate screen to return to.
+				m.current = screenSettings
 				m.stabilizerSettingsConfirmInput.SetValue("")
 				m.stabilizerSettingsConfirmInput.Blur()
 				m.stabilizerSettingsConfirmError = ""
 				return m, nil
 			}
-			if m.current == screenStabilizerSettingsList && m.stabilizerSettingsPicking {
-				m.stabilizerSettingsPicking = false
-				m.stabilizerSettingsError = ""
+			if m.current == screenStabilizerVersionApply && !m.stabilizerVersionApplyDone {
 				return m, nil
 			}
-			if m.current == screenStabilizerSettingsList && m.stabilizerSettingsEditing {
-				m.stabilizerSettingsEditing = false
-				m.stabilizerSettingsError = ""
-				m.stabilizerSettingsEditInput.Blur()
+			if m.current == screenStabilizerVersionApply {
+				// Done (success or failure) - back to the Update screen,
+				// which reached this flow in the first place (see the
+				// versions.aileron special-casing above) - not Settings,
+				// unlike the in-situ settings flow above.
+				m.current = screenUpdateVersions
+				m.stabilizerVersionApplyDone = false
+				m.stabilizerVersionApplyFailed = false
+				m.stabilizerVersionApplyLogs = nil
+				m.stabilizerVersionApplyPipeline = nil
+				m.stabilizerVersionApplyStepIdx = 0
+				m.stabilizerVersionApplyCh = nil
 				return m, nil
 			}
-			if m.current == screenStabilizerSettingsList {
-				m.current = screenSettings
-				m.stabilizerSettingsState = nil
-				m.stabilizerSettingsCursor = 0
-				m.stabilizerSettingsScroll = 0
-				m.stabilizerSettingsError = ""
+			if m.current == screenStabilizerVersionConfirm {
+				// Cancel back to the input screen, not all the way out to
+				// Update - the operator likely just wants to retype the
+				// version, same one-step-back reasoning as
+				// screenInstallConfirm/screenUpdateConfirm elsewhere.
+				m.current = screenStabilizerVersionInput
+				m.stabilizerVersionInput.CursorEnd()
+				m.stabilizerVersionInput.Focus()
+				m.stabilizerVersionConfirmInput.SetValue("")
+				m.stabilizerVersionConfirmInput.Blur()
+				m.stabilizerVersionConfirmError = ""
+				return m, nil
+			}
+			if m.current == screenStabilizerVersionInput {
+				m.current = screenUpdateVersions
+				m.stabilizerVersionInput.SetValue("")
+				m.stabilizerVersionInput.Blur()
+				m.stabilizerVersionError = ""
 				return m, nil
 			}
 			if m.current == screenSettings && m.settingsPicking {
@@ -589,24 +661,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stabilizerFailed = false
 			m.stabilizerCh = nil
 			clearPendingStabilizerSecrets()
-			m.stabilizerSettingsState = nil
-			m.stabilizerSettingsCursor = 0
-			m.stabilizerSettingsScroll = 0
-			m.stabilizerSettingsError = ""
-			m.stabilizerSettingsEditing = false
-			m.stabilizerSettingsEditInput.SetValue("")
-			m.stabilizerSettingsEditInput.Blur()
-			m.stabilizerSettingsPicking = false
-			m.stabilizerSettingsPickCursor = 0
-			m.stabilizerSettingsPickOptions = nil
+			// stabilizerSettingsState is deliberately NOT cleared here - it's
+			// cached live cluster data for display in Settings, same as
+			// cachedStabilizerDetected/cachedAileronVersions above, not a
+			// per-flow transient.
 			m.stabilizerSettingsPendingDef = stabilizerSettingDef{}
 			m.stabilizerSettingsPendingValue = nil
 			m.stabilizerSettingsPendingCurrent = nil
 			m.stabilizerSettingsConfirmInput.SetValue("")
 			m.stabilizerSettingsConfirmInput.Blur()
 			m.stabilizerSettingsConfirmError = ""
-			m.stabilizerSettingsApplyErr = nil
+			m.stabilizerSettingsApplyPipeline = nil
+			m.stabilizerSettingsApplyStepIdx = 0
+			m.stabilizerSettingsApplyLogs = nil
 			m.stabilizerSettingsApplyDone = false
+			m.stabilizerSettingsApplyFailed = false
+			m.stabilizerSettingsApplyCh = nil
+			m.stabilizerVersionInput.SetValue("")
+			m.stabilizerVersionInput.Blur()
+			m.stabilizerVersionError = ""
+			m.stabilizerVersionTarget = ""
+			m.stabilizerVersionPatch = nil
+			m.stabilizerVersionClearedPins = nil
+			m.stabilizerVersionConfirmInput.SetValue("")
+			m.stabilizerVersionConfirmInput.Blur()
+			m.stabilizerVersionConfirmError = ""
+			m.stabilizerVersionApplyPipeline = nil
+			m.stabilizerVersionApplyStepIdx = 0
+			m.stabilizerVersionApplyLogs = nil
+			m.stabilizerVersionApplyDone = false
+			m.stabilizerVersionApplyFailed = false
+			m.stabilizerVersionApplyCh = nil
 			return m, tea.Batch(fetchServiceStatusesCmd(m.cfg), fetchHostStatsCmd(m.cfg, m.prevCPUSample))
 
 		case tea.KeyUp:
@@ -636,19 +721,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.updateVersionsCursor--
 				}
 				m.updateVersionsScroll = clampScroll(m.updateVersionsScroll, m.updateVersionsScrollCursor(), m.settingsVisibleRows())
-				return m, nil
-			}
-			if m.current == screenStabilizerSettingsList && m.stabilizerSettingsPicking {
-				if m.stabilizerSettingsPickCursor > 0 {
-					m.stabilizerSettingsPickCursor--
-				}
-				return m, nil
-			}
-			if m.current == screenStabilizerSettingsList && !m.stabilizerSettingsEditing {
-				if m.stabilizerSettingsCursor > 0 {
-					m.stabilizerSettingsCursor--
-				}
-				m.stabilizerSettingsScroll = clampScroll(m.stabilizerSettingsScroll, m.stabilizerSettingsCursor, m.settingsVisibleRows())
 				return m, nil
 			}
 			if m.current == screenMenu {
@@ -691,19 +763,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.updateVersionsCursor++
 				}
 				m.updateVersionsScroll = clampScroll(m.updateVersionsScroll, m.updateVersionsScrollCursor(), m.settingsVisibleRows())
-				return m, nil
-			}
-			if m.current == screenStabilizerSettingsList && m.stabilizerSettingsPicking {
-				if m.stabilizerSettingsPickCursor < len(m.stabilizerSettingsPickOptions)-1 {
-					m.stabilizerSettingsPickCursor++
-				}
-				return m, nil
-			}
-			if m.current == screenStabilizerSettingsList && !m.stabilizerSettingsEditing {
-				if m.stabilizerSettingsCursor < len(stabilizerSettingDefs)-1 {
-					m.stabilizerSettingsCursor++
-				}
-				m.stabilizerSettingsScroll = clampScroll(m.stabilizerSettingsScroll, m.stabilizerSettingsCursor, m.settingsVisibleRows())
 				return m, nil
 			}
 			if m.current == screenMenu {
@@ -833,7 +892,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.installConfirmError = `Type "yes" to proceed, or Esc to cancel.`
 			} else if m.current == screenSettings {
 				if m.settingsPicking {
-					field := m.settingsRows()[m.settingsCursor].field
+					row := m.settingsRows()[m.settingsCursor]
+					if row.stabilizerDef != nil {
+						def := *row.stabilizerDef
+						chosen := m.settingsPickOptions[m.settingsPickCursor]
+						value, current, err := resolveStabilizerSettingChange(m.stabilizerSettingsState, def, chosen)
+						if err != nil {
+							m.settingsError = err.Error()
+							return m, nil
+						}
+						m.settingsPicking = false
+						if current != nil && stabilizerSettingValuesEqual(def, value, current) {
+							m.settingsError = fmt.Sprintf("%s is already %s - no change", def.Key, formatStabilizerSettingValue(def, value))
+							return m, nil
+						}
+						m.stabilizerSettingsPendingDef = def
+						m.stabilizerSettingsPendingValue = value
+						m.stabilizerSettingsPendingCurrent = current
+						m.current = screenStabilizerSettingsConfirm
+						m.stabilizerSettingsConfirmInput.SetValue("")
+						m.stabilizerSettingsConfirmInput.Focus()
+						m.stabilizerSettingsConfirmError = ""
+						m.settingsError = ""
+						return m, nil
+					}
+					field := row.field
 					chosen := m.settingsPickOptions[m.settingsPickCursor]
 					if err := field.set(&m.cfg, chosen); err != nil {
 						m.settingsError = err.Error()
@@ -886,11 +969,80 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.stabilizerError = ""
 					return m, checkAileronReadyCmd(kubectlBinPath)
 				}
-				if row.isStabilizerSettingsAction {
-					m.current = screenStabilizerSettingsLoading
+				if row.stabilizerDef != nil {
+					// Live-cluster-backed row, not Config-backed - handled
+					// entirely separately from the field.get/set path below,
+					// but still reuses the exact same
+					// settingsPicking/settingsEditing/settingsInput/
+					// settingsPickOptions fields every Config-backed row
+					// already uses, so it's an ordinary in-situ row, not a
+					// separate flow. m.settingsPicking's own confirm is
+					// handled earlier (the `if m.settingsPicking` branch at
+					// the top of this else-if chain always returns, so it's
+					// never reached from here) - only settingsEditing's
+					// confirm needs handling here, since unlike picking it
+					// falls through this same row-dispatch on its second
+					// Enter press too.
+					def := *row.stabilizerDef
+					state := m.stabilizerSettingsState
+					if m.settingsEditing {
+						if state == nil {
+							m.settingsError = "stabilizer settings are still loading - try again in a moment"
+							return m, nil
+						}
+						value, current, err := resolveStabilizerSettingChange(state, def, m.settingsInput.Value())
+						if err != nil {
+							m.settingsError = err.Error()
+							return m, nil
+						}
+						m.settingsEditing = false
+						m.settingsInput.Blur()
+						if current != nil && stabilizerSettingValuesEqual(def, value, current) {
+							m.settingsError = fmt.Sprintf("%s is already %s - no change", def.Key, formatStabilizerSettingValue(def, value))
+							return m, nil
+						}
+						m.stabilizerSettingsPendingDef = def
+						m.stabilizerSettingsPendingValue = value
+						m.stabilizerSettingsPendingCurrent = current
+						m.current = screenStabilizerSettingsConfirm
+						m.stabilizerSettingsConfirmInput.SetValue("")
+						m.stabilizerSettingsConfirmInput.Focus()
+						m.stabilizerSettingsConfirmError = ""
+						m.settingsError = ""
+						return m, nil
+					}
+					if state == nil {
+						m.settingsError = "stabilizer settings are still loading - try again in a moment"
+						return m, nil
+					}
+					if state.jobActive {
+						m.settingsError = fmt.Sprintf("a stabilizer release operation is already in progress (helm-install-%s job is active) - wait for it to finish and try again", state.helmChartName)
+						return m, nil
+					}
+					if _, _, editable := stabilizerSettingRowDisplay(def, state); !editable {
+						m.settingsError = fmt.Sprintf("%s can't be changed right now", def.Key)
+						return m, nil
+					}
 					m.settingsError = ""
-					m.stabilizerSettingsError = ""
-					return m, loadStabilizerSettingsStateCmd()
+					if def.Type == stabilizerSettingBool {
+						m.settingsPickOptions = []string{"true", "false"}
+						m.settingsPickCursor = 0
+						if appliedRaw, ok := state.appliedEnv[def.Env]; ok {
+							for i, o := range m.settingsPickOptions {
+								if strings.EqualFold(o, appliedRaw) {
+									m.settingsPickCursor = i
+									break
+								}
+							}
+						}
+						m.settingsPicking = true
+						return m, nil
+					}
+					m.settingsInput.SetValue(state.appliedEnv[def.Env])
+					m.settingsInput.CursorEnd()
+					m.settingsInput.Focus()
+					m.settingsEditing = true
+					return m, nil
 				}
 				if row.isNetworkToggle {
 					m.settingsShowNetwork = !m.settingsShowNetwork
@@ -996,6 +1148,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				field := row.field
 				versions := versionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected}
+				if field.key == "versions.aileron" && versions.StabilizerDetected {
+					// Once stabilizer manages Aileron, "Aileron version" means
+					// the stabilizer chart's own spec.version (Aileron ships
+					// as its subchart, pinned to whatever version the chart
+					// release bundles) - a free-text guarded change
+					// (stabilizer_upgrade.go), not the plain
+					// fetch-a-list-and-pick flow every other component-version
+					// row uses, and no longer a hard, uneditable lock.
+					if m.stabilizerSettingsState == nil {
+						m.settingsError = "still loading stabilizer state - try again in a moment"
+						return m, nil
+					}
+					m.current = screenStabilizerVersionInput
+					m.stabilizerVersionInput.SetValue("")
+					m.stabilizerVersionInput.Focus()
+					m.stabilizerVersionError = ""
+					m.settingsError = ""
+					return m, nil
+				}
 				if field.locked != nil {
 					if locked, reason := field.locked(&m.cfg, versions); locked {
 						m.settingsError = reason
@@ -1132,96 +1303,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, tea.Batch(saveSettingCmd(m.cfg), cmd)
 				}
 				m.stabilizerConfirmError = `Type "yes" to proceed, or Esc to cancel.`
-			} else if m.current == screenStabilizerSettingsList {
-				state := m.stabilizerSettingsState
-				if state == nil {
-					return m, nil
-				}
-				switch {
-				case m.stabilizerSettingsPicking:
-					def := stabilizerSettingDefs[m.stabilizerSettingsCursor]
-					chosen := m.stabilizerSettingsPickOptions[m.stabilizerSettingsPickCursor]
-					value, current, err := resolveStabilizerSettingChange(state, def, chosen)
-					if err != nil {
-						m.stabilizerSettingsError = err.Error()
-						return m, nil
-					}
-					if current != nil && stabilizerSettingValuesEqual(def, value, current) {
-						m.stabilizerSettingsPicking = false
-						m.stabilizerSettingsError = fmt.Sprintf("%s is already %s - no change", def.Key, formatStabilizerSettingValue(def, value))
-						return m, nil
-					}
-					m.stabilizerSettingsPicking = false
-					m.stabilizerSettingsPendingDef = def
-					m.stabilizerSettingsPendingValue = value
-					m.stabilizerSettingsPendingCurrent = current
-					m.current = screenStabilizerSettingsConfirm
-					m.stabilizerSettingsConfirmInput.SetValue("")
-					m.stabilizerSettingsConfirmInput.Focus()
-					m.stabilizerSettingsConfirmError = ""
-					m.stabilizerSettingsError = ""
-					return m, nil
-
-				case m.stabilizerSettingsEditing:
-					def := stabilizerSettingDefs[m.stabilizerSettingsCursor]
-					value, current, err := resolveStabilizerSettingChange(state, def, m.stabilizerSettingsEditInput.Value())
-					if err != nil {
-						m.stabilizerSettingsError = err.Error()
-						return m, nil
-					}
-					if current != nil && stabilizerSettingValuesEqual(def, value, current) {
-						m.stabilizerSettingsEditing = false
-						m.stabilizerSettingsEditInput.Blur()
-						m.stabilizerSettingsError = fmt.Sprintf("%s is already %s - no change", def.Key, formatStabilizerSettingValue(def, value))
-						return m, nil
-					}
-					m.stabilizerSettingsEditing = false
-					m.stabilizerSettingsEditInput.Blur()
-					m.stabilizerSettingsPendingDef = def
-					m.stabilizerSettingsPendingValue = value
-					m.stabilizerSettingsPendingCurrent = current
-					m.current = screenStabilizerSettingsConfirm
-					m.stabilizerSettingsConfirmInput.SetValue("")
-					m.stabilizerSettingsConfirmInput.Focus()
-					m.stabilizerSettingsConfirmError = ""
-					m.stabilizerSettingsError = ""
-					return m, nil
-
-				default:
-					if len(stabilizerSettingDefs) == 0 {
-						return m, nil
-					}
-					def := stabilizerSettingDefs[m.stabilizerSettingsCursor]
-					if state.jobActive {
-						m.stabilizerSettingsError = fmt.Sprintf("a stabilizer release operation is already in progress (helm-install-%s job is active) - wait for it to finish and try again", state.helmChartName)
-						return m, nil
-					}
-					if _, _, editable := stabilizerSettingRowDisplay(def, state); !editable {
-						m.stabilizerSettingsError = fmt.Sprintf("%s can't be changed right now", def.Key)
-						return m, nil
-					}
-					m.stabilizerSettingsError = ""
-					if def.Type == stabilizerSettingBool {
-						m.stabilizerSettingsPickOptions = []string{"true", "false"}
-						m.stabilizerSettingsPickCursor = 0
-						if appliedRaw, ok := state.appliedEnv[def.Env]; ok {
-							for i, o := range m.stabilizerSettingsPickOptions {
-								if strings.EqualFold(o, appliedRaw) {
-									m.stabilizerSettingsPickCursor = i
-									break
-								}
-							}
-						}
-						m.stabilizerSettingsPicking = true
-						return m, nil
-					}
-					prefill := state.appliedEnv[def.Env]
-					m.stabilizerSettingsEditInput.SetValue(prefill)
-					m.stabilizerSettingsEditInput.CursorEnd()
-					m.stabilizerSettingsEditInput.Focus()
-					m.stabilizerSettingsEditing = true
-					return m, nil
-				}
 			} else if m.current == screenStabilizerSettingsConfirm {
 				if strings.EqualFold(strings.TrimSpace(m.stabilizerSettingsConfirmInput.Value()), "yes") {
 					if m.stabilizerSettingsState == nil {
@@ -1229,13 +1310,60 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.stabilizerSettingsConfirmInput.Blur()
 					m.stabilizerSettingsApplyDone = false
-					m.stabilizerSettingsApplyErr = nil
-					m.current = screenStabilizerSettingsApply
-					return m, applyStabilizerSettingPatchCmd(
+					m.stabilizerSettingsApplyFailed = false
+					m.stabilizerSettingsApplyLogs = nil
+					m.stabilizerSettingsApplyStepIdx = 0
+					steps := stabilizerSettingsApplySteps(
 						m.stabilizerSettingsState.helmChartNamespace, m.stabilizerSettingsState.helmChartName,
 						m.stabilizerSettingsPendingDef, m.stabilizerSettingsPendingValue)
+					m.stabilizerSettingsApplyPipeline = steps
+					m.current = screenStabilizerSettingsApply
+					ch, cmd := launchStep(steps[0], m.cfg)
+					m.stabilizerSettingsApplyCh = ch
+					return m, cmd
 				}
 				m.stabilizerSettingsConfirmError = `Type "yes" to proceed, or Esc to cancel.`
+			} else if m.current == screenStabilizerVersionInput {
+				if m.stabilizerSettingsState == nil {
+					m.stabilizerVersionError = "still loading stabilizer state - try again in a moment"
+					return m, nil
+				}
+				target := strings.TrimSpace(m.stabilizerVersionInput.Value())
+				patch, cleared, err := planStabilizerVersionUpgrade(m.stabilizerSettingsState, target)
+				if err != nil {
+					m.stabilizerVersionError = err.Error()
+					return m, nil
+				}
+				m.stabilizerVersionTarget = target
+				m.stabilizerVersionPatch = patch
+				m.stabilizerVersionClearedPins = cleared
+				m.stabilizerVersionInput.Blur()
+				m.current = screenStabilizerVersionConfirm
+				m.stabilizerVersionConfirmInput.SetValue("")
+				m.stabilizerVersionConfirmInput.Focus()
+				m.stabilizerVersionConfirmError = ""
+				m.stabilizerVersionError = ""
+				return m, nil
+			} else if m.current == screenStabilizerVersionConfirm {
+				if strings.EqualFold(strings.TrimSpace(m.stabilizerVersionConfirmInput.Value()), "yes") {
+					if m.stabilizerSettingsState == nil {
+						return m, nil
+					}
+					m.stabilizerVersionConfirmInput.Blur()
+					m.stabilizerVersionApplyDone = false
+					m.stabilizerVersionApplyFailed = false
+					m.stabilizerVersionApplyLogs = nil
+					m.stabilizerVersionApplyStepIdx = 0
+					steps := stabilizerVersionApplySteps(
+						m.stabilizerSettingsState.helmChartNamespace, m.stabilizerSettingsState.helmChartName,
+						m.stabilizerVersionPatch, m.stabilizerVersionTarget)
+					m.stabilizerVersionApplyPipeline = steps
+					m.current = screenStabilizerVersionApply
+					ch, cmd := launchStep(steps[0], m.cfg)
+					m.stabilizerVersionApplyCh = ch
+					return m, cmd
+				}
+				m.stabilizerVersionConfirmError = `Type "yes" to proceed, or Esc to cancel.`
 			}
 			return m, nil
 
@@ -1305,15 +1433,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	if m.current == screenStabilizerSettingsList && m.stabilizerSettingsEditing {
-		var cmd tea.Cmd
-		m.stabilizerSettingsEditInput, cmd = m.stabilizerSettingsEditInput.Update(msg)
-		return m, cmd
-	}
-
 	if m.current == screenStabilizerSettingsConfirm {
 		var cmd tea.Cmd
 		m.stabilizerSettingsConfirmInput, cmd = m.stabilizerSettingsConfirmInput.Update(msg)
+		return m, cmd
+	}
+
+	if m.current == screenStabilizerVersionInput {
+		var cmd tea.Cmd
+		m.stabilizerVersionInput, cmd = m.stabilizerVersionInput.Update(msg)
+		return m, cmd
+	}
+
+	if m.current == screenStabilizerVersionConfirm {
+		var cmd tea.Cmd
+		m.stabilizerVersionConfirmInput, cmd = m.stabilizerVersionConfirmInput.Update(msg)
 		return m, cmd
 	}
 

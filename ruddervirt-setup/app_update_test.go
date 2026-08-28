@@ -105,6 +105,144 @@ func TestUpdateVersionsApplyRowStartsInstallPlanning(t *testing.T) {
 	}
 }
 
+// aileronVersionsRowCursor finds "versions.aileron"'s position in
+// updateVersionsRows() - used instead of a hardcoded index so this test
+// doesn't silently start testing the wrong row if the field order ever
+// changes.
+func aileronVersionsRowCursor(t *testing.T) int {
+	t.Helper()
+	for i, r := range updateVersionsRows() {
+		if !r.isSelfUpdate && r.field.key == "versions.aileron" {
+			return i
+		}
+	}
+	t.Fatal("versions.aileron not found in updateVersionsRows()")
+	return -1
+}
+
+// TestAileronVersionOnceStabilizerDetected confirms the Update screen's
+// "Aileron version" row stops being a hard, uneditable "managed by
+// stabilizer" lock once a HelmChart named "stabilizer" is detected, and
+// instead routes Enter into the guarded chart-version-change flow
+// (stabilizer_upgrade.go) - see the versions.aileron special-casing in
+// app_update.go/view.go.
+func TestAileronVersionOnceStabilizerDetected(t *testing.T) {
+	cursor := aileronVersionsRowCursor(t)
+
+	t.Run("before stabilizer is detected, still just a normal locked/pickable field", func(t *testing.T) {
+		m := model{current: screenUpdateVersions, updateVersionsCursor: cursor, cfg: defaultConfig()}
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		got := next.(model)
+		if got.current == screenStabilizerVersionInput {
+			t.Fatal("must not route into the guarded version flow before stabilizer is detected")
+		}
+	})
+
+	t.Run("detected but state not loaded yet: Enter is a no-op with an error, not a crash", func(t *testing.T) {
+		m := model{current: screenUpdateVersions, updateVersionsCursor: cursor, cfg: defaultConfig(), cachedStabilizerDetected: true}
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		got := next.(model)
+		if got.current != screenUpdateVersions {
+			t.Fatalf("current = %v, want to stay on screenUpdateVersions until state loads", got.current)
+		}
+		if got.settingsError == "" {
+			t.Error("want an explanatory error while state is still loading")
+		}
+	})
+
+	t.Run("detected and state loaded: Enter opens the version-input screen", func(t *testing.T) {
+		m := model{
+			current: screenUpdateVersions, updateVersionsCursor: cursor, cfg: defaultConfig(),
+			cachedStabilizerDetected: true,
+			stabilizerSettingsState:  &stabilizerSettingsState{declaredVersion: "1.2.3", selfUpgradeEnabled: true},
+			stabilizerVersionInput:   textinput.New(),
+		}
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		got := next.(model)
+		if got.current != screenStabilizerVersionInput {
+			t.Fatalf("current = %v, want screenStabilizerVersionInput", got.current)
+		}
+		if !got.stabilizerVersionInput.Focused() {
+			t.Error("stabilizerVersionInput should be focused")
+		}
+	})
+
+	t.Run("input screen: a valid target version advances to confirm with the plan attached", func(t *testing.T) {
+		m := model{
+			current:                       screenStabilizerVersionInput,
+			cfg:                           defaultConfig(),
+			stabilizerSettingsState:       &stabilizerSettingsState{declaredVersion: "1.2.3", selfUpgradeEnabled: true, declaredValues: map[string]any{}},
+			stabilizerVersionConfirmInput: textinput.New(),
+		}
+		m.stabilizerVersionInput = textinput.New()
+		m.stabilizerVersionInput.SetValue("1.3.0")
+
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		got := next.(model)
+		if got.current != screenStabilizerVersionConfirm {
+			t.Fatalf("current = %v, want screenStabilizerVersionConfirm", got.current)
+		}
+		if got.stabilizerVersionTarget != "1.3.0" {
+			t.Errorf("stabilizerVersionTarget = %q, want 1.3.0", got.stabilizerVersionTarget)
+		}
+		if len(got.stabilizerVersionPatch) == 0 {
+			t.Error("want a computed patch carried into the confirm screen")
+		}
+	})
+
+	t.Run("input screen: an invalid/refused version stays on the input screen with an error", func(t *testing.T) {
+		m := model{
+			current:                 screenStabilizerVersionInput,
+			cfg:                     defaultConfig(),
+			stabilizerSettingsState: &stabilizerSettingsState{declaredVersion: "1.2.3", selfUpgradeEnabled: false, declaredValues: map[string]any{}},
+		}
+		m.stabilizerVersionInput = textinput.New()
+		m.stabilizerVersionInput.SetValue("1.3.0")
+
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		got := next.(model)
+		if got.current != screenStabilizerVersionInput {
+			t.Fatalf("current = %v, want to stay on screenStabilizerVersionInput", got.current)
+		}
+		if got.stabilizerVersionError == "" {
+			t.Error("want an error explaining the refusal (self-upgrade disabled)")
+		}
+	})
+
+	t.Run("confirm screen: typing \"yes\" launches the apply pipeline", func(t *testing.T) {
+		m := model{
+			current:                       screenStabilizerVersionConfirm,
+			cfg:                           defaultConfig(),
+			stabilizerSettingsState:       &stabilizerSettingsState{helmChartNamespace: "kube-system", helmChartName: "stabilizer"},
+			stabilizerVersionTarget:       "1.3.0",
+			stabilizerVersionPatch:        []byte(`{"spec":{"version":"1.3.0"}}`),
+			stabilizerVersionConfirmInput: textinput.New(),
+		}
+		m.stabilizerVersionConfirmInput.SetValue("yes")
+
+		next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		got := next.(model)
+		if got.current != screenStabilizerVersionApply {
+			t.Fatalf("current = %v, want screenStabilizerVersionApply", got.current)
+		}
+		if len(got.stabilizerVersionApplyPipeline) != 2 {
+			t.Fatalf("apply pipeline has %d steps, want 2", len(got.stabilizerVersionApplyPipeline))
+		}
+		if cmd == nil {
+			t.Error("want launchStep's tea.Cmd")
+		}
+	})
+
+	t.Run("Esc from the version-apply screen (once done) returns to Update, not Settings", func(t *testing.T) {
+		m := model{current: screenStabilizerVersionApply, stabilizerVersionApplyDone: true}
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		got := next.(model)
+		if got.current != screenUpdateVersions {
+			t.Fatalf("current = %v, want screenUpdateVersions", got.current)
+		}
+	})
+}
+
 // TestVersionFieldsNotInSettingsRows confirms the four component-version
 // fields moved out of Settings and onto the Update screen instead.
 func TestVersionFieldsNotInSettingsRows(t *testing.T) {

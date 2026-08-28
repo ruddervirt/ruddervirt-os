@@ -74,10 +74,14 @@ type settingsRow struct {
 	// isStabilizerAction marks the synthetic "Adopt to ruddervirt.com"
 	// action row - see settingsRows below.
 	isStabilizerAction bool
-	// isStabilizerSettingsAction marks the synthetic "Stabilizer Settings"
-	// action row that replaces isStabilizerAction once adopted - see
-	// settingsRows below.
-	isStabilizerSettingsAction bool
+	// stabilizerDef marks a row backed by LIVE stabilizer cluster state
+	// (stabilizerSettingsState, model.go) instead of Config/settingField -
+	// non-nil once stabilizer has been adopted, one per entry in
+	// stabilizerSettingDefs (stabilizer-settings.yaml). See settingsRows
+	// below for exactly where these get inserted, and app_update.go's
+	// `row.stabilizerDef != nil` branches for how picking/editing them
+	// differs from an ordinary settingField row.
+	stabilizerDef *stabilizerSettingDef
 }
 
 // settingsRows lays out the Settings table in display order:
@@ -108,6 +112,17 @@ func (m model) settingsRows() []settingsRow {
 		switch {
 		case f.updateScreen:
 			continue // lives on the Update screen instead - see updateVersionsRows
+		case f.key == "system.aileron_ui_enabled" && m.cachedStabilizerDetected:
+			// Once stabilizer manages Aileron, this Config-backed field is
+			// permanently locked (stabilizerLocked, config.go) - showing it
+			// AND a second, live-backed "aileron_ui_enabled" row (from
+			// stabilizerSettingDefs) further down would put the same
+			// setting in two places, one of them dead. Substitute the live
+			// row in this field's own slot instead, so there's exactly one
+			// place to find/change it, and it's actually editable again.
+			if def, ok := stabilizerSettingByKey("aileron_ui_enabled"); ok {
+				plain = append(plain, settingsRow{stabilizerDef: &def})
+			}
 		case f.advanced:
 			advanced = append(advanced, f)
 		case f.networkSetup:
@@ -131,16 +146,21 @@ func (m model) settingsRows() []settingsRow {
 		for _, f := range advanced {
 			rows = append(rows, settingsRow{field: f, nested: true})
 		}
-		// Nested under Advanced, not a plain row - this is a rare,
-		// high-consequence, coordinated-with-ruddervirt action, not
-		// something that belongs alongside everyday settings. Once already
-		// adopted, this slot becomes "Stabilizer Settings" instead - there's
-		// nothing left for the adopt action to do once
-		// cachedStabilizerDetected is true, but there's now a live release
-		// whose settings (stabilizerSettingDefs) are worth exposing here.
 		if m.cachedStabilizerDetected {
-			rows = append(rows, settingsRow{isStabilizerSettingsAction: true, nested: true})
+			// Every stabilizer setting EXCEPT aileron_ui_enabled, which
+			// already has its own row above (in system.aileron_ui_enabled's
+			// usual plain-row slot) - never list it twice.
+			for i := range stabilizerSettingDefs {
+				d := stabilizerSettingDefs[i]
+				if d.Key == "aileron_ui_enabled" {
+					continue
+				}
+				rows = append(rows, settingsRow{stabilizerDef: &d, nested: true})
+			}
 		} else {
+			// Nested under Advanced, not a plain row - this is a rare,
+			// high-consequence, coordinated-with-ruddervirt action, not
+			// something that belongs alongside everyday settings.
 			rows = append(rows, settingsRow{isStabilizerAction: true, nested: true})
 		}
 	}
@@ -463,146 +483,6 @@ func (m model) View() string {
 		}
 		return s
 
-	case screenStabilizerSettingsLoading:
-		return "\nLoading stabilizer settings...\n"
-
-	case screenStabilizerSettingsList:
-		state := m.stabilizerSettingsState
-		if state == nil {
-			return "\nNo stabilizer settings loaded. Press Esc to go back.\n"
-		}
-
-		if m.stabilizerSettingsPicking {
-			def := stabilizerSettingDefs[m.stabilizerSettingsCursor]
-			options := m.stabilizerSettingsPickOptions
-
-			width := runewidth.StringWidth(def.Key) + 4
-			for _, o := range options {
-				if l := runewidth.StringWidth(o) + 4; l > width {
-					width = l
-				}
-			}
-			termWidth := m.termWidth
-			if termWidth <= 0 {
-				termWidth = 80
-			}
-			if width > termWidth-2 {
-				width = termWidth - 2
-			}
-			if width < 20 {
-				width = 20
-			}
-
-			topBorder := "╭" + strings.Repeat("─", width) + "╮"
-			bottomBorder := "╰" + strings.Repeat("─", width) + "╯"
-
-			s := "\n" + titleStyle.Render("Stabilizer Settings") + fmt.Sprintf("\n\nSelect %s:\n\n", def.Key)
-			s += colorBorders(topBorder) + "\n"
-			for i, o := range options {
-				selected := i == m.stabilizerSettingsPickCursor
-				cursor := "  "
-				cell := fitCell(o, width-2)
-				if selected {
-					cursor = cursorStyle.Render(">") + " "
-					cell = selectedStyle.Render(cell)
-				}
-				s += fmt.Sprintf("%s%s%s%s\n", colorBorders("│"), cursor, cell, colorBorders("│"))
-			}
-			s += colorBorders(bottomBorder) + "\n"
-			if m.stabilizerSettingsError != "" {
-				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.stabilizerSettingsError))
-			}
-			s += "\n" + hintBar([2]string{"↑/↓", "navigate"}, [2]string{"Enter", "select"}, [2]string{"Esc", "cancel"}) + "\n"
-			return s
-		}
-
-		total := len(stabilizerSettingDefs)
-		labelWidth := len("Setting")
-		valueWidth := len("Value")
-		for _, d := range stabilizerSettingDefs {
-			value, _ := stabilizerSettingListValue(d, state)
-			if l := runewidth.StringWidth(d.Key); l > labelWidth {
-				labelWidth = l
-			}
-			if l := runewidth.StringWidth(value); l > valueWidth {
-				valueWidth = l
-			}
-		}
-
-		termWidth := m.termWidth
-		if termWidth <= 0 {
-			termWidth = 80
-		}
-		const tableOverhead = 11 // "│" + cursor(3) + "│ " + " │ " + " │"
-		for labelWidth+valueWidth+tableOverhead > termWidth && valueWidth > 12 {
-			valueWidth--
-		}
-		for labelWidth+valueWidth+tableOverhead > termWidth && labelWidth > 20 {
-			labelWidth--
-		}
-
-		topBorder := "╭───┬" + strings.Repeat("─", labelWidth+2) + "┬" + strings.Repeat("─", valueWidth+2) + "╮"
-		sepBorder := "├───┼" + strings.Repeat("─", labelWidth+2) + "┼" + strings.Repeat("─", valueWidth+2) + "┤"
-		bottomBorder := "╰───┴" + strings.Repeat("─", labelWidth+2) + "┴" + strings.Repeat("─", valueWidth+2) + "╯"
-
-		s := "\n" + titleStyle.Render("Stabilizer Settings") + "\n\n"
-
-		visible := m.settingsVisibleRows()
-		start := m.stabilizerSettingsScroll
-		end := start + visible
-		if end > total {
-			end = total
-		}
-		if start > end {
-			start = end
-		}
-		if start > 0 {
-			s += helpStyle.Render(fmt.Sprintf("  ↑ %d more above", start)) + "\n"
-		}
-
-		s += colorBorders(topBorder) + "\n"
-		s += colorBorders(fmt.Sprintf("│   │ %s │ %s │", fitCell("Setting", labelWidth), fitCell("Value", valueWidth))) + "\n"
-		s += colorBorders(sepBorder) + "\n"
-		for i := start; i < end; i++ {
-			selected := i == m.stabilizerSettingsCursor
-			d := stabilizerSettingDefs[i]
-			value, _ := stabilizerSettingListValue(d, state)
-			label := fitCell(d.Key, labelWidth)
-			valueCell := fitCell(value, valueWidth)
-			if selected {
-				label = selectedStyle.Render(label)
-				valueCell = selectedStyle.Render(valueCell)
-			}
-			s += fmt.Sprintf("%s%s%s %s %s %s %s\n", colorBorders("│"), cursorArrow(selected), colorBorders("│"), label, colorBorders("│"), valueCell, colorBorders("│"))
-		}
-		s += colorBorders(bottomBorder) + "\n"
-		if end < total {
-			s += helpStyle.Render(fmt.Sprintf("  ↓ %d more below", total-end)) + "\n"
-		}
-
-		if total > 0 {
-			s += "\n" + helpStyle.Render(stabilizerSettingDefs[m.stabilizerSettingsCursor].Summary) + "\n"
-		}
-
-		if m.stabilizerSettingsEditing {
-			def := stabilizerSettingDefs[m.stabilizerSettingsCursor]
-			hint := ""
-			if def.hasUnlimited() {
-				hint = " (or \"unlimited\")"
-			}
-			s += fmt.Sprintf("\nEnter the value provided by ruddervirt for %s%s:\n  %s\n", def.Key, hint, m.stabilizerSettingsEditInput.View())
-			if m.stabilizerSettingsError != "" {
-				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.stabilizerSettingsError))
-			}
-			s += "\n" + hintBar([2]string{"Enter", "continue"}, [2]string{"Esc", "cancel"}) + "\n"
-		} else {
-			if m.stabilizerSettingsError != "" {
-				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.stabilizerSettingsError))
-			}
-			s += "\n" + hintBar([2]string{"↑/↓", "navigate"}, [2]string{"Enter", "edit"}, [2]string{"Esc", "back"}) + "\n"
-		}
-		return s
-
 	case screenStabilizerSettingsConfirm:
 		def := m.stabilizerSettingsPendingDef
 		curDisplay := "(not set - chart default)"
@@ -622,20 +502,76 @@ func (m model) View() string {
 		return s
 
 	case screenStabilizerSettingsApply:
-		s := "\n" + titleStyle.Render("Applying Stabilizer Setting...") + "\n\n"
+		s := "\n" + titleStyle.Render(fmt.Sprintf("Applying %s...", m.stabilizerSettingsPendingDef.Key)) + "\n\n"
+		visible := m.installVisibleLogLines()
+		lines := m.stabilizerSettingsApplyLogs
+		if len(lines) > visible {
+			lines = lines[len(lines)-visible:]
+		}
+		for _, line := range lines {
+			s += line + "\n"
+		}
 		if m.stabilizerSettingsApplyDone {
-			if m.stabilizerSettingsApplyErr != nil {
-				s += errorStyle.Render("Failed: "+m.stabilizerSettingsApplyErr.Error()) + "\n"
-				s += "\n" + helpStyle.Render("Press Esc to go back.") + "\n"
-			} else if m.stabilizerSettingsState != nil {
-				s += successStyle.Render("Applied.") + " Watch the rollout with:\n"
-				s += fmt.Sprintf("  kubectl -n %s get job helm-install-%s -w\n", m.stabilizerSettingsState.helmChartNamespace, m.stabilizerSettingsState.helmChartName)
-				s += "\n" + helpStyle.Render("Press Esc to go back.") + "\n"
-			} else {
-				s += successStyle.Render("Applied.") + "\n" + helpStyle.Render("Press Esc to go back.") + "\n"
+			s += "\n" + successStyle.Render("Applied and rolled out.") + " " + helpStyle.Render("Press Esc to return to Settings.") + "\n"
+		} else if m.stabilizerSettingsApplyFailed {
+			s += "\n" + errorStyle.Render("Failed.") + " " + helpStyle.Render("Press Esc to return to Settings.") + "\n"
+		} else if m.stabilizerSettingsApplyStepIdx < len(m.stabilizerSettingsApplyPipeline) {
+			s += "\n" + helpStyle.Render(fmt.Sprintf("Running: %s...", m.stabilizerSettingsApplyPipeline[m.stabilizerSettingsApplyStepIdx].label)) + "\n"
+		}
+		return s
+
+	case screenStabilizerVersionInput:
+		s := "\n" + titleStyle.Render("Aileron / Stabilizer Version") + "\n\n"
+		s += "Aileron ships as stabilizer's own subchart, pinned to whatever\n"
+		s += "version that chart release bundles - so changing it here means\n"
+		s += "changing the stabilizer chart's own version.\n\n"
+		s += "Enter the value provided by ruddervirt for the target version:\n"
+		s += fmt.Sprintf("Version:  %s\n", m.stabilizerVersionInput.View())
+		if m.stabilizerVersionError != "" {
+			s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.stabilizerVersionError))
+		}
+		s += "\n" + hintBar([2]string{"Enter", "continue"}, [2]string{"Esc", "cancel"}) + "\n"
+		return s
+
+	case screenStabilizerVersionConfirm:
+		s := "\n" + titleStyle.Render("Confirm Version Change") + "\n\n"
+		current := "(unset)"
+		if m.stabilizerSettingsState != nil && m.stabilizerSettingsState.declaredVersion != "" {
+			current = m.stabilizerSettingsState.declaredVersion
+		}
+		s += fmt.Sprintf("%s -> %s\n", current, m.stabilizerVersionTarget)
+		if len(m.stabilizerVersionClearedPins) > 0 {
+			s += "\nAlso clearing these redundant image pins (restating this release's own tag):\n"
+			for _, p := range m.stabilizerVersionClearedPins {
+				s += "  " + p + "\n"
 			}
-		} else {
-			s += helpStyle.Render("Applying...") + "\n"
+		}
+		s += "\nApplying this RESTARTS THE WHOLE RELEASE: stabilizer, vncauthproxy, the\n"
+		s += "aileron operator, and the VNC gateway all restart (roughly 30-90 seconds).\n"
+		s += "Consoles drop and the zone goes quiet to the cloud UI during that window.\n"
+		s += "Running VMs are NOT affected. This is not a hot-reload.\n"
+		s += fmt.Sprintf("\n%s\n  %s\n", helpStyle.Render("Type \"yes\" to proceed, or Esc to cancel:"), m.stabilizerVersionConfirmInput.View())
+		if m.stabilizerVersionConfirmError != "" {
+			s += fmt.Sprintf("\n%s\n", errorStyle.Render(m.stabilizerVersionConfirmError))
+		}
+		return s
+
+	case screenStabilizerVersionApply:
+		s := "\n" + titleStyle.Render(fmt.Sprintf("Patching to %s...", m.stabilizerVersionTarget)) + "\n\n"
+		visible := m.installVisibleLogLines()
+		lines := m.stabilizerVersionApplyLogs
+		if len(lines) > visible {
+			lines = lines[len(lines)-visible:]
+		}
+		for _, line := range lines {
+			s += line + "\n"
+		}
+		if m.stabilizerVersionApplyDone {
+			s += "\n" + successStyle.Render("Applied and rolled out.") + " " + helpStyle.Render("Press Esc to return to Update.") + "\n"
+		} else if m.stabilizerVersionApplyFailed {
+			s += "\n" + errorStyle.Render("Failed.") + " " + helpStyle.Render("Press Esc to return to Update.") + "\n"
+		} else if m.stabilizerVersionApplyStepIdx < len(m.stabilizerVersionApplyPipeline) {
+			s += "\n" + helpStyle.Render(fmt.Sprintf("Running: %s...", m.stabilizerVersionApplyPipeline[m.stabilizerVersionApplyStepIdx].label)) + "\n"
 		}
 		return s
 
@@ -748,6 +684,26 @@ func (m model) View() string {
 			if r.isSelfUpdate {
 				return version
 			}
+			if r.field.key == "versions.aileron" && versions.StabilizerDetected {
+				// Once stabilizer manages it, this shows the chart version
+				// actually installed (CHART_VERSION) as the primary value,
+				// with what the HelmChart resource is asking for appended
+				// only when a rollout is still landing or has failed - same
+				// applied-vs-declared convention as stabilizerSettingRowDisplay
+				// (stabilizer_settings_tui.go).
+				if m.stabilizerSettingsState == nil {
+					return "loading..."
+				}
+				applied := m.stabilizerSettingsState.appliedChartVersion
+				declared := m.stabilizerSettingsState.declaredVersion
+				if applied == "" {
+					applied = "(unknown)"
+				}
+				if declared != "" && declared != applied {
+					return fmt.Sprintf("%s (rollout pending -> %s)", applied, declared)
+				}
+				return applied
+			}
 			if r.field.locked != nil {
 				if locked, reason := r.field.locked(&m.cfg, versions); locked {
 					return reason
@@ -834,10 +790,14 @@ func (m model) View() string {
 
 	case screenSettings:
 		if m.settingsPicking {
-			field := m.settingsRows()[m.settingsCursor].field
+			row := m.settingsRows()[m.settingsCursor]
+			pickLabel := row.field.label
+			if row.stabilizerDef != nil {
+				pickLabel = row.stabilizerDef.Key
+			}
 			options := m.settingsPickOptions
 
-			width := runewidth.StringWidth(field.label) + 4
+			width := runewidth.StringWidth(pickLabel) + 4
 			for _, o := range options {
 				if l := runewidth.StringWidth(o) + 4; l > width {
 					width = l
@@ -857,7 +817,7 @@ func (m model) View() string {
 			topBorder := "╭" + strings.Repeat("─", width) + "╮"
 			bottomBorder := "╰" + strings.Repeat("─", width) + "╯"
 
-			s := "\n" + titleStyle.Render("Settings") + fmt.Sprintf("\n\nSelect %s:\n\n", field.label)
+			s := "\n" + titleStyle.Render("Settings") + fmt.Sprintf("\n\nSelect %s:\n\n", pickLabel)
 
 			visible := m.settingsVisibleRows()
 			start := m.settingsPickScroll
@@ -908,8 +868,10 @@ func (m model) View() string {
 				// Nested (see settingsRows), so indented like every other
 				// advanced field for consistent alignment.
 				return "  Adopt to ruddervirt.com"
-			case r.isStabilizerSettingsAction:
-				return "  Stabilizer Settings"
+			case r.stabilizerDef != nil && r.nested:
+				return "  " + r.stabilizerDef.Key
+			case r.stabilizerDef != nil:
+				return r.stabilizerDef.Key
 			case r.nested:
 				return "  " + r.field.label
 			default:
@@ -918,8 +880,15 @@ func (m model) View() string {
 		}
 		versions := versionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected}
 		rowValue := func(r settingsRow) string {
-			if r.isNetworkToggle || r.isToggle || r.isStabilizerAction || r.isStabilizerSettingsAction {
+			if r.isNetworkToggle || r.isToggle || r.isStabilizerAction {
 				return ""
+			}
+			if r.stabilizerDef != nil {
+				if m.stabilizerSettingsState == nil {
+					return "loading..."
+				}
+				value, _ := stabilizerSettingListValue(*r.stabilizerDef, m.stabilizerSettingsState)
+				return value
 			}
 			if r.field.locked != nil {
 				if locked, reason := r.field.locked(&m.cfg, versions); locked {
@@ -1000,7 +969,17 @@ func (m model) View() string {
 		s += renderApplyBar(tableWidth, "Apply (install / re-apply)", m.settingsCursor == total)
 
 		if m.settingsEditing {
-			s += fmt.Sprintf("\nEditing %s:\n  %s\n", rows[m.settingsCursor].field.label, m.settingsInput.View())
+			editRow := rows[m.settingsCursor]
+			if editRow.stabilizerDef != nil {
+				def := editRow.stabilizerDef
+				hint := ""
+				if def.hasUnlimited() {
+					hint = " (or \"unlimited\")"
+				}
+				s += fmt.Sprintf("\nEnter the value provided by ruddervirt for %s%s:\n  %s\n", def.Key, hint, m.settingsInput.View())
+			} else {
+				s += fmt.Sprintf("\nEditing %s:\n  %s\n", editRow.field.label, m.settingsInput.View())
+			}
 			if m.settingsError != "" {
 				s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.settingsError))
 			}

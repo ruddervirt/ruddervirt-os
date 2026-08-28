@@ -33,10 +33,11 @@ const (
 	screenStabilizerPlanning
 	screenStabilizerConfirm
 	screenStabilizerAdopt
-	screenStabilizerSettingsLoading
-	screenStabilizerSettingsList
 	screenStabilizerSettingsConfirm
 	screenStabilizerSettingsApply
+	screenStabilizerVersionInput
+	screenStabilizerVersionConfirm
+	screenStabilizerVersionApply
 )
 
 // isStabilizerWizardScreen reports whether s is one of the "Adopt to
@@ -244,38 +245,86 @@ type model struct {
 	stabilizerFailed  bool
 	stabilizerCh      chan tea.Msg
 
-	// "Stabilizer Settings" screen (Settings -> Advanced -> the row that
-	// replaces "Adopt to ruddervirt.com" once cachedStabilizerDetected is
-	// true) - browses and edits every setting in stabilizerSettingDefs
-	// against LIVE cluster state, not Config, so it doesn't fit the
-	// settingField/settingsRows() shape the rest of Settings uses; this is
-	// its own parallel set of fields, mirroring that shape as closely as
-	// the different data source allows (settingsPicking/settingsEditing ->
-	// stabilizerSettingsPicking/stabilizerSettingsEditing, etc).
-	stabilizerSettingsState  *stabilizerSettingsState // nil until loadStabilizerSettingsStateCmd (stabilizer_settings_tui.go) returns
-	stabilizerSettingsCursor int
-	stabilizerSettingsScroll int
-	stabilizerSettingsError  string
-
-	stabilizerSettingsEditing   bool
-	stabilizerSettingsEditInput textinput.Model
-
-	stabilizerSettingsPicking     bool
-	stabilizerSettingsPickCursor  int
-	stabilizerSettingsPickOptions []string
+	// Stabilizer settings (stabilizerSettingDefs, driven from
+	// stabilizer-settings.yaml) - shown IN SITU as ordinary rows in the
+	// main Settings table once cachedStabilizerDetected is true (see
+	// settingsRows, view.go: settingsRow.stabilizerDef), not a separate
+	// screen - browsing/picking/editing them reuses the exact same
+	// settingsCursor/settingsPicking/settingsEditing/settingsInput/
+	// settingsPickOptions machinery every Config-backed settingField row
+	// already uses (app_update.go branches on row.stabilizerDef != nil at
+	// the couple of points where the backing store actually differs: this
+	// is live cluster state, not Config, so there's no settingField.get/set
+	// to call).
+	//
+	// stabilizerSettingsState is nil until loadStabilizerSettingsStateCmd
+	// (stabilizer_settings_tui.go) returns - fetched once
+	// detectStabilizerCmd's result (stabilizerDetectedMsg) confirms
+	// stabilizer is actually present, not unconditionally on every launch,
+	// so a node that never adopted stabilizer never pays for the extra
+	// kubectl round trip (or risks an unwanted sudo prompt) just from
+	// opening Settings.
+	stabilizerSettingsState *stabilizerSettingsState
 
 	// stabilizerSettingsPending* hold one validated, not-yet-applied change
-	// from screenStabilizerSettingsList's edit/pick step through
-	// screenStabilizerSettingsConfirm's "yes" to
-	// applyStabilizerSettingPatchCmd.
+	// from the picker/free-text edit through screenStabilizerSettingsConfirm's
+	// "yes" to stabilizerSettingsApplySteps - the one part of this that
+	// still isn't fully in situ, since actually applying a change restarts
+	// the whole stabilizer release and needs its own explicit warning +
+	// real-time progress, the same way the overall Settings "Apply" already
+	// gets its own confirm/progress screens instead of happening silently
+	// inline.
 	stabilizerSettingsPendingDef     stabilizerSettingDef
 	stabilizerSettingsPendingValue   any
 	stabilizerSettingsPendingCurrent any
 	stabilizerSettingsConfirmInput   textinput.Model
 	stabilizerSettingsConfirmError   string
 
-	stabilizerSettingsApplyErr  error
-	stabilizerSettingsApplyDone bool
+	// screenStabilizerSettingsApply's streaming step-runner state - same
+	// shape as the adopt wizard's stabilizerStepIdx/Logs/Done/Failed/Ch
+	// (stabilizerSteps), just for stabilizerSettingsApplySteps
+	// (stabilizer_settings_tui.go) instead, since it actually watches the
+	// patch + rollout from inside the TUI rather than telling the operator
+	// to run a kubectl command themselves (they have no shell to run it
+	// in - the TUI holds the terminal).
+	stabilizerSettingsApplyPipeline []installStep
+	stabilizerSettingsApplyStepIdx  int
+	stabilizerSettingsApplyLogs     []string
+	stabilizerSettingsApplyDone     bool
+	stabilizerSettingsApplyFailed   bool
+	stabilizerSettingsApplyCh       chan tea.Msg
+
+	// Guarded chart-version change (stabilizer_upgrade.go), reached from the
+	// Update screen's "Aileron version" row once stabilizer is detected
+	// (replacing that row's former hard "managed by stabilizer" lock - see
+	// stabilizerLocked, config.go, and the versions.aileron special-casing
+	// in app_update.go/view.go). Free-text entry rather than a picker like
+	// the other Update-screen version fields: valid targets aren't a fixed
+	// or fetchable list, ruddervirt provides the exact version, matching the
+	// adopt wizard's own "enter the value provided by ruddervirt" framing.
+	stabilizerVersionInput textinput.Model
+	stabilizerVersionError string
+
+	// stabilizerVersionTarget/Patch/ClearedPins carry
+	// planStabilizerVersionUpgrade's validated result from the input screen
+	// into the confirm screen's summary and, on "yes", into
+	// stabilizerVersionApplySteps - the patch is built once (input time),
+	// not re-derived at confirm time, so what's shown is exactly what gets
+	// applied.
+	stabilizerVersionTarget       string
+	stabilizerVersionPatch        []byte
+	stabilizerVersionClearedPins  []string
+	stabilizerVersionConfirmInput textinput.Model
+	stabilizerVersionConfirmError string
+
+	// screenStabilizerVersionApply's streaming step-runner state - same
+	// shape as stabilizerSettingsApply*/stabilizerSteps above.
+	stabilizerVersionApplyPipeline []installStep
+	stabilizerVersionApplyStepIdx  int
+	stabilizerVersionApplyLogs     []string
+	stabilizerVersionApplyDone     bool
+	stabilizerVersionApplyFailed   bool
+	stabilizerVersionApplyCh       chan tea.Msg
 }
 
 func initialModel() model {
@@ -304,8 +353,10 @@ func initialModel() model {
 	stabilizerNebulaInput := textinput.New()
 	stabilizerConfirmInput := textinput.New()
 
-	stabilizerSettingsEditInput := textinput.New()
 	stabilizerSettingsConfirmInput := textinput.New()
+
+	stabilizerVersionInput := textinput.New()
+	stabilizerVersionConfirmInput := textinput.New()
 
 	cfg, _ := loadConfig(configPath)
 	if cfg.Network.InterfaceName == "" {
@@ -353,8 +404,9 @@ func initialModel() model {
 		stabilizerNatsPasswordInput:    stabilizerNatsPasswordInput,
 		stabilizerNebulaInput:          stabilizerNebulaInput,
 		stabilizerConfirmInput:         stabilizerConfirmInput,
-		stabilizerSettingsEditInput:    stabilizerSettingsEditInput,
 		stabilizerSettingsConfirmInput: stabilizerSettingsConfirmInput,
+		stabilizerVersionInput:         stabilizerVersionInput,
+		stabilizerVersionConfirmInput:  stabilizerVersionConfirmInput,
 		cfg:                            cfg,
 		// Sane fallback until the first tea.WindowSizeMsg arrives.
 		termWidth:  80,
