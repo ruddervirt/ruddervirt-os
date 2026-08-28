@@ -22,6 +22,7 @@ const (
 	screenUpdateChecking
 	screenUpdateConfirm
 	screenUpdate
+	screenOSUpdate
 	screenPasswordCheck
 	screenPasswordChange
 	screenHostnameChange
@@ -35,7 +36,6 @@ const (
 	screenStabilizerAdopt
 	screenStabilizerSettingsConfirm
 	screenStabilizerSettingsApply
-	screenStabilizerVersionInput
 	screenStabilizerVersionConfirm
 	screenStabilizerVersionApply
 )
@@ -147,6 +147,18 @@ type model struct {
 	updateCh        chan tea.Msg
 	updateInstalled bool
 
+	// screenOSUpdate's streaming step-runner state for osUpdateSteps
+	// (os_update.go) - same shape as updateStepIdx/Logs/Done/Failed/Ch
+	// above, just its own fields since, unlike ruddervirt-setup's own
+	// self-update, applying an OS update doesn't replace/re-exec this
+	// process, so it returns to screenUpdateVersions on Esc instead of
+	// tea.Quit-ing.
+	osUpdateStepIdx int
+	osUpdateLogs    []string
+	osUpdateDone    bool
+	osUpdateFailed  bool
+	osUpdateCh      chan tea.Msg
+
 	// Forced admin-password-change flow, gating entry into "configure" -
 	// see checkPasswordChangedCmd/password.go.
 	passwordNewInput     textinput.Model
@@ -200,6 +212,15 @@ type model struct {
 	// fetchK3sVersionsCmd/fetchAileronVersionsCmd.
 	cachedK3sVersions     []string
 	cachedAileronVersions []string
+
+	// cachedSelfUpdateAvailable/cachedOSUpdateAvailable back the Update
+	// screen's "available" icon (updateRowHasUpgrade, view.go) for the two
+	// rows that aren't backed by a settingField (ruddervirt-setup itself,
+	// and the OS) - populated once, best-effort, via Init's
+	// checkSelfUpdateAvailableCmd (update.go)/checkOSUpdateAvailableCmd
+	// (os_update.go), same shape as the two caches above.
+	cachedSelfUpdateAvailable bool
+	cachedOSUpdateAvailable   bool
 
 	// cachedStabilizerDetected mirrors the two version caches above: whether
 	// a "stabilizer" HelmChart is on the cluster, populated once via Init's
@@ -298,17 +319,18 @@ type model struct {
 	// Update screen's "Aileron version" row once stabilizer is detected
 	// (replacing that row's former hard "managed by stabilizer" lock - see
 	// stabilizerLocked, config.go, and the versions.aileron special-casing
-	// in app_update.go/view.go). Free-text entry rather than a picker like
-	// the other Update-screen version fields: valid targets aren't a fixed
-	// or fetchable list, ruddervirt provides the exact version, matching the
-	// adopt wizard's own "enter the value provided by ruddervirt" framing.
-	stabilizerVersionInput textinput.Model
-	stabilizerVersionError string
-
+	// in app_update.go/view.go). A picker, same as every other
+	// component-version row (m.updateVersionsPicking/PickOptions/PickCursor,
+	// reused as-is) - options come from ruddervirt/aileron's GitHub releases
+	// (stabilizerVersionPickerOptions, stabilizer_upgrade.go), which are kept
+	// in strict lockstep with the stabilizer chart's own version by that
+	// project's release CI, so there's no separate stabilizer release feed
+	// to fetch.
+	//
 	// stabilizerVersionTarget/Patch/ClearedPins carry
-	// planStabilizerVersionUpgrade's validated result from the input screen
-	// into the confirm screen's summary and, on "yes", into
-	// stabilizerVersionApplySteps - the patch is built once (input time),
+	// planStabilizerVersionUpgrade's validated result from the picker
+	// confirm into the confirm screen's summary and, on "yes", into
+	// stabilizerVersionApplySteps - the patch is built once (at pick time),
 	// not re-derived at confirm time, so what's shown is exactly what gets
 	// applied.
 	stabilizerVersionTarget       string
@@ -355,7 +377,6 @@ func initialModel() model {
 
 	stabilizerSettingsConfirmInput := textinput.New()
 
-	stabilizerVersionInput := textinput.New()
 	stabilizerVersionConfirmInput := textinput.New()
 
 	cfg, _ := loadConfig(configPath)
@@ -405,7 +426,6 @@ func initialModel() model {
 		stabilizerNebulaInput:          stabilizerNebulaInput,
 		stabilizerConfirmInput:         stabilizerConfirmInput,
 		stabilizerSettingsConfirmInput: stabilizerSettingsConfirmInput,
-		stabilizerVersionInput:         stabilizerVersionInput,
 		stabilizerVersionConfirmInput:  stabilizerVersionConfirmInput,
 		cfg:                            cfg,
 		// Sane fallback until the first tea.WindowSizeMsg arrives.
@@ -415,7 +435,7 @@ func initialModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink, fetchK3sVersionsCmd(), fetchAileronVersionsCmd(), detectStabilizerCmd(), fetchServiceStatusesCmd(m.cfg), fetchHostStatsCmd(m.cfg, m.prevCPUSample), tickServiceStatusCmd(), tickServiceStatusRenderCmd()}
+	cmds := []tea.Cmd{textinput.Blink, fetchK3sVersionsCmd(), fetchAileronVersionsCmd(), detectStabilizerCmd(), fetchServiceStatusesCmd(m.cfg), fetchHostStatsCmd(m.cfg, m.prevCPUSample), tickServiceStatusCmd(), tickServiceStatusRenderCmd(), checkSelfUpdateAvailableCmd(), checkOSUpdateAvailableCmd()}
 	if m.current == screenPasswordCheck {
 		// initialModel() starts here on first boot (see its comment) -
 		// same command the menu's "configure" selection fires manually.

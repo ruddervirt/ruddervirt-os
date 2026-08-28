@@ -214,6 +214,29 @@ var updateSteps = []installStep{
 	},
 }
 
+// selfUpdateAvailableMsg carries a background, passive check for whether a
+// newer ruddervirt-setup release exists - purely for the Update screen's
+// "available" icon (see updateRowHasUpgrade, view.go). Unlike
+// checkForUpdateCmd/updateCheckMsg below (which drives the interactive
+// checking -> confirm flow and navigates m.current on completion), this
+// never changes m.current and is safe to fire unconditionally from Init(),
+// same "best-effort, cycling just no-ops if this fails" shape as
+// fetchAileronVersionsCmd/fetchK3sVersionsCmd.
+type selfUpdateAvailableMsg struct {
+	available bool
+}
+
+func checkSelfUpdateAvailableCmd() tea.Cmd {
+	return func() tea.Msg {
+		rel, err := fetchLatestSetupRelease()
+		if err != nil {
+			return selfUpdateAvailableMsg{}
+		}
+		cmp, ok := compareSetupVersions(rel.TagName, version)
+		return selfUpdateAvailableMsg{available: ok && cmp > 0}
+	}
+}
+
 // updateCheckMsg reports the result of checkForUpdateCmd back to Update().
 type updateCheckMsg struct {
 	latestVersion string

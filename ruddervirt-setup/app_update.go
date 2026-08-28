@@ -28,6 +28,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cachedAileronVersions = msg.versions
 		return m, nil
 
+	case selfUpdateAvailableMsg:
+		m.cachedSelfUpdateAvailable = msg.available
+		return m, nil
+
+	case osUpdateAvailableMsg:
+		m.cachedOSUpdateAvailable = msg.available
+		return m, nil
+
 	case stabilizerDetectedMsg:
 		m.cachedStabilizerDetected = msg.present
 		if msg.present {
@@ -79,12 +87,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case screenStabilizerVersionApply:
 			m.stabilizerVersionApplyLogs = append(m.stabilizerVersionApplyLogs, string(msg))
 			return m, readFromCh(m.stabilizerVersionApplyCh)
+		case screenOSUpdate:
+			m.osUpdateLogs = append(m.osUpdateLogs, string(msg))
+			return m, readFromCh(m.osUpdateCh)
 		default:
 			m.installLogs = append(m.installLogs, string(msg))
 			return m, readFromCh(m.installCh)
 		}
 
 	case stepDoneMsg:
+		if m.current == screenOSUpdate {
+			if msg.err != nil {
+				m.osUpdateLogs = append(m.osUpdateLogs, fmt.Sprintf("✗ %s: %s", msg.label, msg.err.Error()))
+				m.osUpdateFailed = true
+				return m, nil
+			}
+			m.osUpdateLogs = append(m.osUpdateLogs, fmt.Sprintf("✓ %s", msg.label))
+			m.osUpdateStepIdx++
+			if m.osUpdateStepIdx >= len(osUpdateSteps) {
+				m.osUpdateDone = true
+				// Re-check in the background so the row's icon clears once
+				// the newly staged deployment is actually reflected, rather
+				// than showing stale "update available" until the process
+				// restarts.
+				return m, checkOSUpdateAvailableCmd()
+			}
+			ch, cmd := launchStep(osUpdateSteps[m.osUpdateStepIdx], m.cfg)
+			m.osUpdateCh = ch
+			return m, cmd
+		}
 		if m.current == screenStabilizerVersionApply {
 			if msg.err != nil {
 				m.stabilizerVersionApplyLogs = append(m.stabilizerVersionApplyLogs, fmt.Sprintf("✗ %s: %s", msg.label, msg.err.Error()))
@@ -469,6 +500,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.stabilizerError = ""
 				return m, nil
 			}
+			if m.current == screenOSUpdate && !m.osUpdateDone && !m.osUpdateFailed {
+				return m, nil
+			}
+			if m.current == screenOSUpdate {
+				m.current = screenUpdateVersions
+				m.osUpdateDone = false
+				m.osUpdateFailed = false
+				m.osUpdateLogs = nil
+				m.osUpdateStepIdx = 0
+				m.osUpdateCh = nil
+				return m, nil
+			}
 			if m.current == screenStabilizerSettingsApply && !m.stabilizerSettingsApplyDone {
 				return m, nil
 			}
@@ -513,23 +556,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.current == screenStabilizerVersionConfirm {
-				// Cancel back to the input screen, not all the way out to
-				// Update - the operator likely just wants to retype the
-				// version, same one-step-back reasoning as
-				// screenInstallConfirm/screenUpdateConfirm elsewhere.
-				m.current = screenStabilizerVersionInput
-				m.stabilizerVersionInput.CursorEnd()
-				m.stabilizerVersionInput.Focus()
+				// Cancel back to Update, not a free-text input screen to
+				// step back to - the version came from a picker (see the
+				// versions.aileron special-casing above), so there's
+				// nothing to retype.
+				m.current = screenUpdateVersions
 				m.stabilizerVersionConfirmInput.SetValue("")
 				m.stabilizerVersionConfirmInput.Blur()
 				m.stabilizerVersionConfirmError = ""
-				return m, nil
-			}
-			if m.current == screenStabilizerVersionInput {
-				m.current = screenUpdateVersions
-				m.stabilizerVersionInput.SetValue("")
-				m.stabilizerVersionInput.Blur()
-				m.stabilizerVersionError = ""
 				return m, nil
 			}
 			if m.current == screenSettings && m.settingsPicking {
@@ -677,9 +711,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stabilizerSettingsApplyDone = false
 			m.stabilizerSettingsApplyFailed = false
 			m.stabilizerSettingsApplyCh = nil
-			m.stabilizerVersionInput.SetValue("")
-			m.stabilizerVersionInput.Blur()
-			m.stabilizerVersionError = ""
 			m.stabilizerVersionTarget = ""
 			m.stabilizerVersionPatch = nil
 			m.stabilizerVersionClearedPins = nil
@@ -692,6 +723,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stabilizerVersionApplyDone = false
 			m.stabilizerVersionApplyFailed = false
 			m.stabilizerVersionApplyCh = nil
+			m.osUpdateStepIdx = 0
+			m.osUpdateLogs = nil
+			m.osUpdateDone = false
+			m.osUpdateFailed = false
+			m.osUpdateCh = nil
 			return m, tea.Batch(fetchServiceStatusesCmd(m.cfg), fetchHostStatsCmd(m.cfg, m.prevCPUSample))
 
 		case tea.KeyUp:
@@ -1104,6 +1140,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.updateVersionsPicking {
 					field := rows[m.updateVersionsCursor].field
 					chosen := m.updateVersionsPickOptions[m.updateVersionsPickCursor]
+					if field.key == "versions.aileron" && m.cachedStabilizerDetected {
+						if m.stabilizerSettingsState == nil {
+							m.settingsError = "still loading stabilizer state - try again in a moment"
+							return m, nil
+						}
+						target := strings.TrimPrefix(chosen, "v")
+						patch, cleared, err := planStabilizerVersionUpgrade(m.stabilizerSettingsState, target)
+						if err != nil {
+							m.updateVersionsPicking = false
+							m.settingsError = err.Error()
+							return m, nil
+						}
+						m.updateVersionsPicking = false
+						m.stabilizerVersionTarget = target
+						m.stabilizerVersionPatch = patch
+						m.stabilizerVersionClearedPins = cleared
+						m.current = screenStabilizerVersionConfirm
+						m.stabilizerVersionConfirmInput.SetValue("")
+						m.stabilizerVersionConfirmInput.Focus()
+						m.stabilizerVersionConfirmError = ""
+						m.settingsError = ""
+						return m, nil
+					}
 					if err := field.set(&m.cfg, chosen); err != nil {
 						m.settingsError = err.Error()
 						return m, nil
@@ -1146,24 +1205,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.updateCheckErr = ""
 					return m, checkForUpdateCmd()
 				}
+				if row.isOSUpdate {
+					// No separate check/confirm step - the user asked for
+					// this to just apply `rpm-ostree upgrade
+					// --bypass-driver` directly (osUpdateSteps, os_update.go).
+					// Unlike a k3s/kubevirt/etc. version bump this can't
+					// silently move to something unexpected: rpm-ostree only
+					// ever moves to the single latest deployment on the
+					// configured stream, and doesn't even take effect until
+					// a reboot, so there's nothing meaningful to confirm.
+					m.current = screenOSUpdate
+					m.osUpdateStepIdx = 0
+					m.osUpdateLogs = nil
+					m.osUpdateDone = false
+					m.osUpdateFailed = false
+					ch, cmd := launchStep(osUpdateSteps[0], m.cfg)
+					m.osUpdateCh = ch
+					return m, cmd
+				}
 				field := row.field
 				versions := versionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected}
 				if field.key == "versions.aileron" && versions.StabilizerDetected {
 					// Once stabilizer manages Aileron, "Aileron version" means
 					// the stabilizer chart's own spec.version (Aileron ships
 					// as its subchart, pinned to whatever version the chart
-					// release bundles) - a free-text guarded change
-					// (stabilizer_upgrade.go), not the plain
-					// fetch-a-list-and-pick flow every other component-version
-					// row uses, and no longer a hard, uneditable lock.
+					// release bundles, in lockstep with aileron's own release
+					// tags - see stabilizerVersionPickerOptions). Same
+					// fetch-a-list-and-pick shape as every other
+					// component-version row, just validated through the
+					// guarded flow (stabilizer_upgrade.go) instead of a plain
+					// field.set, and no longer a hard, uneditable lock.
 					if m.stabilizerSettingsState == nil {
 						m.settingsError = "still loading stabilizer state - try again in a moment"
 						return m, nil
 					}
-					m.current = screenStabilizerVersionInput
-					m.stabilizerVersionInput.SetValue("")
-					m.stabilizerVersionInput.Focus()
-					m.stabilizerVersionError = ""
+					options := stabilizerVersionPickerOptions(m.cachedAileronVersions, m.stabilizerSettingsState.declaredVersion)
+					if len(options) == 0 {
+						m.settingsError = "no eligible releases fetched yet - try again in a moment"
+						return m, nil // nothing to pick yet - e.g. still fetching
+					}
+					m.updateVersionsPickOptions = options
+					m.updateVersionsPickCursor = 0
+					m.updateVersionsPickScroll = clampScroll(0, m.updateVersionsPickCursor, m.settingsVisibleRows())
+					m.updateVersionsPicking = true
 					m.settingsError = ""
 					return m, nil
 				}
@@ -1323,27 +1407,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, cmd
 				}
 				m.stabilizerSettingsConfirmError = `Type "yes" to proceed, or Esc to cancel.`
-			} else if m.current == screenStabilizerVersionInput {
-				if m.stabilizerSettingsState == nil {
-					m.stabilizerVersionError = "still loading stabilizer state - try again in a moment"
-					return m, nil
-				}
-				target := strings.TrimSpace(m.stabilizerVersionInput.Value())
-				patch, cleared, err := planStabilizerVersionUpgrade(m.stabilizerSettingsState, target)
-				if err != nil {
-					m.stabilizerVersionError = err.Error()
-					return m, nil
-				}
-				m.stabilizerVersionTarget = target
-				m.stabilizerVersionPatch = patch
-				m.stabilizerVersionClearedPins = cleared
-				m.stabilizerVersionInput.Blur()
-				m.current = screenStabilizerVersionConfirm
-				m.stabilizerVersionConfirmInput.SetValue("")
-				m.stabilizerVersionConfirmInput.Focus()
-				m.stabilizerVersionConfirmError = ""
-				m.stabilizerVersionError = ""
-				return m, nil
 			} else if m.current == screenStabilizerVersionConfirm {
 				if strings.EqualFold(strings.TrimSpace(m.stabilizerVersionConfirmInput.Value()), "yes") {
 					if m.stabilizerSettingsState == nil {
@@ -1436,12 +1499,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.current == screenStabilizerSettingsConfirm {
 		var cmd tea.Cmd
 		m.stabilizerSettingsConfirmInput, cmd = m.stabilizerSettingsConfirmInput.Update(msg)
-		return m, cmd
-	}
-
-	if m.current == screenStabilizerVersionInput {
-		var cmd tea.Cmd
-		m.stabilizerVersionInput, cmd = m.stabilizerVersionInput.Update(msg)
 		return m, cmd
 	}
 

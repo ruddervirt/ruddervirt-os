@@ -133,7 +133,7 @@ func TestAileronVersionOnceStabilizerDetected(t *testing.T) {
 		m := model{current: screenUpdateVersions, updateVersionsCursor: cursor, cfg: defaultConfig()}
 		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		got := next.(model)
-		if got.current == screenStabilizerVersionInput {
+		if got.current == screenStabilizerVersionConfirm {
 			t.Fatal("must not route into the guarded version flow before stabilizer is detected")
 		}
 	})
@@ -150,61 +150,95 @@ func TestAileronVersionOnceStabilizerDetected(t *testing.T) {
 		}
 	})
 
-	t.Run("detected and state loaded: Enter opens the version-input screen", func(t *testing.T) {
+	t.Run("detected, state loaded, but nothing fetched yet: Enter is a no-op with an error", func(t *testing.T) {
 		m := model{
 			current: screenUpdateVersions, updateVersionsCursor: cursor, cfg: defaultConfig(),
 			cachedStabilizerDetected: true,
 			stabilizerSettingsState:  &stabilizerSettingsState{declaredVersion: "1.2.3", selfUpgradeEnabled: true},
-			stabilizerVersionInput:   textinput.New(),
 		}
 		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		got := next.(model)
-		if got.current != screenStabilizerVersionInput {
-			t.Fatalf("current = %v, want screenStabilizerVersionInput", got.current)
+		if got.updateVersionsPicking {
+			t.Fatal("must not open the picker with no fetched releases")
 		}
-		if !got.stabilizerVersionInput.Focused() {
-			t.Error("stabilizerVersionInput should be focused")
+		if got.settingsError == "" {
+			t.Error("want an explanatory error")
 		}
 	})
 
-	t.Run("input screen: a valid target version advances to confirm with the plan attached", func(t *testing.T) {
+	t.Run("detected, state loaded, releases fetched: Enter opens a picker of eligible releases", func(t *testing.T) {
 		m := model{
-			current:                       screenStabilizerVersionInput,
+			current: screenUpdateVersions, updateVersionsCursor: cursor, cfg: defaultConfig(),
+			cachedStabilizerDetected: true,
+			cachedAileronVersions:    []string{"v1.4.0", "v1.3.0", "v1.2.3", "v1.2.0"},
+			stabilizerSettingsState:  &stabilizerSettingsState{declaredVersion: "1.2.3", selfUpgradeEnabled: true},
+		}
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		got := next.(model)
+		if !got.updateVersionsPicking {
+			t.Fatal("want the picker to open")
+		}
+		want := []string{"v1.4.0", "v1.3.0", "v1.2.3"} // v1.2.0 is below the declared 1.2.3 - excluded
+		if len(got.updateVersionsPickOptions) != len(want) {
+			t.Fatalf("pick options = %v, want %v", got.updateVersionsPickOptions, want)
+		}
+		for i, w := range want {
+			if got.updateVersionsPickOptions[i] != w {
+				t.Errorf("pick option[%d] = %q, want %q", i, got.updateVersionsPickOptions[i], w)
+			}
+		}
+	})
+
+	t.Run("picker: choosing a release advances to confirm with the plan attached, v-prefix stripped", func(t *testing.T) {
+		m := model{
+			current:                       screenUpdateVersions,
+			updateVersionsCursor:          cursor,
 			cfg:                           defaultConfig(),
+			cachedStabilizerDetected:      true,
+			updateVersionsPicking:         true,
+			updateVersionsPickOptions:     []string{"v1.3.0", "v1.2.3"},
+			updateVersionsPickCursor:      0,
 			stabilizerSettingsState:       &stabilizerSettingsState{declaredVersion: "1.2.3", selfUpgradeEnabled: true, declaredValues: map[string]any{}},
 			stabilizerVersionConfirmInput: textinput.New(),
 		}
-		m.stabilizerVersionInput = textinput.New()
-		m.stabilizerVersionInput.SetValue("1.3.0")
 
 		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		got := next.(model)
 		if got.current != screenStabilizerVersionConfirm {
 			t.Fatalf("current = %v, want screenStabilizerVersionConfirm", got.current)
 		}
+		if got.updateVersionsPicking {
+			t.Error("picker should be closed")
+		}
 		if got.stabilizerVersionTarget != "1.3.0" {
-			t.Errorf("stabilizerVersionTarget = %q, want 1.3.0", got.stabilizerVersionTarget)
+			t.Errorf("stabilizerVersionTarget = %q, want 1.3.0 (v-prefix stripped)", got.stabilizerVersionTarget)
 		}
 		if len(got.stabilizerVersionPatch) == 0 {
 			t.Error("want a computed patch carried into the confirm screen")
 		}
 	})
 
-	t.Run("input screen: an invalid/refused version stays on the input screen with an error", func(t *testing.T) {
+	t.Run("picker: a refused choice exits the picker with an error, not a crash", func(t *testing.T) {
 		m := model{
-			current:                 screenStabilizerVersionInput,
-			cfg:                     defaultConfig(),
-			stabilizerSettingsState: &stabilizerSettingsState{declaredVersion: "1.2.3", selfUpgradeEnabled: false, declaredValues: map[string]any{}},
+			current:                   screenUpdateVersions,
+			updateVersionsCursor:      cursor,
+			cfg:                       defaultConfig(),
+			cachedStabilizerDetected:  true,
+			updateVersionsPicking:     true,
+			updateVersionsPickOptions: []string{"v1.3.0"},
+			updateVersionsPickCursor:  0,
+			stabilizerSettingsState:   &stabilizerSettingsState{declaredVersion: "1.2.3", selfUpgradeEnabled: false, declaredValues: map[string]any{}},
 		}
-		m.stabilizerVersionInput = textinput.New()
-		m.stabilizerVersionInput.SetValue("1.3.0")
 
 		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		got := next.(model)
-		if got.current != screenStabilizerVersionInput {
-			t.Fatalf("current = %v, want to stay on screenStabilizerVersionInput", got.current)
+		if got.updateVersionsPicking {
+			t.Error("picker should be closed on refusal")
 		}
-		if got.stabilizerVersionError == "" {
+		if got.current != screenUpdateVersions {
+			t.Fatalf("current = %v, want to stay on screenUpdateVersions", got.current)
+		}
+		if got.settingsError == "" {
 			t.Error("want an error explaining the refusal (self-upgrade disabled)")
 		}
 	})
@@ -254,16 +288,19 @@ func TestVersionFieldsNotInSettingsRows(t *testing.T) {
 	}
 
 	rows := updateVersionsRows()
-	if len(rows) != 5 { // ruddervirt-setup + 4 version fields
-		t.Fatalf("len(updateVersionsRows()) = %d, want 5", len(rows))
+	if len(rows) != 6 { // ruddervirt-setup + OS + 4 version fields
+		t.Fatalf("len(updateVersionsRows()) = %d, want 6", len(rows))
 	}
 	if !rows[0].isSelfUpdate {
 		t.Fatalf("updateVersionsRows()[0].isSelfUpdate = false, want true")
 	}
+	if !rows[1].isOSUpdate {
+		t.Fatalf("updateVersionsRows()[1].isOSUpdate = false, want true")
+	}
 	wantKeys := []string{"versions.k3s", "versions.kubevirt", "versions.cdi", "versions.aileron"}
 	for i, key := range wantKeys {
-		if got := rows[i+1].field.key; got != key {
-			t.Errorf("updateVersionsRows()[%d].field.key = %q, want %q", i+1, got, key)
+		if got := rows[i+2].field.key; got != key {
+			t.Errorf("updateVersionsRows()[%d].field.key = %q, want %q", i+2, got, key)
 		}
 	}
 }

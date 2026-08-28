@@ -217,7 +217,7 @@ var installSteps = []installStep{
 			}
 			ch <- stepOutputMsg(fmt.Sprintf("Installing: %s", strings.Join(missing, ", ")))
 			args := append([]string{"install", "--apply-live", "--allow-inactive", "--assumeyes"}, missing...)
-			ch <- stepDoneMsg{label: label, err: runStreamed(ch, "/usr/bin/rpm-ostree", args...)}
+			ch <- stepDoneMsg{label: label, err: runStreamed(ch, rpmOstreeBinPath, args...)}
 		},
 		plan: planInstallPackages,
 	},

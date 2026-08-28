@@ -131,7 +131,7 @@ func serviceStatusLine(statuses []serviceStatus) string {
 // their header/blank-line overhead isn't paid twice, leaving more room for
 // the menu below. Renders nothing until at least one of the two rows has
 // something to show.
-func renderHomeStatus(statuses []serviceStatus, hs hostStats, updatedAt time.Time) string {
+func renderHomeStatus(statuses []serviceStatus, hs hostStats, updatedAt time.Time, termWidth int) string {
 	svcLine := serviceStatusLine(statuses)
 	sysLine := hostStatsLine(hs)
 	if svcLine == "" && sysLine == "" {
@@ -144,10 +144,14 @@ func renderHomeStatus(statuses []serviceStatus, hs hostStats, updatedAt time.Tim
 	var b strings.Builder
 	b.WriteString(helpStyle.Render(header) + "\n")
 	if svcLine != "" {
-		b.WriteString("  " + svcLine + "\n")
+		// wrapIndented, not a plain "  "+svcLine - on a narrow terminal
+		// (many services, or a small SSH window) this line can easily run
+		// past the edge and get cut off/wrap raggedly instead of aligning
+		// under the indent.
+		b.WriteString(wrapIndented(svcLine, 2, termWidth) + "\n")
 	}
 	if sysLine != "" {
-		b.WriteString("  " + sysLine + "\n")
+		b.WriteString(wrapIndented(sysLine, 2, termWidth) + "\n")
 	}
 	b.WriteString("\n")
 	return b.String()

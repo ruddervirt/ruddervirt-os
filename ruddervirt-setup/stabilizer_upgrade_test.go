@@ -151,6 +151,44 @@ func TestClassifyStabilizerImagePins(t *testing.T) {
 	})
 }
 
+func TestStabilizerVersionPickerOptions(t *testing.T) {
+	tags := []string{"v1.4.0", "v1.3.0", "v1.2.3", "v1.2.0", "v0.9.0"}
+
+	t.Run("filters to at-or-above the current declared version, preserving order", func(t *testing.T) {
+		got := stabilizerVersionPickerOptions(tags, "1.2.3")
+		want := []string{"v1.4.0", "v1.3.0", "v1.2.3"}
+		if len(got) != len(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("got[%d] = %q, want %q", i, got[i], want[i])
+			}
+		}
+	})
+
+	t.Run("empty current version offers everything (nothing to compare against)", func(t *testing.T) {
+		got := stabilizerVersionPickerOptions(tags, "")
+		if len(got) != len(tags) {
+			t.Errorf("got %v, want all %d tags", got, len(tags))
+		}
+	})
+
+	t.Run("an unparseable current version is treated as no floor (defensive, shouldn't happen in practice)", func(t *testing.T) {
+		got := stabilizerVersionPickerOptions(tags, "not-semver")
+		if len(got) != len(tags) {
+			t.Errorf("got %v, want all %d tags (comparison skipped)", got, len(tags))
+		}
+	})
+
+	t.Run("no eligible tags returns nil, not a panic", func(t *testing.T) {
+		got := stabilizerVersionPickerOptions(tags, "9.9.9")
+		if len(got) != 0 {
+			t.Errorf("got %v, want none", got)
+		}
+	})
+}
+
 func TestPreflightStabilizerVersionUpgrade(t *testing.T) {
 	base := func() *stabilizerSettingsState {
 		return &stabilizerSettingsState{

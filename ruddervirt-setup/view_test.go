@@ -2,7 +2,10 @@
 
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNetworkSetupLabel(t *testing.T) {
 	if got := networkSetupLabel(false); got != "▶ Local physical network setup" {
@@ -187,6 +190,117 @@ func TestSettingsRows(t *testing.T) {
 	})
 }
 
+// TestUpdateScreenUpgradeIcon confirms the Update screen marks rows that
+// have a newer version available (self-update, OS, and an ordinary
+// settingField row like k3s) and doesn't mark rows that don't.
+func TestUpdateScreenUpgradeIcon(t *testing.T) {
+	m := model{
+		cfg:                       Config{Versions: VersionsConfig{K3s: "v1.30.0", KubeVirt: "v1.2.0", CDI: "v1.58.0", Aileron: "v1.0.0"}},
+		termWidth:                 120,
+		termHeight:                40,
+		current:                   screenUpdateVersions,
+		cachedK3sVersions:         []string{"v1.31.0", "v1.30.0"},
+		cachedSelfUpdateAvailable: true,
+		cachedOSUpdateAvailable:   false,
+	}
+	out := m.View()
+	lines := strings.Split(out, "\n")
+
+	findRowLine := func(label string) string {
+		for _, l := range lines {
+			if strings.Contains(l, label) {
+				return l
+			}
+		}
+		t.Fatalf("row %q not found in rendered output:\n%s", label, out)
+		return ""
+	}
+
+	if !strings.Contains(findRowLine("ruddervirt-setup"), "↑") {
+		t.Error("ruddervirt-setup row should show the upgrade icon (cachedSelfUpdateAvailable=true)")
+	}
+	if strings.Contains(findRowLine("Operating system"), "↑") {
+		t.Error("Operating system row should NOT show the upgrade icon (cachedOSUpdateAvailable=false)")
+	}
+	if !strings.Contains(findRowLine("k3s version"), "↑") {
+		t.Error("k3s version row should show the upgrade icon (v1.31.0 > v1.30.0 available)")
+	}
+}
+
+// TestOSUpdateScreenRenders is a smoke test for screenOSUpdate's running/
+// done/failed branches, same style as TestStabilizerScreensRender below.
+func TestOSUpdateScreenRenders(t *testing.T) {
+	m := model{termWidth: 80, termHeight: 24, current: screenOSUpdate}
+	render := func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("View() panicked: %v", r)
+			}
+		}()
+		_ = m.View()
+	}
+	render()
+	m.osUpdateDone = true
+	render()
+	m.osUpdateDone = false
+	m.osUpdateFailed = true
+	render()
+}
+
+// TestStabilizerSettingDescriptionShown confirms both places a stabilizer/
+// aileron setting is picked/edited (the bool picker overlay and the
+// int/quantity free-text edit prompt) show its summary from
+// stabilizer-settings.yaml, so an operator isn't guessing what a setting
+// does from its key name alone.
+func TestStabilizerSettingDescriptionShown(t *testing.T) {
+	boolDef, ok := stabilizerSettingByKey("aileron_ui_enabled")
+	if !ok {
+		t.Fatal("aileron_ui_enabled not found in stabilizerSettingDefs")
+	}
+	intDef, ok := stabilizerSettingByKey("build_max_cpu")
+	if !ok {
+		t.Fatal("build_max_cpu not found in stabilizerSettingDefs")
+	}
+
+	t.Run("picker overlay shows the summary", func(t *testing.T) {
+		m := model{
+			cfg: Config{Network: NetworkConfig{Addressing: "dhcp"}}, termWidth: 100, termHeight: 30,
+			current: screenSettings, cachedStabilizerDetected: true,
+			settingsPicking: true, settingsPickOptions: []string{"true", "false"},
+		}
+		rows := m.settingsRows()
+		for i, r := range rows {
+			if r.stabilizerDef != nil && r.stabilizerDef.Key == "aileron_ui_enabled" {
+				m.settingsCursor = i
+				break
+			}
+		}
+		out := m.View()
+		if !strings.Contains(out, boolDef.Summary) {
+			t.Errorf("picker overlay doesn't show %q's summary %q:\n%s", boolDef.Key, boolDef.Summary, out)
+		}
+	})
+
+	t.Run("edit prompt shows the summary", func(t *testing.T) {
+		m := model{
+			cfg: Config{Network: NetworkConfig{Addressing: "dhcp"}}, termWidth: 100, termHeight: 30,
+			current: screenSettings, cachedStabilizerDetected: true, settingsShowAdvanced: true,
+			settingsEditing: true,
+		}
+		rows := m.settingsRows()
+		for i, r := range rows {
+			if r.stabilizerDef != nil && r.stabilizerDef.Key == "build_max_cpu" {
+				m.settingsCursor = i
+				break
+			}
+		}
+		out := m.View()
+		if !strings.Contains(out, intDef.Summary) {
+			t.Errorf("edit prompt doesn't show %q's summary %q:\n%s", intDef.Key, intDef.Summary, out)
+		}
+	})
+}
+
 func hasStabilizerActionRow(rows []settingsRow) bool {
 	for _, r := range rows {
 		if r.isStabilizerAction {
@@ -234,7 +348,7 @@ func TestStabilizerScreensRender(t *testing.T) {
 		screenStabilizerNatsPassword, screenStabilizerNebula, screenStabilizerPlanning,
 		screenStabilizerConfirm, screenStabilizerAdopt,
 		screenStabilizerSettingsConfirm, screenStabilizerSettingsApply,
-		screenStabilizerVersionInput, screenStabilizerVersionConfirm, screenStabilizerVersionApply,
+		screenStabilizerVersionConfirm, screenStabilizerVersionApply,
 	}
 	render := func(s screen) {
 		m.current = s

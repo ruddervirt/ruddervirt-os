@@ -206,6 +206,36 @@ func classifyStabilizerImagePins(effective map[string]any, currentVersion string
 	return cleared, nil
 }
 
+// stabilizerVersionPickerOptions turns fetchAileronVersions' result (GitHub
+// release tags for ruddervirt/aileron, "v"-prefixed, newest first) into the
+// Update screen's picker options for the guarded stabilizer chart-version
+// change. Aileron's release tags and the stabilizer chart's own version are
+// kept in strict lockstep by that project's CI (the stabilizer chart bundles
+// aileron as a subchart pinned to the matching version, and both repos'
+// releases are cut together) - so aileron's own release list is exactly the
+// set of valid stabilizer spec.version targets, with no separate stabilizer
+// release feed to fetch. Filtered to versions at or above the currently
+// declared one (never offer a downgrade from here, same convention as
+// versions.k3s/versions.aileron's own options funcs), and displayed
+// "v"-prefixed for consistency with every other version list in this app;
+// the "v" is stripped only when actually building the patch (see
+// planStabilizerVersionUpgrade, which is given the already-stripped value).
+func stabilizerVersionPickerOptions(aileronTags []string, currentVersion string) []string {
+	var out []string
+	for _, tag := range aileronTags {
+		bare := strings.TrimPrefix(tag, "v")
+		if currentVersion != "" {
+			cur, curOK := parseStabilizerChartVersion(currentVersion)
+			v, vOK := parseStabilizerChartVersion(bare)
+			if curOK && vOK && compareStabilizerChartVersion(v, cur) < 0 {
+				continue
+			}
+		}
+		out = append(out, tag)
+	}
+	return out
+}
+
 // preflightStabilizerVersionUpgrade ports the parts of preflight this
 // box-side tool can check without a live NATS round-trip: self-upgrade must
 // be enabled on this cluster, no release operation may already be in

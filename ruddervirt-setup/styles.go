@@ -118,6 +118,65 @@ func replaceAllRunes(s, runes string, style lipgloss.Style) string {
 	return string(b)
 }
 
+// colorUpdateIcon re-colors just the first rune of s (the Update screen's
+// leading ↑/space upgrade-available indicator, see updateRowIconPrefix in
+// view.go) with warningStyle - same "recolor the first rune of an
+// already-built, already-fitCell'd label" shape as colorToggleArrow above,
+// just a different color (amber "worth a look" rather than the toggle's
+// accent purple) and a different trigger (an upgrade being available rather
+// than a row being expandable).
+func colorUpdateIcon(s string) string {
+	r := []rune(s)
+	if len(r) == 0 {
+		return s
+	}
+	return warningStyle.Render(string(r[0])) + string(r[1:])
+}
+
+// wrapHelp renders text in helpStyle, word-wrapped to width (lipgloss wraps
+// automatically once a style has a Width set) - used for the stabilizer/
+// aileron setting descriptions (summary/detail, stabilizer-settings.yaml)
+// shown on the picker/edit-value screens, since detail in particular can run
+// to a couple of sentences and this app has no other wrapping helper.
+// termWidth <= 0 (not yet known, e.g. before the first WindowSizeMsg) falls
+// back to a reasonable 80-column default, same as every other width
+// calculation in view.go.
+func wrapHelp(text string, termWidth int) string {
+	if termWidth <= 0 {
+		termWidth = 80
+	}
+	width := termWidth - 2
+	if width < 20 {
+		width = 20
+	}
+	return helpStyle.Width(width).Render(text)
+}
+
+// wrapIndented word-wraps text to termWidth, left-padding every resulting
+// line (including wrapped continuation lines, not just the first) by
+// indent spaces - used for the home screen's auto-updating Status block
+// (renderHomeStatus, status.go), whose service/system summary lines are
+// simple space-joined strings with no width awareness of their own, so on a
+// narrow terminal they used to run off the edge instead of wrapping.
+// Deliberately width-only, no color: text may already carry its own
+// per-segment ANSI styling (stateBullet's colored "●", styleUsagePercent's
+// colored percentages) which lipgloss's wrapping is ANSI-aware of and
+// preserves, but a style setting its own Foreground here would override it.
+func wrapIndented(text string, indent, termWidth int) string {
+	if termWidth <= 0 {
+		termWidth = 80
+	}
+	// Width is the OUTER width (lipgloss subtracts the style's own padding
+	// when wrapping content, same box-model convention renderApplyBar's
+	// bordered boxes elsewhere in this file already rely on) - not the
+	// content width, so indent is NOT subtracted again here.
+	width := termWidth - 1
+	if width < indent+20 {
+		width = indent + 20
+	}
+	return lipgloss.NewStyle().Width(width).PaddingLeft(indent).Render(text)
+}
+
 // stateBullet is the colored "●" marker shown next to a service's name -
 // same color-coding as styleState, split out so callers can put the dot
 // ahead of a fixed-width, left-aligned name column.

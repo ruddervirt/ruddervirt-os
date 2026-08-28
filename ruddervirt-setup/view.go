@@ -185,16 +185,17 @@ func (m model) settingsScrollCursor() int {
 // version fields moved out of Settings (settingField.updateScreen).
 type updateVersionsRow struct {
 	isSelfUpdate bool
+	isOSUpdate   bool
 	field        settingField
 }
 
-// updateVersionsRows lists the Update screen's rows: ruddervirt-setup
-// first, then every settingField tagged updateScreen, in settingFields'
-// order. Apply isn't one of these rows - same fixed-footer treatment as
-// Settings' Apply (see settingsRows), one cursor position past the last
-// row here.
+// updateVersionsRows lists the Update screen's rows: ruddervirt-setup and
+// the operating system first, then every settingField tagged updateScreen,
+// in settingFields' order. Apply isn't one of these rows - same
+// fixed-footer treatment as Settings' Apply (see settingsRows), one cursor
+// position past the last row here.
 func updateVersionsRows() []updateVersionsRow {
-	rows := []updateVersionsRow{{isSelfUpdate: true}}
+	rows := []updateVersionsRow{{isSelfUpdate: true}, {isOSUpdate: true}}
 	for _, f := range settingFields {
 		if f.updateScreen {
 			rows = append(rows, updateVersionsRow{field: f})
@@ -520,19 +521,6 @@ func (m model) View() string {
 		}
 		return s
 
-	case screenStabilizerVersionInput:
-		s := "\n" + titleStyle.Render("Aileron / Stabilizer Version") + "\n\n"
-		s += "Aileron ships as stabilizer's own subchart, pinned to whatever\n"
-		s += "version that chart release bundles - so changing it here means\n"
-		s += "changing the stabilizer chart's own version.\n\n"
-		s += "Enter the value provided by ruddervirt for the target version:\n"
-		s += fmt.Sprintf("Version:  %s\n", m.stabilizerVersionInput.View())
-		if m.stabilizerVersionError != "" {
-			s += fmt.Sprintf("\n%s\n", errorStyle.Render("Error: "+m.stabilizerVersionError))
-		}
-		s += "\n" + hintBar([2]string{"Enter", "continue"}, [2]string{"Esc", "cancel"}) + "\n"
-		return s
-
 	case screenStabilizerVersionConfirm:
 		s := "\n" + titleStyle.Render("Confirm Version Change") + "\n\n"
 		current := "(unset)"
@@ -606,6 +594,25 @@ func (m model) View() string {
 		}
 		return s
 
+	case screenOSUpdate:
+		s := "\n" + titleStyle.Render("Updating operating system...") + "\n\n"
+		visible := m.installVisibleLogLines()
+		lines := m.osUpdateLogs
+		if len(lines) > visible {
+			lines = lines[len(lines)-visible:]
+		}
+		for _, line := range lines {
+			s += line + "\n"
+		}
+		if m.osUpdateDone {
+			s += "\n" + successStyle.Render("Staged. Reboot to switch into the new deployment.") + " " + helpStyle.Render("Press Esc to return to Update.") + "\n"
+		} else if m.osUpdateFailed {
+			s += "\n" + errorStyle.Render("Update failed.") + " " + helpStyle.Render("Press Esc to return to Update.") + "\n"
+		} else if m.osUpdateStepIdx < len(osUpdateSteps) {
+			s += "\n" + helpStyle.Render(fmt.Sprintf("Running: %s...", osUpdateSteps[m.osUpdateStepIdx].label)) + "\n"
+		}
+		return s
+
 	case screenUpdateVersions:
 		if m.updateVersionsPicking {
 			rows := updateVersionsRows()
@@ -673,16 +680,87 @@ func (m model) View() string {
 		rows := updateVersionsRows()
 		total := len(rows)
 
-		rowLabel := func(r updateVersionsRow) string {
-			if r.isSelfUpdate {
-				return "ruddervirt-setup"
-			}
-			return r.field.label
-		}
 		versions := versionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected}
+
+		// rowHasUpgrade reports whether r has something newer than what's
+		// currently configured/running to offer - generalized across every
+		// settingField row via its own options func (which each already
+		// filters to "no downgrades from current", so "any option isn't the
+		// current value" means "an upgrade exists") rather than duplicating
+		// each component's own version comparator here; the two rows that
+		// aren't settingFields (ruddervirt-setup, the OS) and the
+		// stabilizer-managed Aileron case (whose options come from a
+		// different source entirely - see stabilizerVersionPickerOptions)
+		// are special-cased instead.
+		rowHasUpgrade := func(r updateVersionsRow) bool {
+			if r.isSelfUpdate {
+				return m.cachedSelfUpdateAvailable
+			}
+			if r.isOSUpdate {
+				return m.cachedOSUpdateAvailable
+			}
+			if r.field.key == "versions.aileron" && versions.StabilizerDetected {
+				if m.stabilizerSettingsState == nil {
+					return false
+				}
+				for _, o := range stabilizerVersionPickerOptions(m.cachedAileronVersions, m.stabilizerSettingsState.declaredVersion) {
+					if strings.TrimPrefix(o, "v") != m.stabilizerSettingsState.declaredVersion {
+						return true
+					}
+				}
+				return false
+			}
+			if r.field.locked != nil {
+				if locked, _ := r.field.locked(&m.cfg, versions); locked {
+					return false
+				}
+			}
+			if r.field.options == nil {
+				return false
+			}
+			current := r.field.get(&m.cfg)
+			for _, o := range r.field.options(&m.cfg, versions) {
+				if o != current {
+					return true
+				}
+			}
+			return false
+		}
+
+		// updateRowIconPrefix is a fixed-width (2 visual columns) plain-text
+		// prefix baked into the label BEFORE fitCell/width computation, so
+		// alignment never shifts depending on which rows happen to have an
+		// upgrade - color is applied after, same "style only after fitCell"
+		// rule the rest of this table already follows (see colorToggleArrow
+		// below).
+		updateRowIconPrefix := func(r updateVersionsRow) string {
+			if rowHasUpgrade(r) {
+				return "↑ "
+			}
+			return "  "
+		}
+
+		rowLabel := func(r updateVersionsRow) string {
+			label := ""
+			switch {
+			case r.isSelfUpdate:
+				label = "ruddervirt-setup"
+			case r.isOSUpdate:
+				label = "Operating system"
+			default:
+				label = r.field.label
+			}
+			return updateRowIconPrefix(r) + label
+		}
 		rowValue := func(r updateVersionsRow) string {
 			if r.isSelfUpdate {
 				return version
+			}
+			if r.isOSUpdate {
+				if v := currentOSVersion(); v != "" {
+					return v
+				}
+				return "-"
 			}
 			if r.field.key == "versions.aileron" && versions.StabilizerDetected {
 				// Once stabilizer manages it, this shows the chart version
@@ -766,6 +844,8 @@ func (m model) View() string {
 			if selected {
 				label = selectedStyle.Render(label)
 				value = selectedStyle.Render(value)
+			} else if rowHasUpgrade(r) {
+				label = colorUpdateIcon(label)
 			}
 			s += fmt.Sprintf("%s%s%s %s %s %s %s\n", colorBorders("│"), cursorArrow(selected), colorBorders("│"), label, colorBorders("│"), value, colorBorders("│"))
 		}
@@ -774,6 +854,7 @@ func (m model) View() string {
 		if end < total {
 			s += helpStyle.Render(fmt.Sprintf("  ↓ %d more below", total-end)) + "\n"
 		}
+		s += helpStyle.Render("  ↑ marks an available upgrade") + "\n"
 
 		// Apply upgrades: same fixed-footer treatment as Settings' Apply
 		// (see settingsRows) - pushes whatever versions are picked above
@@ -818,6 +899,18 @@ func (m model) View() string {
 			bottomBorder := "╰" + strings.Repeat("─", width) + "╯"
 
 			s := "\n" + titleStyle.Render("Settings") + fmt.Sprintf("\n\nSelect %s:\n\n", pickLabel)
+			if row.stabilizerDef != nil {
+				// Stabilizer/Aileron settings come from stabilizer-settings.yaml
+				// with no in-app documentation elsewhere in this screen (unlike
+				// a Config-backed field, whose label is usually self-explanatory)
+				// - show what it does before asking the operator to pick a
+				// value for it.
+				s += wrapHelp(row.stabilizerDef.Summary, m.termWidth) + "\n"
+				if row.stabilizerDef.Detail != "" && row.stabilizerDef.Detail != row.stabilizerDef.Summary {
+					s += wrapHelp(row.stabilizerDef.Detail, m.termWidth) + "\n"
+				}
+				s += "\n"
+			}
 
 			visible := m.settingsVisibleRows()
 			start := m.settingsPickScroll
@@ -976,6 +1069,10 @@ func (m model) View() string {
 				if def.hasUnlimited() {
 					hint = " (or \"unlimited\")"
 				}
+				s += "\n" + wrapHelp(def.Summary, m.termWidth) + "\n"
+				if def.Detail != "" && def.Detail != def.Summary {
+					s += wrapHelp(def.Detail, m.termWidth) + "\n"
+				}
 				s += fmt.Sprintf("\nEnter the value provided by ruddervirt for %s%s:\n  %s\n", def.Key, hint, m.settingsInput.View())
 			} else {
 				s += fmt.Sprintf("\nEditing %s:\n  %s\n", editRow.field.label, m.settingsInput.View())
@@ -1008,7 +1105,7 @@ func (m model) View() string {
 		if m.hostStatsUpdatedAt.After(statusUpdatedAt) {
 			statusUpdatedAt = m.hostStatsUpdatedAt
 		}
-		s += renderHomeStatus(m.serviceStatuses, m.hostStats, statusUpdatedAt)
+		s += renderHomeStatus(m.serviceStatuses, m.hostStats, statusUpdatedAt, m.termWidth)
 		// The ↑/↓ cursor only shows while input's empty - once the operator
 		// starts typing a number/word, that takes over on Enter (see the
 		// screenMenu case in app_update.go), so highlighting a cursor row
