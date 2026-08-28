@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -247,7 +248,14 @@ func TestStabilizerSettingsApplySteps(t *testing.T) {
 		}
 	})
 
-	t.Run("step 2 propagates a job failure without waiting on the deployment", func(t *testing.T) {
+	t.Run("step 2 never hard-fails on a job-completion-wait timeout - the patch already landed", func(t *testing.T) {
+		// Regression test: k3s's helm-controller replaces (rather than
+		// patches) the existing helm-install-<name> Job on a spec change,
+		// which can legitimately take a while (see
+		// waitForStabilizerRolloutStep's doc comment) - a timeout here used
+		// to be reported as a flat "Failed", even though the merge patch in
+		// step 1 had already committed. It must now be reported as done
+		// (with an informational log line), not failed.
 		var sawDeployWait bool
 		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
 			switch {
@@ -264,11 +272,26 @@ func TestStabilizerSettingsApplySteps(t *testing.T) {
 		ch := make(chan tea.Msg, 100)
 		withFakeRunner(r, func() { steps[1].run(Config{}, ch) })
 		done := lastStepDone(t, ch)
-		if done.err == nil {
-			t.Fatal("step 2 err = nil, want non-nil")
+		if done.err != nil {
+			t.Fatalf("step 2 err = %v, want nil (informational only, not a hard failure)", done.err)
 		}
 		if sawDeployWait {
-			t.Error("must not wait on the deployment after the job itself failed")
+			t.Error("must not wait on the deployment after the job-completion wait itself timed out")
+		}
+	})
+
+	t.Run("step 2 never hard-fails when the helm-install job never shows up in time", func(t *testing.T) {
+		// Same regression as above, but for the OTHER half of the replace
+		// dance: the job never even appears within the poll window.
+		step := waitForStabilizerRolloutStepWithPoll("kube-system", "stabilizer", 2, time.Millisecond)
+		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+			return commandOutcome{out: []byte("not found"), err: errFake} // job never appears
+		}}
+		ch := make(chan tea.Msg, 100)
+		withFakeRunner(r, func() { step.run(Config{}, ch) })
+		done := lastStepDone(t, ch)
+		if done.err != nil {
+			t.Fatalf("err = %v, want nil (informational only, not a hard failure)", done.err)
 		}
 	})
 }

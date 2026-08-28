@@ -164,26 +164,73 @@ func stabilizerSettingsApplySteps(helmChartNamespace, helmChartName string, def 
 				ch <- stepDoneMsg{label: label, err: err}
 			},
 		},
-		{
-			label: "Waiting for the rollout to complete",
-			run: func(cfg Config, ch chan<- tea.Msg) {
-				const label = "Waiting for the rollout to complete"
-				jobName := "job/helm-install-" + helmChartName
-				if err := pollUntil(ch, "Waiting for the stabilizer helm-install job", 60, 5*time.Second, func() bool {
-					return runPrivileged(kubectlBinPath, "-n", helmChartNamespace, "get", jobName).Run() == nil
-				}); err != nil {
-					ch <- stepDoneMsg{label: label, err: err}
-					return
-				}
-				if err := runStreamed(ch, kubectlBinPath, "-n", helmChartNamespace, "wait", "--for=condition=complete", jobName, "--timeout=600s"); err != nil {
-					ch <- stepDoneMsg{label: label, err: err}
-					return
-				}
-				ch <- stepOutputMsg("Waiting for stabilizer to become ready again...")
-				err := runStreamed(ch, kubectlBinPath, "-n", stabilizerNamespace, "wait",
-					"--for=condition=Available", "deployment.apps/stabilizer", "--timeout=600s")
-				ch <- stepDoneMsg{label: label, err: err}
-			},
+		waitForStabilizerRolloutStep(helmChartNamespace, helmChartName),
+	}
+}
+
+// waitForStabilizerRolloutStep is the second half of both
+// stabilizerSettingsApplySteps above and stabilizerVersionApplySteps
+// (stabilizer_version_tui.go): watch the patch already committed by step 1
+// actually roll out.
+//
+// k3s's helm-controller does NOT patch an existing helm-install-<name> Job
+// in place when spec.values/spec.version changes its pod template - Jobs
+// are immutable, so a change to either instead drives a multi-step replace:
+// suspend the old job, wait for the job controller to sync that suspension
+// AND for its pods to fully terminate, delete it, create a new (suspended)
+// job, then resume it only once ITS creation has synced back. Each of those
+// handoffs is its own controller reconcile, gated on requeue/backoff rather
+// than resolving inline - the whole dance can legitimately take several
+// minutes, with a real window where `kubectl get job/helm-install-<name>`
+// returns NotFound in between the old job's deletion and the new one's
+// creation (confirmed against k3s-io/helm-controller's own reconcile
+// source, pkg/controllers/chart/chart.go's reconcileJob).
+//
+// Because of that, this step is confirmation-only, never the source of
+// truth on success: the merge patch immediately before it has ALREADY
+// committed durably to the server by the time this runs. So nothing here
+// reports a hard failure on a timeout - a wait that runs out just means
+// "couldn't confirm in time", not "didn't happen", and is surfaced as an
+// informational log line instead of flipping the whole apply to Failed,
+// which is exactly the false negative this was written to stop: an
+// operator seeing "Failed" here for a change that, checked a few minutes
+// later, had actually landed.
+func waitForStabilizerRolloutStep(helmChartNamespace, helmChartName string) installStep {
+	// 180x5s = 15 minutes - generous on purpose (see the replace dance
+	// explained above), not the couple of minutes a naive "the controller
+	// should react quickly" assumption would use.
+	return waitForStabilizerRolloutStepWithPoll(helmChartNamespace, helmChartName, 180, 5*time.Second)
+}
+
+// waitForStabilizerRolloutStepWithPoll is waitForStabilizerRolloutStep with
+// the job-appearance poll's attempts/interval pulled out, purely so tests
+// can exercise the "job never showed up in time" branch in milliseconds
+// instead of the real 15-minute wait.
+func waitForStabilizerRolloutStepWithPoll(helmChartNamespace, helmChartName string, pollAttempts int, pollInterval time.Duration) installStep {
+	return installStep{
+		label: "Waiting for the rollout to complete",
+		run: func(cfg Config, ch chan<- tea.Msg) {
+			const label = "Waiting for the rollout to complete"
+			jobName := "job/helm-install-" + helmChartName
+
+			if err := pollUntil(ch, "Waiting for the stabilizer helm-install job", pollAttempts, pollInterval, func() bool {
+				return runPrivileged(kubectlBinPath, "-n", helmChartNamespace, "get", jobName).Run() == nil
+			}); err != nil {
+				ch <- stepOutputMsg("The change was already applied - the helm-install job just hasn't shown up within the wait window yet (k3s's helm-controller can take a while to replace an in-flight release job). Check Settings again in a few minutes.")
+				ch <- stepDoneMsg{label: label}
+				return
+			}
+			if err := runStreamed(ch, kubectlBinPath, "-n", helmChartNamespace, "wait", "--for=condition=complete", jobName, "--timeout=600s"); err != nil {
+				ch <- stepOutputMsg("The change was already applied - couldn't confirm the job finished within the wait window. Check Settings again in a few minutes.")
+				ch <- stepDoneMsg{label: label}
+				return
+			}
+			ch <- stepOutputMsg("Waiting for stabilizer to become ready again...")
+			if err := runStreamed(ch, kubectlBinPath, "-n", stabilizerNamespace, "wait",
+				"--for=condition=Available", "deployment.apps/stabilizer", "--timeout=600s"); err != nil {
+				ch <- stepOutputMsg("The change was already applied - couldn't confirm stabilizer became ready again within the wait window. Check Settings again in a few minutes.")
+			}
+			ch <- stepDoneMsg{label: label}
 		},
 	}
 }

@@ -82,7 +82,15 @@ func TestStabilizerVersionApplySteps(t *testing.T) {
 		}
 	})
 
-	t.Run("step 2 propagates a job failure without waiting on the deployment", func(t *testing.T) {
+	t.Run("step 2 never hard-fails on a job-completion-wait timeout - the patch already landed", func(t *testing.T) {
+		// Regression test: k3s's helm-controller replaces (rather than
+		// patches) the existing helm-install-<name> Job on a spec.version
+		// change, which can legitimately take a while (see
+		// waitForStabilizerRolloutStep's doc comment,
+		// stabilizer_settings_tui.go) - a timeout here used to be reported
+		// as a flat "Failed", even though the merge patch in step 1 had
+		// already committed. It must now be reported as done (with an
+		// informational log line), not failed.
 		var sawDeployWait bool
 		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
 			switch {
@@ -99,11 +107,11 @@ func TestStabilizerVersionApplySteps(t *testing.T) {
 		ch := make(chan tea.Msg, 100)
 		withFakeRunner(r, func() { steps[1].run(Config{}, ch) })
 		done := lastStepDone(t, ch)
-		if done.err == nil {
-			t.Fatal("step 2 err = nil, want non-nil")
+		if done.err != nil {
+			t.Fatalf("step 2 err = %v, want nil (informational only, not a hard failure)", done.err)
 		}
 		if sawDeployWait {
-			t.Error("must not wait on the deployment after the job itself failed")
+			t.Error("must not wait on the deployment after the job-completion wait itself timed out")
 		}
 	})
 }
