@@ -4,3 +4,5 @@ aileron: v0.0.40
 kubevirt: v1.8.2
 cdi: v1.64.0
 stabilizer: v0.1.0
+kubeovn: v1.15.19
+multus: v4.3.017

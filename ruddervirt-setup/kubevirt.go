@@ -26,6 +26,8 @@ var supportedVersionsYAML []byte
 type supportedVersionsFile struct {
 	KubeVirt []string `yaml:"kubevirt"`
 	CDI      []string `yaml:"cdi"`
+	KubeOVN  []string `yaml:"kubeovn"`
+	Multus   []string `yaml:"multus"`
 }
 
 var supportedVersions supportedVersionsFile

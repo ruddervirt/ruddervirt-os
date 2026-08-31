@@ -288,8 +288,8 @@ func TestVersionFieldsNotInSettingsRows(t *testing.T) {
 	}
 
 	rows := updateVersionsRows()
-	if len(rows) != 6 { // ruddervirt-setup + OS + 4 version fields
-		t.Fatalf("len(updateVersionsRows()) = %d, want 6", len(rows))
+	if len(rows) != 8 { // ruddervirt-setup + OS + 6 version fields
+		t.Fatalf("len(updateVersionsRows()) = %d, want 8", len(rows))
 	}
 	if !rows[0].isSelfUpdate {
 		t.Fatalf("updateVersionsRows()[0].isSelfUpdate = false, want true")
@@ -297,7 +297,7 @@ func TestVersionFieldsNotInSettingsRows(t *testing.T) {
 	if !rows[1].isOSUpdate {
 		t.Fatalf("updateVersionsRows()[1].isOSUpdate = false, want true")
 	}
-	wantKeys := []string{"versions.k3s", "versions.kubevirt", "versions.cdi", "versions.aileron"}
+	wantKeys := []string{"versions.k3s", "versions.kubeovn", "versions.multus", "versions.kubevirt", "versions.cdi", "versions.aileron"}
 	for i, key := range wantKeys {
 		if got := rows[i+2].field.key; got != key {
 			t.Errorf("updateVersionsRows()[%d].field.key = %q, want %q", i+2, got, key)

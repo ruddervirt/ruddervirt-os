@@ -416,9 +416,12 @@ func discoverMasterNodeIPs(kubectlBin string) ([]string, string, error) {
 	return nil, "", fmt.Errorf("no control-plane node IPs found")
 }
 
-// applyKubeOvn renders manifests/kube-ovn.yaml's placeholders (see that
-// file's header comment) and applies the result.
-func applyKubeOvn(ch chan<- tea.Msg, kubectlBin, podCIDR, podGateway, svcCIDR string, masterIPs []string) error {
+// applyKubeOvn renders manifests/kube-ovn.yaml's placeholders (including
+// __KUBE_OVN_VERSION__, the Helm chart version - offered on the Update
+// screen from a hand-curated allowlist, supported-versions.yaml, same as
+// KubeVirt/CDI, not a live fetch) and applies the resulting HelmChart
+// object.
+func applyKubeOvn(ch chan<- tea.Msg, kubectlBin, version, podCIDR, podGateway, svcCIDR string, masterIPs []string) error {
 	const templatePath = "/etc/ruddervirt/manifests/kube-ovn.yaml"
 	if err := writeManifestFile(ch, "kube-ovn.yaml"); err != nil {
 		return err
@@ -434,6 +437,7 @@ func applyKubeOvn(ch chan<- tea.Msg, kubectlBin, podCIDR, podGateway, svcCIDR st
 	}
 
 	rendered := string(data)
+	rendered = strings.ReplaceAll(rendered, "__KUBE_OVN_VERSION__", version)
 	rendered = strings.ReplaceAll(rendered, "__POD_CIDR__", podCIDR)
 	rendered = strings.ReplaceAll(rendered, "__POD_GATEWAY__", podGateway)
 	rendered = strings.ReplaceAll(rendered, "__SVC_CIDR__", svcCIDR)
@@ -550,8 +554,13 @@ func applyKubeOvnStep(cfg Config, ch chan<- tea.Msg) {
 		return
 	}
 
+	kubeOvnVersion := strings.TrimSpace(cfg.Versions.KubeOVN)
+	if kubeOvnVersion == "" {
+		kubeOvnVersion = defaultKubeOVNVersion
+	}
+
 	ch <- stepOutputMsg("Applying kube-ovn...")
-	if err := applyKubeOvn(ch, kubectlBin, cfg.Network.PodCIDR, podGateway, cfg.Network.SvcCIDR, masterIPs); err != nil {
+	if err := applyKubeOvn(ch, kubectlBin, kubeOvnVersion, cfg.Network.PodCIDR, podGateway, cfg.Network.SvcCIDR, masterIPs); err != nil {
 		fail(err)
 		return
 	}
@@ -678,12 +687,12 @@ func prepareK3sStep(cfg Config, ch chan<- tea.Msg) {
 		return
 	}
 
-	if err := writeManifestFile(ch, "multus.yaml"); err != nil {
-		fail(err)
-		return
+	multusVersion := strings.TrimSpace(cfg.Versions.Multus)
+	if multusVersion == "" {
+		multusVersion = defaultMultusVersion
 	}
 	ch <- stepOutputMsg("Applying multus...")
-	if err := runStreamed(ch, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/multus.yaml"); err != nil {
+	if err := applyMultus(ch, kubectlBin, multusVersion); err != nil {
 		fail(err)
 		return
 	}

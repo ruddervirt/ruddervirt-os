@@ -89,3 +89,29 @@ func TestWriteManifestFile(t *testing.T) {
 		}
 	})
 }
+
+// TestManifestVersionPlaceholders is a regression guard: applyKubeOvn/
+// applyMultus (k3s.go/multus.go) only work if their manifest templates
+// still declare these exact placeholders - a manual edit to either YAML
+// file (e.g. reverting back to a hardcoded version, or a typo in the
+// placeholder name) would silently leave spec.version as the literal
+// placeholder string instead of a real chart version, which
+// helm-controller would then fail to resolve.
+func TestManifestVersionPlaceholders(t *testing.T) {
+	cases := []struct {
+		file        string
+		placeholder string
+	}{
+		{"kube-ovn.yaml", "__KUBE_OVN_VERSION__"},
+		{"multus.yaml", "__MULTUS_VERSION__"},
+	}
+	for _, c := range cases {
+		data, err := manifestsFS.ReadFile("manifests/" + c.file)
+		if err != nil {
+			t.Fatalf("reading manifests/%s: %v", c.file, err)
+		}
+		if !strings.Contains(string(data), c.placeholder) {
+			t.Errorf("manifests/%s doesn't contain %s", c.file, c.placeholder)
+		}
+	}
+}

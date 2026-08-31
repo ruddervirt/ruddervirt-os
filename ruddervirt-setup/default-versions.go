@@ -20,19 +20,23 @@ type defaultVersionsFile struct {
 	KubeVirt   string `yaml:"kubevirt"`
 	CDI        string `yaml:"cdi"`
 	Stabilizer string `yaml:"stabilizer"`
+	KubeOVN    string `yaml:"kubeovn"`
+	Multus     string `yaml:"multus"`
 }
 
 // defaultK3sVersion, defaultAileronVersion, defaultKubeVirtVersion,
-// defaultCDIVersion and defaultStabilizerVersion are populated from
-// default-versions.yaml in init below - same "compiled-in, parsed once at
-// startup" role the former hardcoded consts played, just editable without
-// touching Go source.
+// defaultCDIVersion, defaultStabilizerVersion, defaultKubeOVNVersion and
+// defaultMultusVersion are populated from default-versions.yaml in init
+// below - same "compiled-in, parsed once at startup" role the former
+// hardcoded consts played, just editable without touching Go source.
 var (
 	defaultK3sVersion        string
 	defaultAileronVersion    string
 	defaultKubeVirtVersion   string
 	defaultCDIVersion        string
 	defaultStabilizerVersion string
+	defaultKubeOVNVersion    string
+	defaultMultusVersion     string
 )
 
 func init() {
@@ -53,6 +57,8 @@ func init() {
 		{"kubevirt", dv.KubeVirt},
 		{"cdi", dv.CDI},
 		{"stabilizer", dv.Stabilizer},
+		{"kubeovn", dv.KubeOVN},
+		{"multus", dv.Multus},
 	} {
 		if _, ok := parseSemver(v.value); !ok {
 			panic(fmt.Sprintf("ruddervirt-setup/default-versions.yaml: %s version %q doesn't match vMAJOR.MINOR.PATCH", v.name, v.value))
@@ -64,4 +70,6 @@ func init() {
 	defaultKubeVirtVersion = dv.KubeVirt
 	defaultCDIVersion = dv.CDI
 	defaultStabilizerVersion = dv.Stabilizer
+	defaultKubeOVNVersion = dv.KubeOVN
+	defaultMultusVersion = dv.Multus
 }

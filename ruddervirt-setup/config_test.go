@@ -112,6 +112,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Versions.K3s != defaultK3sVersion {
 		t.Errorf("defaultConfig().Versions.K3s = %q, want %q", cfg.Versions.K3s, defaultK3sVersion)
 	}
+	if cfg.Versions.KubeOVN != defaultKubeOVNVersion {
+		t.Errorf("defaultConfig().Versions.KubeOVN = %q, want %q", cfg.Versions.KubeOVN, defaultKubeOVNVersion)
+	}
+	if cfg.Versions.Multus != defaultMultusVersion {
+		t.Errorf("defaultConfig().Versions.Multus = %q, want %q", cfg.Versions.Multus, defaultMultusVersion)
+	}
 	if !cfg.System.AutoUpdate {
 		t.Error("defaultConfig().System.AutoUpdate = false, want true")
 	}
@@ -145,9 +151,19 @@ func TestLoadConfig(t *testing.T) {
 		if cfg.Storage.Engine != "longhorn" {
 			t.Errorf("loadConfig(%q) Storage.Engine = %q, want %q", path, cfg.Storage.Engine, "longhorn")
 		}
-		// Fields absent from the file fall back to the defaults, not zero values.
+		// Fields absent from the file fall back to the defaults, not zero
+		// values - this is what protects an existing install's persisted
+		// config from ending up with an empty Versions.KubeOVN/Multus (and
+		// so an invalid, empty chart version substituted into the manifest)
+		// after upgrading to a ruddervirt-setup build that added them.
 		if cfg.Versions.K3s != defaultK3sVersion {
 			t.Errorf("loadConfig(%q) Versions.K3s = %q, want default %q", path, cfg.Versions.K3s, defaultK3sVersion)
+		}
+		if cfg.Versions.KubeOVN != defaultKubeOVNVersion {
+			t.Errorf("loadConfig(%q) Versions.KubeOVN = %q, want default %q", path, cfg.Versions.KubeOVN, defaultKubeOVNVersion)
+		}
+		if cfg.Versions.Multus != defaultMultusVersion {
+			t.Errorf("loadConfig(%q) Versions.Multus = %q, want default %q", path, cfg.Versions.Multus, defaultMultusVersion)
 		}
 	})
 

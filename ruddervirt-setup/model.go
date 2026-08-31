@@ -207,9 +207,12 @@ type model struct {
 	prevCPUSample      cpuSample
 
 	// cachedK3sVersions/cachedAileronVersions hold the release tags
-	// fetchK3sVersions/fetchAileronVersions found, for the Settings screen's
+	// fetchK3sVersions/fetchAileronVersions found, for the Update screen's
 	// version fields to pick from - populated once, best-effort, via Init's
-	// fetchK3sVersionsCmd/fetchAileronVersionsCmd.
+	// fetchK3sVersionsCmd/fetchAileronVersionsCmd. kube-ovn/Multus don't
+	// need an equivalent: their version options come from a hand-curated
+	// allowlist (supported-versions.yaml, supportedVersionsAtLeast), same
+	// as KubeVirt/CDI, not a live fetch.
 	cachedK3sVersions     []string
 	cachedAileronVersions []string
 

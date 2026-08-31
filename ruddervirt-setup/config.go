@@ -68,6 +68,8 @@ type VersionsConfig struct {
 	KubeVirt string `yaml:"kubevirt"`
 	CDI      string `yaml:"cdi"`
 	Aileron  string `yaml:"aileron"`
+	KubeOVN  string `yaml:"kubeovn"`
+	Multus   string `yaml:"multus"`
 }
 
 // StorageConfig.Engine picks which storage layer prepareStorageDevice and
@@ -120,6 +122,8 @@ func defaultConfig() Config {
 			KubeVirt: defaultKubeVirtVersion,
 			CDI:      defaultCDIVersion,
 			Aileron:  defaultAileronVersion,
+			KubeOVN:  defaultKubeOVNVersion,
+			Multus:   defaultMultusVersion,
 		},
 		Storage: StorageConfig{
 			Engine: "openebs",
@@ -464,6 +468,33 @@ var settingFields = []settingField{
 		},
 		set: func(c *Config, v string) error {
 			c.Versions.K3s = v
+			return nil
+		},
+	},
+	{
+		key: "versions.kubeovn", label: "kube-ovn version", updateScreen: true,
+		get: func(c *Config) string { return c.Versions.KubeOVN },
+		options: func(c *Config, versions versionCache) []string {
+			// Hand-curated allowlist (supported-versions.yaml), same as
+			// KubeVirt/CDI below - not a live GitHub/Helm-index fetch. CNI
+			// components get no benefit of the doubt from an untested
+			// upstream release the way a live-fetched list would offer.
+			return supportedVersionsAtLeast(supportedVersions.KubeOVN, c.Versions.KubeOVN)
+		},
+		set: func(c *Config, v string) error {
+			c.Versions.KubeOVN = v
+			return nil
+		},
+	},
+	{
+		key: "versions.multus", label: "Multus version", updateScreen: true,
+		get: func(c *Config) string { return c.Versions.Multus },
+		options: func(c *Config, versions versionCache) []string {
+			// Same hand-curated-allowlist reasoning as versions.kubeovn above.
+			return supportedVersionsAtLeast(supportedVersions.Multus, c.Versions.Multus)
+		},
+		set: func(c *Config, v string) error {
+			c.Versions.Multus = v
 			return nil
 		},
 	},

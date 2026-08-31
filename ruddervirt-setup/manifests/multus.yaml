@@ -1,3 +1,10 @@
+# Multus CNI, deployed via the k3s HelmChart CRD (helm.cattle.io/v1), same
+# pattern as kube-ovn.yaml. Chart: rke2-multus (Rancher's own packaging of
+# k8snetworkplumbingwg/multus-cni) from rke2-charts.rancher.io.
+#
+# This file is a template, not applied as-is: applyMultus (multus.go)
+# substitutes the chart version below before applying the rendered result.
+---
 apiVersion: helm.cattle.io/v1
 kind: HelmChart
 metadata:
@@ -6,6 +13,7 @@ metadata:
 spec:
   repo: https://rke2-charts.rancher.io
   chart: rke2-multus
+  version: __MULTUS_VERSION__
   targetNamespace: kube-system
   valuesContent: |-
     config:

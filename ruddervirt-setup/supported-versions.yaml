@@ -2,3 +2,8 @@ kubevirt:
   - v1.8.2
 cdi:
   - v1.64.0
+kubeovn:
+  - v1.15.19
+  - v1.15.24
+multus:
+  - v4.3.017

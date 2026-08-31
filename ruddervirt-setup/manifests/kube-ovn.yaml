@@ -15,11 +15,12 @@
 #   takeOwnership: true  -> adopt any script-installed Services/SAs/RBAC/
 #                           ConfigMaps (names match) instead of erroring.
 #
-# This file is a template, not applied as-is: scripts/prepare-k3s.sh
-# substitutes the pod/service CIDRs, pod gateway, and control-plane node
-# IPs below from the ruddervirt-setup network settings and the live
-# cluster state before applying the rendered result. The join CIDR is
-# not a setting - it's internal to kube-ovn and left static here.
+# This file is a template, not applied as-is: applyKubeOvn (k3s.go)
+# substitutes the chart version, pod/service CIDRs, pod gateway, and
+# control-plane node IPs below from the ruddervirt-setup network/version
+# settings and the live cluster state before applying the rendered result.
+# The join CIDR is not a setting - it's internal to kube-ovn and left
+# static here.
 ---
 apiVersion: helm.cattle.io/v1
 kind: HelmChart
@@ -29,7 +30,7 @@ metadata:
 spec:
   chart: kube-ovn-v2
   repo: https://kubeovn.github.io/kube-ovn/
-  version: v1.15.19
+  version: __KUBE_OVN_VERSION__
   targetNamespace: kube-system
   bootstrap: true
   failurePolicy: abort
