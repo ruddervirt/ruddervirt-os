@@ -2,45 +2,49 @@
 
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"ruddervirt-setup/internal/status"
+)
 
 func TestAllServicesReady(t *testing.T) {
 	tests := []struct {
 		name     string
-		statuses []serviceStatus
+		statuses []status.ServiceStatus
 		want     bool
 	}{
 		{"nil is not ready", nil, false},
-		{"empty is not ready", []serviceStatus{}, false},
+		{"empty is not ready", []status.ServiceStatus{}, false},
 		{
 			"all healthy",
-			[]serviceStatus{
-				{name: "k3s", state: "running"},
-				{name: "kube-ovn", state: "ready"},
-				{name: "aileron", state: "ready"},
+			[]status.ServiceStatus{
+				{Name: "k3s", State: "running"},
+				{Name: "kube-ovn", State: "ready"},
+				{Name: "aileron", State: "ready"},
 			},
 			true,
 		},
 		{
 			"one not ready",
-			[]serviceStatus{
-				{name: "k3s", state: "running"},
-				{name: "kube-ovn", state: "not ready"},
+			[]status.ServiceStatus{
+				{Name: "k3s", State: "running"},
+				{Name: "kube-ovn", State: "not ready"},
 			},
 			false,
 		},
 		{
 			"k3s not running blocks even if others say ready",
-			[]serviceStatus{
-				{name: "k3s", state: "not running"},
-				{name: "kube-ovn", state: "ready"},
+			[]status.ServiceStatus{
+				{Name: "k3s", State: "not running"},
+				{Name: "kube-ovn", State: "ready"},
 			},
 			false,
 		},
 		{
 			"unknown state blocks",
-			[]serviceStatus{
-				{name: "k3s", state: "unknown"},
+			[]status.ServiceStatus{
+				{Name: "k3s", State: "unknown"},
 			},
 			false,
 		},
@@ -55,10 +59,10 @@ func TestAllServicesReady(t *testing.T) {
 }
 
 func TestNotReadySummary(t *testing.T) {
-	got := notReadySummary([]serviceStatus{
-		{name: "k3s", state: "running"},
-		{name: "kube-ovn", state: "not ready"},
-		{name: "aileron", state: "unknown"},
+	got := notReadySummary([]status.ServiceStatus{
+		{Name: "k3s", State: "running"},
+		{Name: "kube-ovn", State: "not ready"},
+		{Name: "aileron", State: "unknown"},
 	})
 	want := "kube-ovn=not ready, aileron=unknown"
 	if got != want {

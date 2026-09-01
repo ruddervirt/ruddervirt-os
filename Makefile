@@ -26,10 +26,12 @@ ROOTFS    := $(OUT_DIR)/test-rootfs
 # is the QEMU user-net gateway that maps to the host loopback). It's a real file
 # target so make only rebuilds it when its sources change.
 TUI_BIN   := scripts/ruddervirt-setup
-TUI_SRC   := $(filter-out %_test.go,$(wildcard ruddervirt-setup/*.go)) \
+# Recursive (not a flat wildcard): source now spans internal/* packages, not
+# just the module root, so a plain */*.go wildcard would silently stop
+# tracking most of the tree.
+TUI_SRC   := $(shell find ruddervirt-setup -name '*.go' ! -name '*_test.go' 2>/dev/null) \
              ruddervirt-setup/go.mod ruddervirt-setup/go.sum \
-             $(wildcard ruddervirt-setup/*.yaml) \
-             $(shell find ruddervirt-setup/manifests -type f 2>/dev/null)
+             $(shell find ruddervirt-setup -name '*.yaml' 2>/dev/null)
 # Port for the dev binary-serving HTTP server (must match the URL in server.bu).
 TUI_SERVE_PORT ?= 8080
 # Host port forwarded to the guest's aileron-ui NodePort (30806 - the
@@ -48,7 +50,7 @@ SHELL := bash
 .ONESHELL:
 .DEFAULT_GOAL := help
 
-.PHONY: help iso show-ignition boot ignition test-rootfs test-container clean build-tui test-tui
+.PHONY: help iso show-ignition boot ignition test-rootfs test-container clean build-tui test-tui lint
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -118,10 +120,21 @@ boot: iso $(TUI_BIN)  ## Boot the newest ISO in QEMU (KVM if available; needs qe
 build-tui: $(TUI_BIN)  ## Build the Go TUI binary (scripts/ruddervirt-setup)
 
 $(TUI_BIN): $(TUI_SRC)
-	cd ruddervirt-setup && go build -ldflags "-X main.version=$(VERSION)" -o ../scripts/ruddervirt-setup .
+	cd ruddervirt-setup && go build -ldflags "-X ruddervirt-setup/internal/versions.Version=$(VERSION)" -o ../scripts/ruddervirt-setup .
 
-test-tui:  ## Run the Go TUI's unit tests
-	cd ruddervirt-setup && go test ./...
+test-tui:  ## Run the Go TUI's unit tests (vet + race-enabled tests)
+	cd ruddervirt-setup && go vet ./... && go test -race ./...
+
+# Separate from test-tui rather than folded into it: keeps the fast
+# vet+test loop fast for local iteration, and CI runs this as its own step
+# via the golangci-lint-action (which handles install + caching), not via
+# this target - see .github/workflows/ci.yml. Config lives at
+# ruddervirt-setup/.golangci.yml (depguard enforces the internal/ packages'
+# dependency-direction rule - see that file's header comment). Requires
+# golangci-lint on PATH locally:
+# https://golangci-lint.run/docs/welcome/install/local/
+lint:  ## Run golangci-lint over the Go TUI (must be installed locally)
+	cd ruddervirt-setup && golangci-lint run ./...
 
 ignition:  ## Render server.bu -> out/server.ign (via the Butane container)
 	@[ -n "$(RUNTIME)" ] || { echo "Error: neither docker nor podman found in PATH." >&2; exit 1; }

@@ -1,0 +1,90 @@
+# golangci-lint (v2) configuration for ruddervirt-setup.
+#
+# The linter set here is deliberately narrow. depguard is the actual point of
+# this file: it enforces, as a CI-checkable rule, the dependency-direction
+# invariant this codebase's package layout depends on - every domain package
+# under internal/ (exec, config, k3s, kubevirt, storage, network, aileron,
+# stabilizer(+settings), versions, installsteps, selfupdate, osupdate,
+# manifests, multus, secrets, marker, password, hostname, status) must never
+# import bubbletea/bubbles or internal/tui - dependencies flow domain -> tui,
+# never back. Only internal/tui and its subpackages (internal/tui/pipeline,
+# internal/tui/screens), plus package main itself (main.go, app.go, view.go,
+# model.go and the *_bridge.go files, which legitimately still wire up the
+# bubbletea program), may import those.
+#
+# govet/staticcheck/unused are included as reasonable, low-noise defaults
+# alongside depguard. errcheck and ineffassign (also part of golangci-lint's
+# built-in "standard" set) are deliberately left disabled for now: turning
+# them on cold across this ~25-package codebase, which wasn't written with
+# them in mind, would likely surface a wall of findings unrelated to the
+# dependency-direction rule this file actually exists to enforce. gocyclo/
+# funlen are intentionally not enabled either - package main's root Update
+# method (app.go) is still ~1300 lines, so any threshold tight enough to
+# actually guard against regressions would fail on that pre-existing
+# function today. Revisit both once app.go is further broken down.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - depguard
+    - govet
+    - staticcheck
+    - unused
+  settings:
+    depguard:
+      rules:
+        domain-packages-no-tui:
+          # Every file under internal/ except internal/tui itself and its
+          # subpackages (internal/tui/pipeline, internal/tui/screens). Package
+          # main (module root: main.go, app.go, view.go, model.go, the
+          # *_bridge.go files, etc.) isn't under internal/ at all, so this
+          # rule doesn't apply to it - it's the one place outside internal/tui
+          # allowed to import bubbletea directly.
+          files:
+            - "**/internal/**"
+            - "!**/internal/tui/**"
+          deny:
+            - pkg: "github.com/charmbracelet/bubbletea"
+              desc: "bubbletea is only allowed in internal/tui and its subpackages (and package main) - see the dependency-direction rule in this file's header comment."
+            - pkg: "github.com/charmbracelet/bubbles"
+              desc: "bubbles is only allowed in internal/tui and its subpackages (and package main) - see the dependency-direction rule in this file's header comment."
+            - pkg: "ruddervirt-setup/internal/tui"
+              desc: "domain packages must not import internal/tui or its subpackages - dependencies flow domain -> tui, never back."
+
+  exclusions:
+    # Pre-existing findings from turning on govet/staticcheck/unused,
+    # scoped narrowly to path+text+linter so they don't mask new issues
+    # anywhere else, including new issues in these same files. None of these
+    # are depguard findings - depguard is clean on the tree (that's the
+    # actual point of this file). Deliberately not fixed here since this
+    # file is tooling/config only, not a source cleanup pass.
+    rules:
+      - path: 'internal/k3s/k3s\.go'
+        linters:
+          - staticcheck
+        text: "no value of type byte is greater than"
+      - path: 'internal/stabilizer/stabilizer\.go'
+        linters:
+          - staticcheck
+        text: "should not be capitalized"
+      - path: 'internal/status/hoststats\.go'
+        linters:
+          - staticcheck
+        text: "De Morgan's law"
+      - path: 'internal/tui/styles\.go'
+        linters:
+          - staticcheck
+        text: "should range over string"
+      - path: 'internal/tui/styles\.go'
+        linters:
+          - unused
+        text: "styleState"
+      - path: 'k3s_bridge_test\.go'
+        linters:
+          - unused
+        text: "drainStrings"
+      - path: 'status_bridge_test\.go'
+        linters:
+          - unused
+        text: "hasField"

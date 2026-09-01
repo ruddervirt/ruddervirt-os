@@ -5,25 +5,17 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"ruddervirt-setup/internal/config"
+	"ruddervirt-setup/internal/network"
+	"ruddervirt-setup/internal/stabilizer/settings"
+	"ruddervirt-setup/internal/tui/pipeline"
 )
 
-func TestNetworkSetupLabel(t *testing.T) {
-	if got := networkSetupLabel(false); got != "▶ Local physical network setup" {
-		t.Errorf("networkSetupLabel(false) = %q", got)
-	}
-	if got := networkSetupLabel(true); got != "▼ Local physical network setup" {
-		t.Errorf("networkSetupLabel(true) = %q", got)
-	}
-}
-
-func TestAdvancedSettingsLabel(t *testing.T) {
-	if got := advancedSettingsLabel(false); got != "▶ Advanced settings" {
-		t.Errorf("advancedSettingsLabel(false) = %q", got)
-	}
-	if got := advancedSettingsLabel(true); got != "▼ Advanced settings" {
-		t.Errorf("advancedSettingsLabel(true) = %q", got)
-	}
-}
+// TestNetworkSetupLabel/TestAdvancedSettingsLabel/TestSettingsRows/
+// TestStabilizerSettingDescriptionShown moved to
+// internal/tui/screens/settings_test.go alongside screens.SettingsModel
+// itself.
 
 func TestClampScroll(t *testing.T) {
 	cases := []struct {
@@ -43,159 +35,12 @@ func TestClampScroll(t *testing.T) {
 	}
 }
 
-func TestFitCell(t *testing.T) {
-	cases := []struct {
-		name  string
-		s     string
-		width int
-		want  string
-	}{
-		{"pads short string", "ab", 5, "ab   "},
-		{"exact width unchanged", "abcde", 5, "abcde"},
-		{"truncates long string with ellipsis", "abcdefgh", 5, "abcd…"},
-	}
-	for _, c := range cases {
-		if got := fitCell(c.s, c.width); got != c.want {
-			t.Errorf("%s: fitCell(%q, %d) = %q, want %q", c.name, c.s, c.width, got, c.want)
-		}
-	}
-}
-
-func TestSettingsRows(t *testing.T) {
-	base := model{cfg: Config{Network: NetworkConfig{Addressing: "dhcp"}}}
-
-	t.Run("collapsed groups show only toggle rows plus plain fields - Apply isn't one of these rows", func(t *testing.T) {
-		rows := base.settingsRows()
-		if !rows[0].isNetworkToggle {
-			t.Fatalf("rows[0].isNetworkToggle = false, want true")
-		}
-		for _, r := range rows[1:] {
-			if r.nested {
-				t.Errorf("expected no nested rows while collapsed, got nested row for key %q", r.field.key)
-			}
-		}
-	})
-
-	t.Run("expanding network reveals its fields but not staticOnly ones under dhcp", func(t *testing.T) {
-		m := base
-		m.settingsShowNetwork = true
-		rows := m.settingsRows()
-		var nestedKeys []string
-		for _, r := range rows {
-			if r.nested {
-				nestedKeys = append(nestedKeys, r.field.key)
-			}
-		}
-		want := []string{"network.interface_name", "network.addressing"}
-		if len(nestedKeys) != len(want) {
-			t.Fatalf("nested keys = %v, want %v", nestedKeys, want)
-		}
-		for i, k := range want {
-			if nestedKeys[i] != k {
-				t.Errorf("nested key[%d] = %q, want %q", i, nestedKeys[i], k)
-			}
-		}
-	})
-
-	t.Run("static addressing also reveals staticOnly fields when network expanded", func(t *testing.T) {
-		m := base
-		m.cfg.Network.Addressing = "static"
-		m.settingsShowNetwork = true
-		rows := m.settingsRows()
-		count := 0
-		for _, r := range rows {
-			if r.nested {
-				count++
-			}
-		}
-		if count != 6 { // 2 networkSetup fields + 4 staticOnly fields
-			t.Errorf("nested row count = %d, want 6", count)
-		}
-	})
-
-	t.Run("advanced settings only shown when expanded", func(t *testing.T) {
-		collapsed := base.settingsRows()
-		m := base
-		m.settingsShowAdvanced = true
-		expanded := m.settingsRows()
-		// pod_cidr, svc_cidr, storage.engine, and (not yet detected) the
-		// stabilizer action row - all four now live under Advanced.
-		if len(expanded) != len(collapsed)+4 {
-			t.Errorf("expanded rows = %d, collapsed = %d, want a difference of 4", len(expanded), len(collapsed))
-		}
-	})
-
-	t.Run("stabilizer action row lives under Advanced, shown until detected", func(t *testing.T) {
-		collapsed := base
-		collapsed.settingsShowAdvanced = false
-		if hasStabilizerActionRow(collapsed.settingsRows()) {
-			t.Error("stabilizer action row must not appear while Advanced is collapsed")
-		}
-
-		notDetected := base
-		notDetected.settingsShowAdvanced = true
-		notDetected.cachedStabilizerDetected = false
-		if !hasStabilizerActionRow(notDetected.settingsRows()) {
-			t.Error("stabilizer action row missing while not yet detected (Advanced expanded)")
-		}
-		if countStabilizerDefRows(notDetected.settingsRows()) != 0 {
-			t.Error("no stabilizer setting rows should appear before adoption")
-		}
-
-		detected := base
-		detected.settingsShowAdvanced = true
-		detected.cachedStabilizerDetected = true
-		if hasStabilizerActionRow(detected.settingsRows()) {
-			t.Error("stabilizer action row still present after stabilizer was detected")
-		}
-		// Every stabilizer setting becomes an in-situ row once detected -
-		// no separate action row leading anywhere.
-		if got, want := countStabilizerDefRows(detected.settingsRows()), len(stabilizerSettingDefs); got != want {
-			t.Errorf("stabilizer setting rows = %d, want %d (one per stabilizerSettingDefs entry)", got, want)
-		}
-	})
-
-	t.Run("aileron_ui_enabled is replaced in place once detected, never duplicated", func(t *testing.T) {
-		notDetected := base
-		notDetected.settingsShowAdvanced = true
-		notDetected.cachedStabilizerDetected = false
-		if hasStabilizerDefRow(notDetected.settingsRows(), "aileron_ui_enabled") {
-			t.Error("aileron_ui_enabled shouldn't be stabilizer-backed before adoption")
-		}
-		if !hasConfigFieldRow(notDetected.settingsRows(), "system.aileron_ui_enabled") {
-			t.Error("the Config-backed system.aileron_ui_enabled row should still be present before adoption")
-		}
-
-		detected := base
-		detected.settingsShowAdvanced = true
-		detected.cachedStabilizerDetected = true
-		rows := detected.settingsRows()
-		if hasConfigFieldRow(rows, "system.aileron_ui_enabled") {
-			t.Error("the old Config-backed row must be gone once stabilizer is detected - not shown twice")
-		}
-		var aileronUIRows int
-		var aileronUINested bool
-		for _, r := range rows {
-			if r.stabilizerDef != nil && r.stabilizerDef.Key == "aileron_ui_enabled" {
-				aileronUIRows++
-				aileronUINested = r.nested
-			}
-		}
-		if aileronUIRows != 1 {
-			t.Errorf("aileron_ui_enabled appears %d times, want exactly 1", aileronUIRows)
-		}
-		if aileronUINested {
-			t.Error("aileron_ui_enabled should stay in its original plain (non-nested) slot, not move under Advanced")
-		}
-	})
-}
-
 // TestUpdateScreenUpgradeIcon confirms the Update screen marks rows that
 // have a newer version available (self-update, OS, and an ordinary
-// settingField row like k3s) and doesn't mark rows that don't.
+// config.SettingField row like k3s) and doesn't mark rows that don't.
 func TestUpdateScreenUpgradeIcon(t *testing.T) {
 	m := model{
-		cfg:                       Config{Versions: VersionsConfig{K3s: "v1.30.0", KubeVirt: "v1.2.0", CDI: "v1.58.0", Aileron: "v1.0.0"}},
+		cfg:                       config.Config{Versions: config.VersionsConfig{K3s: "v1.30.0", KubeVirt: "v1.2.0", CDI: "v1.58.0", Aileron: "v1.0.0"}},
 		termWidth:                 120,
 		termHeight:                40,
 		current:                   screenUpdateVersions,
@@ -240,109 +85,18 @@ func TestOSUpdateScreenRenders(t *testing.T) {
 		_ = m.View()
 	}
 	render()
-	m.osUpdateDone = true
+	m.osUpdate.Pipeline.Done = true
 	render()
-	m.osUpdateDone = false
-	m.osUpdateFailed = true
+	m.osUpdate.Pipeline.Done = false
+	m.osUpdate.Pipeline.Failed = true
 	render()
-}
-
-// TestStabilizerSettingDescriptionShown confirms both places a stabilizer/
-// aileron setting is picked/edited (the bool picker overlay and the
-// int/quantity free-text edit prompt) show its summary from
-// stabilizer-settings.yaml, so an operator isn't guessing what a setting
-// does from its key name alone.
-func TestStabilizerSettingDescriptionShown(t *testing.T) {
-	boolDef, ok := stabilizerSettingByKey("aileron_ui_enabled")
-	if !ok {
-		t.Fatal("aileron_ui_enabled not found in stabilizerSettingDefs")
-	}
-	intDef, ok := stabilizerSettingByKey("build_max_cpu")
-	if !ok {
-		t.Fatal("build_max_cpu not found in stabilizerSettingDefs")
-	}
-
-	t.Run("picker overlay shows the summary", func(t *testing.T) {
-		m := model{
-			cfg: Config{Network: NetworkConfig{Addressing: "dhcp"}}, termWidth: 100, termHeight: 30,
-			current: screenSettings, cachedStabilizerDetected: true,
-			settingsPicking: true, settingsPickOptions: []string{"true", "false"},
-		}
-		rows := m.settingsRows()
-		for i, r := range rows {
-			if r.stabilizerDef != nil && r.stabilizerDef.Key == "aileron_ui_enabled" {
-				m.settingsCursor = i
-				break
-			}
-		}
-		out := m.View()
-		if !strings.Contains(out, boolDef.Summary) {
-			t.Errorf("picker overlay doesn't show %q's summary %q:\n%s", boolDef.Key, boolDef.Summary, out)
-		}
-	})
-
-	t.Run("edit prompt shows the summary", func(t *testing.T) {
-		m := model{
-			cfg: Config{Network: NetworkConfig{Addressing: "dhcp"}}, termWidth: 100, termHeight: 30,
-			current: screenSettings, cachedStabilizerDetected: true, settingsShowAdvanced: true,
-			settingsEditing: true,
-		}
-		rows := m.settingsRows()
-		for i, r := range rows {
-			if r.stabilizerDef != nil && r.stabilizerDef.Key == "build_max_cpu" {
-				m.settingsCursor = i
-				break
-			}
-		}
-		out := m.View()
-		if !strings.Contains(out, intDef.Summary) {
-			t.Errorf("edit prompt doesn't show %q's summary %q:\n%s", intDef.Key, intDef.Summary, out)
-		}
-	})
-}
-
-func hasStabilizerActionRow(rows []settingsRow) bool {
-	for _, r := range rows {
-		if r.isStabilizerAction {
-			return true
-		}
-	}
-	return false
-}
-
-func countStabilizerDefRows(rows []settingsRow) int {
-	n := 0
-	for _, r := range rows {
-		if r.stabilizerDef != nil {
-			n++
-		}
-	}
-	return n
-}
-
-func hasStabilizerDefRow(rows []settingsRow, key string) bool {
-	for _, r := range rows {
-		if r.stabilizerDef != nil && r.stabilizerDef.Key == key {
-			return true
-		}
-	}
-	return false
-}
-
-func hasConfigFieldRow(rows []settingsRow, key string) bool {
-	for _, r := range rows {
-		if r.stabilizerDef == nil && !r.isNetworkToggle && !r.isToggle && !r.isStabilizerAction && r.field.key == key {
-			return true
-		}
-	}
-	return false
 }
 
 // TestStabilizerScreensRender is a lightweight smoke test (matches this
 // file's existing coverage style) asserting View() doesn't panic for any of
 // the "Adopt to ruddervirt.com" wizard's screens at a minimal terminal size.
 func TestStabilizerScreensRender(t *testing.T) {
-	m := model{cfg: Config{Network: NetworkConfig{Addressing: "dhcp"}}, termWidth: 80, termHeight: 24}
+	m := model{cfg: config.Config{Network: network.NetworkConfig{Addressing: "dhcp"}}, termWidth: 80, termHeight: 24}
 	screens := []screen{
 		screenStabilizerAileronCheck, screenStabilizerWarning, screenStabilizerZone,
 		screenStabilizerNatsPassword, screenStabilizerNebula, screenStabilizerPlanning,
@@ -365,18 +119,18 @@ func TestStabilizerScreensRender(t *testing.T) {
 
 	// screenStabilizerSettingsApply's running/done/failed branches all take
 	// separate paths in View().
-	def, _ := stabilizerSettingByKey("build_max_cpu")
-	m.stabilizerSettingsPendingDef = def
-	m.stabilizerSettingsApplyPipeline = stabilizerSettingsApplySteps("kube-system", "stabilizer", def, 16)
+	def, _ := settings.StabilizerSettingByKey("build_max_cpu")
+	m.stabilizerSettings.PendingDef = def
+	m.stabilizerSettings.Pipeline = pipeline.Model{Steps: stabilizerSettingsApplySteps("kube-system", "stabilizer", def, 16)}
 	render(screenStabilizerSettingsApply)
 
-	m.stabilizerSettingsApplyDone = true
+	m.stabilizerSettings.Pipeline.Done = true
 	render(screenStabilizerSettingsApply)
-	m.stabilizerSettingsApplyDone = false
+	m.stabilizerSettings.Pipeline.Done = false
 
-	m.stabilizerSettingsApplyFailed = true
+	m.stabilizerSettings.Pipeline.Failed = true
 	render(screenStabilizerSettingsApply)
-	m.stabilizerSettingsApplyFailed = false
+	m.stabilizerSettings.Pipeline.Failed = false
 
 	// screenStabilizerVersionApply's running/done/failed branches, same as
 	// above - and screenStabilizerVersionConfirm with a nil
@@ -384,15 +138,15 @@ func TestStabilizerScreensRender(t *testing.T) {
 	// the state to already be loaded, View() must tolerate not having it).
 	render(screenStabilizerVersionConfirm)
 
-	m.stabilizerVersionTarget = "1.3.0"
-	m.stabilizerVersionClearedPins = []string{"aileron.image.tag"}
-	m.stabilizerVersionApplyPipeline = stabilizerVersionApplySteps("kube-system", "stabilizer", []byte(`{}`), "1.3.0")
+	m.stabilizerVersion.Target = "1.3.0"
+	m.stabilizerVersion.ClearedPins = []string{"aileron.image.tag"}
+	m.stabilizerVersion.Pipeline = pipeline.Model{Steps: stabilizerVersionApplySteps("kube-system", "stabilizer", []byte(`{}`), "1.3.0")}
 	render(screenStabilizerVersionApply)
 
-	m.stabilizerVersionApplyDone = true
+	m.stabilizerVersion.Pipeline.Done = true
 	render(screenStabilizerVersionApply)
-	m.stabilizerVersionApplyDone = false
+	m.stabilizerVersion.Pipeline.Done = false
 
-	m.stabilizerVersionApplyFailed = true
+	m.stabilizerVersion.Pipeline.Failed = true
 	render(screenStabilizerVersionApply)
 }

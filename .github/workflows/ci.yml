@@ -18,6 +18,12 @@ jobs:
           go-version: 'stable'
           cache: false
 
+      - name: Go TUI lint (golangci-lint)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13
+          working-directory: ruddervirt-setup
+
       - name: Go TUI unit tests
         run: make test-tui
 

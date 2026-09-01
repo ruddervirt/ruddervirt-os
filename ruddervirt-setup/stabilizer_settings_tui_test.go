@@ -9,39 +9,91 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"ruddervirt-setup/internal/config"
+	"ruddervirt-setup/internal/exec/exectest"
+	"ruddervirt-setup/internal/installsteps"
+	"ruddervirt-setup/internal/stabilizer/settings"
 )
 
+// deploymentJSON/helmChartJSON/baseAppliedEnv duplicate
+// internal/stabilizer/settings's own cli_test.go fixtures of the same name -
+// kept independent rather than exported from production code purely for
+// test fixtures, same reasoning as cmdContains/hasField (status_bridge_test.go).
+
+// deploymentJSON builds a fake `kubectl get deploy stabilizer -o json`
+// response with the given container env vars.
+func deploymentJSON(env map[string]string) string {
+	var b strings.Builder
+	b.WriteString(`{"spec":{"template":{"spec":{"containers":[{"name":"stabilizer","env":[`)
+	first := true
+	for k, v := range env {
+		if !first {
+			b.WriteString(",")
+		}
+		first = false
+		e, _ := json.Marshal(map[string]string{"name": k, "value": v})
+		b.Write(e)
+	}
+	b.WriteString(`]}]}}}}`)
+	return b.String()
+}
+
+func helmChartJSON(values map[string]any) string {
+	out, _ := json.Marshal(map[string]any{"spec": map[string]any{"values": values}})
+	return string(out)
+}
+
+// baseAppliedEnv is a full set of applied SETTING_* values matching every
+// vendored setting's default, plus a fixed HELM_CHART_NAMESPACE/NAME pair -
+// the steady-state, fully-settled starting point most tests build on.
+func baseAppliedEnv() map[string]string {
+	return map[string]string{
+		"HELM_CHART_NAMESPACE":                    "kube-system",
+		"HELM_CHART_NAME":                         "stabilizer",
+		"SETTING_OLLAMA_ENABLED":                  "false",
+		"SETTING_AILERON_UI_ENABLED":              "true",
+		"SETTING_BUILD_MAX_CPU":                   "8",
+		"SETTING_BUILD_MAX_MEMORY":                "16Gi",
+		"SETTING_BUILD_MAX_DISK_SIZE":             "50Gi",
+		"SETTING_BUILD_MAX_DISK_COUNT":            "3",
+		"SETTING_BUILD_MAX_VM_COUNT":              "4",
+		"SETTING_GRADING_MAX_CONCURRENT":          "10",
+		"SETTING_WATCHDOG_ENABLED":                "true",
+		"SETTING_WATCHDOG_VM_TIMEOUT_MINUTES":     "43200",
+		"SETTING_WATCHDOG_MAX_VM_RUNTIME_MINUTES": "120",
+	}
+}
+
 func TestLoadStabilizerSettingsStateCmd(t *testing.T) {
-	r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+	r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
 		switch {
 		case cmdContains(name, args, "get", "deploy", "stabilizer"):
-			return commandOutcome{out: []byte(deploymentJSON(baseAppliedEnv()))}
+			return exectest.Outcome{Out: []byte(deploymentJSON(baseAppliedEnv()))}
 		case cmdContains(name, args, "get", "helmchart.helm.cattle.io", "stabilizer"):
-			return commandOutcome{out: []byte(helmChartJSON(map[string]any{}))}
+			return exectest.Outcome{Out: []byte(helmChartJSON(map[string]any{}))}
 		case cmdContains(name, args, "get", "job", "helm-install-stabilizer"):
-			return commandOutcome{out: []byte("not found"), err: errFake}
+			return exectest.Outcome{Out: []byte("not found"), Err: exectest.ErrFake}
 		}
 		t.Fatalf("unexpected call: %s %v", name, args)
-		return commandOutcome{}
+		return exectest.Outcome{}
 	}}
 	var msg tea.Msg
-	withFakeRunner(r, func() { msg = loadStabilizerSettingsStateCmd()() })
+	exectest.WithFakeRunner(r, func() { msg = loadStabilizerSettingsStateCmd()() })
 	got, ok := msg.(stabilizerSettingsLoadedMsg)
 	if !ok || got.err != nil || got.state == nil {
 		t.Fatalf("loadStabilizerSettingsStateCmd() = %#v, want a populated stabilizerSettingsLoadedMsg", msg)
 	}
-	if got.state.helmChartNamespace != "kube-system" {
-		t.Errorf("helmChartNamespace = %q, want kube-system", got.state.helmChartNamespace)
+	if got.state.HelmChartNamespace != "kube-system" {
+		t.Errorf("helmChartNamespace = %q, want kube-system", got.state.HelmChartNamespace)
 	}
 
 	// tuiKubectlExec must go through the interactive-sudo runPrivileged
-	// path (not settingsKubectl's deliberately-unprivileged one) - the
-	// fakeRunner sees the sudo-wrapped command either way, but a plain
+	// path (not settingsKubectl's deliberately-unprivileged one) - a plain
 	// -n-less "sudo" prefix (vs "sudo -n") confirms which path ran.
-	if r.calls == nil {
+	if r.Calls == nil {
 		t.Fatal("no calls recorded")
 	}
-	for _, c := range r.calls {
+	for _, c := range r.Calls {
 		if strings.Contains(c, "sudo -n") {
 			t.Errorf("call %q used non-interactive sudo (-n) - the TUI screen must use the interactive path like the rest of the TUI", c)
 		}
@@ -49,10 +101,10 @@ func TestLoadStabilizerSettingsStateCmd(t *testing.T) {
 }
 
 func TestResolveStabilizerSettingChange(t *testing.T) {
-	def, _ := stabilizerSettingByKey("build_max_cpu")
-	state := &stabilizerSettingsState{
-		appliedEnv:     map[string]string{"SETTING_BUILD_MAX_CPU": "8"},
-		declaredValues: map[string]any{},
+	def, _ := settings.StabilizerSettingByKey("build_max_cpu")
+	state := &settings.StabilizerSettingsState{
+		AppliedEnv:     map[string]string{"SETTING_BUILD_MAX_CPU": "8"},
+		DeclaredValues: map[string]any{},
 	}
 
 	t.Run("valid change", func(t *testing.T) {
@@ -75,9 +127,9 @@ func TestResolveStabilizerSettingChange(t *testing.T) {
 	})
 
 	t.Run("declared value takes precedence over applied", func(t *testing.T) {
-		declaredState := &stabilizerSettingsState{
-			appliedEnv: map[string]string{"SETTING_BUILD_MAX_CPU": "8"},
-			declaredValues: map[string]any{
+		declaredState := &settings.StabilizerSettingsState{
+			AppliedEnv: map[string]string{"SETTING_BUILD_MAX_CPU": "8"},
+			DeclaredValues: map[string]any{
 				"aileron": map[string]any{"buildLimits": map[string]any{"maxCPU": float64(20)}},
 			},
 		}
@@ -92,10 +144,10 @@ func TestResolveStabilizerSettingChange(t *testing.T) {
 }
 
 func TestStabilizerSettingRowDisplay(t *testing.T) {
-	def, _ := stabilizerSettingByKey("build_max_cpu")
+	def, _ := settings.StabilizerSettingByKey("build_max_cpu")
 
 	t.Run("aileron disabled reports not editable", func(t *testing.T) {
-		state := &stabilizerSettingsState{appliedEnv: map[string]string{}, aileronDisabled: true}
+		state := &settings.StabilizerSettingsState{AppliedEnv: map[string]string{}, AileronDisabled: true}
 		value, status, editable := stabilizerSettingRowDisplay(def, state)
 		if editable {
 			t.Error("want editable=false when aileron is disabled")
@@ -106,9 +158,9 @@ func TestStabilizerSettingRowDisplay(t *testing.T) {
 	})
 
 	t.Run("settled", func(t *testing.T) {
-		state := &stabilizerSettingsState{
-			appliedEnv:     map[string]string{"SETTING_BUILD_MAX_CPU": "8"},
-			declaredValues: map[string]any{},
+		state := &settings.StabilizerSettingsState{
+			AppliedEnv:     map[string]string{"SETTING_BUILD_MAX_CPU": "8"},
+			DeclaredValues: map[string]any{},
 		}
 		value, status, editable := stabilizerSettingRowDisplay(def, state)
 		if !editable || value != "8" || status != "settled (chart default)" {
@@ -117,9 +169,9 @@ func TestStabilizerSettingRowDisplay(t *testing.T) {
 	})
 
 	t.Run("rollout pending", func(t *testing.T) {
-		state := &stabilizerSettingsState{
-			appliedEnv: map[string]string{"SETTING_BUILD_MAX_CPU": "8"},
-			declaredValues: map[string]any{
+		state := &settings.StabilizerSettingsState{
+			AppliedEnv: map[string]string{"SETTING_BUILD_MAX_CPU": "8"},
+			DeclaredValues: map[string]any{
 				"aileron": map[string]any{"buildLimits": map[string]any{"maxCPU": float64(16)}},
 			},
 		}
@@ -130,10 +182,10 @@ func TestStabilizerSettingRowDisplay(t *testing.T) {
 	})
 
 	t.Run("aileron_ui_enabled stays editable even when other aileron settings are disabled", func(t *testing.T) {
-		uiDef, _ := stabilizerSettingByKey("aileron_ui_enabled")
-		state := &stabilizerSettingsState{
-			appliedEnv:      map[string]string{"SETTING_AILERON_UI_ENABLED": "false"},
-			aileronDisabled: true,
+		uiDef, _ := settings.StabilizerSettingByKey("aileron_ui_enabled")
+		state := &settings.StabilizerSettingsState{
+			AppliedEnv:      map[string]string{"SETTING_AILERON_UI_ENABLED": "false"},
+			AileronDisabled: true,
 		}
 		_, _, editable := stabilizerSettingRowDisplay(uiDef, state)
 		if !editable {
@@ -143,16 +195,16 @@ func TestStabilizerSettingRowDisplay(t *testing.T) {
 }
 
 func TestStabilizerSettingListValue(t *testing.T) {
-	def, _ := stabilizerSettingByKey("build_max_cpu")
+	def, _ := settings.StabilizerSettingByKey("build_max_cpu")
 
-	settled := &stabilizerSettingsState{appliedEnv: map[string]string{"SETTING_BUILD_MAX_CPU": "8"}, declaredValues: map[string]any{}}
+	settled := &settings.StabilizerSettingsState{AppliedEnv: map[string]string{"SETTING_BUILD_MAX_CPU": "8"}, DeclaredValues: map[string]any{}}
 	if v, _ := stabilizerSettingListValue(def, settled); v != "8" {
 		t.Errorf("settled display = %q, want bare \"8\" (no status suffix)", v)
 	}
 
-	pending := &stabilizerSettingsState{
-		appliedEnv:     map[string]string{"SETTING_BUILD_MAX_CPU": "8"},
-		declaredValues: map[string]any{"aileron": map[string]any{"buildLimits": map[string]any{"maxCPU": float64(16)}}},
+	pending := &settings.StabilizerSettingsState{
+		AppliedEnv:     map[string]string{"SETTING_BUILD_MAX_CPU": "8"},
+		DeclaredValues: map[string]any{"aileron": map[string]any{"buildLimits": map[string]any{"maxCPU": float64(16)}}},
 	}
 	if v, _ := stabilizerSettingListValue(def, pending); !strings.Contains(v, "8") || !strings.Contains(v, "rollout pending") {
 		t.Errorf("pending display = %q, want it to mention both the applied value and rollout pending", v)
@@ -160,7 +212,7 @@ func TestStabilizerSettingListValue(t *testing.T) {
 }
 
 func TestStabilizerSettingsApplySteps(t *testing.T) {
-	def, _ := stabilizerSettingByKey("build_max_cpu")
+	def, _ := settings.StabilizerSettingByKey("build_max_cpu")
 
 	t.Run("has exactly two steps: patch, then wait for rollout", func(t *testing.T) {
 		steps := stabilizerSettingsApplySteps("kube-system", "stabilizer", def, 16)
@@ -171,7 +223,7 @@ func TestStabilizerSettingsApplySteps(t *testing.T) {
 
 	t.Run("step 1 writes a merge patch under spec.values only", func(t *testing.T) {
 		var patchArg string
-		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+		r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
 			if cmdContains(name, args, "patch", "helmchart.helm.cattle.io", "stabilizer") {
 				for i, a := range args {
 					if a == "-p" && i+1 < len(args) {
@@ -179,14 +231,14 @@ func TestStabilizerSettingsApplySteps(t *testing.T) {
 					}
 				}
 			}
-			return commandOutcome{}
+			return exectest.Outcome{}
 		}}
 		steps := stabilizerSettingsApplySteps("kube-system", "stabilizer", def, 16)
-		ch := make(chan tea.Msg, 100)
-		withFakeRunner(r, func() { steps[0].run(Config{}, ch) })
+		ch := make(chan installsteps.StepMsg, 100)
+		exectest.WithFakeRunner(r, func() { steps[0].Run(config.Config{}, ch) })
 		done := lastStepDone(t, ch)
-		if done.err != nil {
-			t.Fatalf("step 1 err = %v, want nil", done.err)
+		if done.Err != nil {
+			t.Fatalf("step 1 err = %v, want nil", done.Err)
 		}
 		if patchArg == "" {
 			t.Fatal("no patch body captured")
@@ -199,7 +251,7 @@ func TestStabilizerSettingsApplySteps(t *testing.T) {
 		if err := json.Unmarshal([]byte(patchArg), &patch); err != nil {
 			t.Fatalf("patch body isn't valid JSON: %v\n%s", err, patchArg)
 		}
-		cpu, ok := getByPath(patch.Spec.Values, "aileron.buildLimits.maxCPU")
+		cpu, ok := settings.GetByPath(patch.Spec.Values, "aileron.buildLimits.maxCPU")
 		if !ok {
 			t.Fatal("patch missing aileron.buildLimits.maxCPU")
 		}
@@ -209,39 +261,39 @@ func TestStabilizerSettingsApplySteps(t *testing.T) {
 	})
 
 	t.Run("step 1 failure is reported, not swallowed", func(t *testing.T) {
-		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
-			return commandOutcome{out: []byte("boom"), err: errFake}
+		r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
+			return exectest.Outcome{Out: []byte("boom"), Err: exectest.ErrFake}
 		}}
 		steps := stabilizerSettingsApplySteps("kube-system", "stabilizer", def, 16)
-		ch := make(chan tea.Msg, 100)
-		withFakeRunner(r, func() { steps[0].run(Config{}, ch) })
+		ch := make(chan installsteps.StepMsg, 100)
+		exectest.WithFakeRunner(r, func() { steps[0].Run(config.Config{}, ch) })
 		done := lastStepDone(t, ch)
-		if done.err == nil {
+		if done.Err == nil {
 			t.Fatal("step 1 err = nil, want non-nil")
 		}
 	})
 
 	t.Run("step 2 waits for the job then for stabilizer to become Available again", func(t *testing.T) {
 		var sawJobWait, sawDeployWait bool
-		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+		r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
 			switch {
 			case cmdContains(name, args, "get", "job/helm-install-stabilizer"):
-				return commandOutcome{}
+				return exectest.Outcome{}
 			case cmdContains(name, args, "wait", "--for=condition=complete", "job/helm-install-stabilizer"):
 				sawJobWait = true
-				return commandOutcome{}
+				return exectest.Outcome{}
 			case cmdContains(name, args, "wait", "--for=condition=Available", "deployment.apps/stabilizer"):
 				sawDeployWait = true
-				return commandOutcome{}
+				return exectest.Outcome{}
 			}
-			return commandOutcome{}
+			return exectest.Outcome{}
 		}}
 		steps := stabilizerSettingsApplySteps("kube-system", "stabilizer", def, 16)
-		ch := make(chan tea.Msg, 100)
-		withFakeRunner(r, func() { steps[1].run(Config{}, ch) })
+		ch := make(chan installsteps.StepMsg, 100)
+		exectest.WithFakeRunner(r, func() { steps[1].Run(config.Config{}, ch) })
 		done := lastStepDone(t, ch)
-		if done.err != nil {
-			t.Fatalf("step 2 err = %v, want nil", done.err)
+		if done.Err != nil {
+			t.Fatalf("step 2 err = %v, want nil", done.Err)
 		}
 		if !sawJobWait || !sawDeployWait {
 			t.Errorf("step 2 didn't wait for both the job and the deployment: job=%v deploy=%v", sawJobWait, sawDeployWait)
@@ -251,29 +303,28 @@ func TestStabilizerSettingsApplySteps(t *testing.T) {
 	t.Run("step 2 never hard-fails on a job-completion-wait timeout - the patch already landed", func(t *testing.T) {
 		// Regression test: k3s's helm-controller replaces (rather than
 		// patches) the existing helm-install-<name> Job on a spec change,
-		// which can legitimately take a while (see
+		// which can take a while (see
 		// waitForStabilizerRolloutStep's doc comment) - a timeout here used
-		// to be reported as a flat "Failed", even though the merge patch in
-		// step 1 had already committed. It must now be reported as done
-		// (with an informational log line), not failed.
+		// to be reported as a flat "Failed" even though step 1's merge patch
+		// had already committed. Must now be reported as done, not failed.
 		var sawDeployWait bool
-		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
+		r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
 			switch {
 			case cmdContains(name, args, "get", "job/helm-install-stabilizer"):
-				return commandOutcome{}
+				return exectest.Outcome{}
 			case cmdContains(name, args, "wait", "--for=condition=complete", "job/helm-install-stabilizer"):
-				return commandOutcome{out: []byte("job failed"), err: errFake}
+				return exectest.Outcome{Out: []byte("job failed"), Err: exectest.ErrFake}
 			case cmdContains(name, args, "wait", "--for=condition=Available", "deployment.apps/stabilizer"):
 				sawDeployWait = true
 			}
-			return commandOutcome{}
+			return exectest.Outcome{}
 		}}
 		steps := stabilizerSettingsApplySteps("kube-system", "stabilizer", def, 16)
-		ch := make(chan tea.Msg, 100)
-		withFakeRunner(r, func() { steps[1].run(Config{}, ch) })
+		ch := make(chan installsteps.StepMsg, 100)
+		exectest.WithFakeRunner(r, func() { steps[1].Run(config.Config{}, ch) })
 		done := lastStepDone(t, ch)
-		if done.err != nil {
-			t.Fatalf("step 2 err = %v, want nil (informational only, not a hard failure)", done.err)
+		if done.Err != nil {
+			t.Fatalf("step 2 err = %v, want nil (informational only, not a hard failure)", done.Err)
 		}
 		if sawDeployWait {
 			t.Error("must not wait on the deployment after the job-completion wait itself timed out")
@@ -284,14 +335,14 @@ func TestStabilizerSettingsApplySteps(t *testing.T) {
 		// Same regression as above, but for the OTHER half of the replace
 		// dance: the job never even appears within the poll window.
 		step := waitForStabilizerRolloutStepWithPoll("kube-system", "stabilizer", 2, time.Millisecond)
-		r := &fakeRunner{respond: func(name string, args []string) commandOutcome {
-			return commandOutcome{out: []byte("not found"), err: errFake} // job never appears
+		r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
+			return exectest.Outcome{Out: []byte("not found"), Err: exectest.ErrFake} // job never appears
 		}}
-		ch := make(chan tea.Msg, 100)
-		withFakeRunner(r, func() { step.run(Config{}, ch) })
+		ch := make(chan installsteps.StepMsg, 100)
+		exectest.WithFakeRunner(r, func() { step.Run(config.Config{}, ch) })
 		done := lastStepDone(t, ch)
-		if done.err != nil {
-			t.Fatalf("err = %v, want nil (informational only, not a hard failure)", done.err)
+		if done.Err != nil {
+			t.Fatalf("err = %v, want nil (informational only, not a hard failure)", done.Err)
 		}
 	})
 }
