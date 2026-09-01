@@ -164,7 +164,7 @@ func TestOSUpdateAutoUpdateNoticeRenders(t *testing.T) {
 
 // TestPowerScreensRender is a smoke test for the "power options" submenu's
 // three screens (options list, confirm, and the running/done/failed apply
-// pipeline), both Action values, same style as TestOSUpdateScreenRenders.
+// pipeline), same style as TestOSUpdateScreenRenders.
 func TestPowerScreensRender(t *testing.T) {
 	m := model{termWidth: 80, termHeight: 24}
 	render := func(s screen) {
@@ -178,24 +178,21 @@ func TestPowerScreensRender(t *testing.T) {
 	}
 
 	render(screenPowerOptions)
-	m.power.Cursor = 2
+	m.power.Cursor = 1
 	render(screenPowerOptions)
 
-	for _, action := range []string{"shutdown", "reboot"} {
-		m.power.Action = action
-		render(screenPowerConfirm)
-		m.power.ConfirmError = `Type "yes" to proceed, or Esc to cancel.`
-		render(screenPowerConfirm)
-		m.power.ConfirmError = ""
+	render(screenPowerConfirm)
+	m.power.ConfirmError = `Type "yes" to proceed, or Esc to cancel.`
+	render(screenPowerConfirm)
+	m.power.ConfirmError = ""
 
-		render(screenPowerApply)
-		m.power.Pipeline.Done = true
-		render(screenPowerApply)
-		m.power.Pipeline.Done = false
-		m.power.Pipeline.Failed = true
-		render(screenPowerApply)
-		m.power.Pipeline = pipeline.Model{}
-	}
+	render(screenPowerApply)
+	m.power.Pipeline.Done = true
+	render(screenPowerApply)
+	m.power.Pipeline.Done = false
+	m.power.Pipeline.Failed = true
+	render(screenPowerApply)
+	m.power.Pipeline = pipeline.Model{}
 }
 
 // TestStabilizerScreensRender is a lightweight smoke test (matches this

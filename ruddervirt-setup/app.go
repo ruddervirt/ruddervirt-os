@@ -116,8 +116,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case stepDoneMsg:
 		if m.current == screenPowerApply {
 			// No special-casing on success like the other pipelines here -
-			// systemctl reboot/poweroff hands off to systemd and this whole
-			// process goes down with the host moments later (see
+			// systemctl reboot hands off to systemd and this whole process
+			// goes down with the host moments later (see
 			// screens.PowerModel.ViewApply); nothing to re-fetch or re-exec
 			// into first.
 			var cmd tea.Cmd
@@ -447,9 +447,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.current == screenPowerApply {
-				// Only reachable on Failed in practice - a successful reboot/
-				// shutdown takes this whole process down with the host before
-				// Esc could ever be pressed (see screens.PowerModel.ViewApply).
+				// Only reachable on Failed in practice - a successful reboot
+				// takes this whole process down with the host before Esc
+				// could ever be pressed (see screens.PowerModel.ViewApply).
 				// Back to wherever this action was launched from, same as
 				// screenPowerConfirm above.
 				m.current = m.powerConfirmOrigin
@@ -719,14 +719,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Same as the old bare "logout" menu entry - just ends this
 					// TUI session, nothing to confirm.
 					return m, tea.Quit
-				case "Shutdown":
-					m.power.Action = "shutdown"
-					m.powerConfirmOrigin = screenPowerOptions
-					m.current = screenPowerConfirm
-					m.power.ConfirmInput.Focus()
-					return m, nil
 				case "Reboot":
-					m.power.Action = "reboot"
 					m.powerConfirmOrigin = screenPowerOptions
 					m.current = screenPowerConfirm
 					m.power.ConfirmInput.Focus()
@@ -736,19 +729,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if strings.EqualFold(strings.TrimSpace(m.power.ConfirmInput.Value()), "yes") {
 					m.current = screenPowerApply
 					m.power.ConfirmInput.Blur()
-					steps := power.ShutdownSteps
-					if m.power.Action == "reboot" {
-						steps = power.RebootSteps
-					}
-					pl, cmd := pipeline.New(steps, m.cfg)
+					pl, cmd := pipeline.New(power.RebootSteps, m.cfg)
 					m.power.Pipeline = pl
 					return m, cmd
 				}
-				verb := "shut down"
-				if m.power.Action == "reboot" {
-					verb = "reboot"
-				}
-				m.power.ConfirmError = fmt.Sprintf(`Type "yes" to %s, or Esc to cancel.`, verb)
+				m.power.ConfirmError = `Type "yes" to reboot, or Esc to cancel.`
 			} else if m.current == screenInstallConfirm {
 				if strings.EqualFold(strings.TrimSpace(m.install.ConfirmInput.Value()), "yes") {
 					m.current = screenInstall
@@ -1220,7 +1205,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (see powerConfirmOrigin's doc comment for the Esc-back
 			// wrinkle that comes with reusing it from here).
 			if m.current == screenOSUpdate && m.osUpdate.Pipeline.Done && strings.EqualFold(msg.String(), "r") {
-				m.power.Action = "reboot"
 				m.powerConfirmOrigin = screenOSUpdate
 				m.current = screenPowerConfirm
 				m.power.ConfirmInput.Focus()

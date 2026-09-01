@@ -403,7 +403,7 @@ func TestPasswordChangeCtrlSSkipsToSettingsWithoutMarkingChanged(t *testing.T) {
 // TestPowerOptionsDisconnectQuits confirms "power options" -> "Disconnect"
 // still just ends the TUI session, same as the old bare "logout" menu entry.
 func TestPowerOptionsDisconnectQuits(t *testing.T) {
-	m := model{current: screenPowerOptions, power: screens.PowerModel{Cursor: 2}} // 2 = "Disconnect" (screens.PowerOrder)
+	m := model{current: screenPowerOptions, power: screens.PowerModel{Cursor: 1}} // 1 = "Disconnect" (screens.PowerOrder)
 
 	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
 		t.Fatal("cmd = nil, want tea.Quit (Disconnect)")
@@ -416,7 +416,7 @@ func TestPowerOptionsDisconnectQuits(t *testing.T) {
 // running anything.
 func TestPowerOptionsRebootConfirmLaunchesPipeline(t *testing.T) {
 	t.Run("Esc from the options list cancels back to the menu", func(t *testing.T) {
-		m := model{current: screenPowerOptions, power: screens.PowerModel{Cursor: 1}} // 1 = "Reboot"
+		m := model{current: screenPowerOptions, power: screens.PowerModel{Cursor: 0}} // 0 = "Reboot"
 		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 		got := next.(model)
 		if got.current != screenMenu {
@@ -425,14 +425,11 @@ func TestPowerOptionsRebootConfirmLaunchesPipeline(t *testing.T) {
 	})
 
 	t.Run("Reboot row opens the confirm screen, Esc cancels back to the options list", func(t *testing.T) {
-		m := model{current: screenPowerOptions, power: screens.PowerModel{Cursor: 1, ConfirmInput: textinput.New()}}
+		m := model{current: screenPowerOptions, power: screens.PowerModel{Cursor: 0, ConfirmInput: textinput.New()}}
 		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		got := next.(model)
 		if got.current != screenPowerConfirm {
 			t.Fatalf("current = %v, want screenPowerConfirm", got.current)
-		}
-		if got.power.Action != "reboot" {
-			t.Fatalf("power.Action = %q, want \"reboot\"", got.power.Action)
 		}
 
 		next, _ = got.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -450,7 +447,7 @@ func TestPowerOptionsRebootConfirmLaunchesPipeline(t *testing.T) {
 			m := model{
 				current: screenPowerConfirm,
 				cfg:     config.DefaultConfig(),
-				power:   screens.PowerModel{Action: "reboot", ConfirmInput: textinput.New()},
+				power:   screens.PowerModel{ConfirmInput: textinput.New()},
 			}
 			m.power.ConfirmInput.SetValue("yes")
 
@@ -545,9 +542,6 @@ func TestOSUpdateRebootShortcut(t *testing.T) {
 	got := next.(model)
 	if got.current != screenPowerConfirm {
 		t.Fatalf("current = %v, want screenPowerConfirm", got.current)
-	}
-	if got.power.Action != "reboot" {
-		t.Fatalf("power.Action = %q, want \"reboot\"", got.power.Action)
 	}
 
 	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyEsc})

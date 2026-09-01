@@ -13,16 +13,15 @@ import (
 
 // PowerModel is the main menu's "power options" submenu's sub-model
 // (screenPowerOptions, screenPowerConfirm, screenPowerApply) - reached from
-// screenMenu's "power options" row (MenuOrder). Shutdown/Reboot go through
-// a guarded type-"yes" confirm (Action set to "shutdown"/"reboot" picks
-// which internal/power steps Pipeline runs and which copy ViewConfirm/
-// ViewApply show) since either one takes down every VM running on this
+// screenMenu's "power options" row (MenuOrder). Reboot goes through a
+// guarded type-"yes" confirm since it takes down every VM running on this
 // host, not just this session - Disconnect (the old bare "logout" menu
 // entry) skips straight to tea.Quit in app.go, same as before, since it
-// only ends this TUI session.
+// only ends this TUI session. No Shutdown option: powering off entirely has
+// no way back from inside this TUI, unlike a reboot - see internal/power's
+// doc comment.
 type PowerModel struct {
 	Cursor       int
-	Action       string // "shutdown" or "reboot" - "" until a picked
 	ConfirmInput textinput.Model
 	ConfirmError string
 
@@ -31,7 +30,7 @@ type PowerModel struct {
 
 // PowerOrder is screenPowerOptions' row order - the arrow-key equivalent of
 // MenuOrder, one level down.
-var PowerOrder = []string{"Shutdown", "Reboot", "Disconnect"}
+var PowerOrder = []string{"Reboot", "Disconnect"}
 
 // Up moves Cursor up by one, clamped at 0 - mirrors MenuModel.Up.
 func (m PowerModel) Up() PowerModel {
@@ -51,8 +50,8 @@ func (m PowerModel) Down() PowerModel {
 }
 
 // ClearConfirm blanks and blurs ConfirmInput and clears ConfirmError,
-// leaving Action/Cursor/Pipeline untouched - app.go calls this when Esc
-// cancels screenPowerConfirm back to screenPowerOptions, same shape as
+// leaving Cursor/Pipeline untouched - app.go calls this when Esc cancels
+// screenPowerConfirm back to screenPowerOptions, same shape as
 // UpdateModel.ClearConfirm.
 func (m PowerModel) ClearConfirm() PowerModel {
 	m.ConfirmInput.SetValue("")
@@ -68,7 +67,6 @@ func (m PowerModel) ClearConfirm() PowerModel {
 func (m PowerModel) Reset() PowerModel {
 	m = m.ClearConfirm()
 	m.Cursor = 0
-	m.Action = ""
 	m.Pipeline = pipeline.Model{}
 	return m
 }
@@ -90,39 +88,30 @@ func (m PowerModel) ViewOptions() string {
 	return s
 }
 
-// ViewConfirm renders screenPowerConfirm - the shared type-"yes" guard for
-// both Shutdown and Reboot (see struct doc), copy switched on m.Action.
+// ViewConfirm renders screenPowerConfirm - the reboot type-"yes" guard (see
+// struct doc).
 func (m PowerModel) ViewConfirm() string {
-	verb, warning := "shut down", "shut down and powered off"
-	if m.Action == "reboot" {
-		verb, warning = "reboot", "restarted"
-	}
-	s := "\n" + tui.TitleStyle.Render("Confirm "+verb) + "\n\n"
-	s += fmt.Sprintf("This host will be %s. Every VM running here stops immediately,\n", warning)
+	s := "\n" + tui.TitleStyle.Render("Confirm reboot") + "\n\n"
+	s += "This host will be restarted. Every VM running here stops immediately,\n"
 	s += "and consoles/the cloud UI go quiet until it's back up.\n"
-	s += fmt.Sprintf("\n%s\n  %s\n", tui.HelpStyle.Render(fmt.Sprintf("Type \"yes\" to %s, or Esc to cancel:", verb)), m.ConfirmInput.View())
+	s += fmt.Sprintf("\n%s\n  %s\n", tui.HelpStyle.Render(`Type "yes" to reboot, or Esc to cancel:`), m.ConfirmInput.View())
 	if m.ConfirmError != "" {
 		s += fmt.Sprintf("\n%s\n", tui.ErrorStyle.Render(m.ConfirmError))
 	}
 	return s
 }
 
-// ViewApply renders screenPowerApply - the running shutdown/reboot pipeline
-// itself - via pipeline.Model.View, copy switched on m.Action same as
-// ViewConfirm. Unlike every other pipeline-backed screen, a successful run
-// never returns here to report done: the command hands off to systemd and
-// this whole process (along with the SSH session driving it) goes down with
-// the host, so the done copy is aspirational, shown only in the unlikely
-// window before that happens.
+// ViewApply renders screenPowerApply - the running reboot pipeline itself -
+// via pipeline.Model.View. Unlike every other pipeline-backed screen, a
+// successful run never returns here to report done: the command hands off
+// to systemd and this whole process (along with the SSH session driving it)
+// goes down with the host, so the done copy is aspirational, shown only in
+// the unlikely window before that happens.
 func (m PowerModel) ViewApply(visibleLines int) string {
-	title, doneVerb := "Shutting down...", "Shutdown"
-	if m.Action == "reboot" {
-		title, doneVerb = "Rebooting...", "Reboot"
-	}
 	return m.Pipeline.View(
-		title,
-		tui.SuccessStyle.Render(doneVerb+" initiated.")+" "+tui.HelpStyle.Render("This session will disconnect shortly."),
-		tui.ErrorStyle.Render(doneVerb+" failed.")+" "+tui.HelpStyle.Render("Press Esc to return to Power options."),
+		"Rebooting...",
+		tui.SuccessStyle.Render("Reboot initiated.")+" "+tui.HelpStyle.Render("This session will disconnect shortly."),
+		tui.ErrorStyle.Render("Reboot failed.")+" "+tui.HelpStyle.Render("Press Esc to return to Power options."),
 		visibleLines,
 	)
 }
