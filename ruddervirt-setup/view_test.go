@@ -65,8 +65,8 @@ func TestUpdateScreenUpgradeIcon(t *testing.T) {
 	if !strings.Contains(findRowLine("ruddervirt-setup"), "↑") {
 		t.Error("ruddervirt-setup row should show the upgrade icon (cachedSelfUpdateAvailable=true)")
 	}
-	if strings.Contains(findRowLine("Operating system"), "↑") {
-		t.Error("Operating system row should NOT show the upgrade icon (cachedOSUpdateAvailable=false)")
+	if strings.Contains(findRowLine("OS Packages"), "↑") {
+		t.Error("OS Packages row should NOT show the upgrade icon (cachedOSUpdateAvailable=false)")
 	}
 	if !strings.Contains(findRowLine("k3s"), "↑") {
 		t.Error("k3s row should show the upgrade icon (v1.31.0 > v1.30.0 available)")
@@ -147,6 +147,55 @@ func TestOSUpdateScreenRenders(t *testing.T) {
 	m.osUpdate.Pipeline.Done = false
 	m.osUpdate.Pipeline.Failed = true
 	render()
+}
+
+// TestOSUpdateAutoUpdateNoticeRenders is a smoke test for
+// screenOSUpdateConfirm - the notice shown before OSUpdateSteps when
+// cfg.System.AutoUpdate is already on (see app.go's IsOSUpdate handling).
+func TestOSUpdateAutoUpdateNoticeRenders(t *testing.T) {
+	m := model{termWidth: 80, termHeight: 24, current: screenOSUpdateConfirm}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("View() panicked: %v", r)
+		}
+	}()
+	_ = m.View()
+}
+
+// TestPowerScreensRender is a smoke test for the "power options" submenu's
+// three screens (options list, confirm, and the running/done/failed apply
+// pipeline), both Action values, same style as TestOSUpdateScreenRenders.
+func TestPowerScreensRender(t *testing.T) {
+	m := model{termWidth: 80, termHeight: 24}
+	render := func(s screen) {
+		m.current = s
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("View() panicked for screen %d: %v", s, r)
+			}
+		}()
+		_ = m.View()
+	}
+
+	render(screenPowerOptions)
+	m.power.Cursor = 2
+	render(screenPowerOptions)
+
+	for _, action := range []string{"shutdown", "reboot"} {
+		m.power.Action = action
+		render(screenPowerConfirm)
+		m.power.ConfirmError = `Type "yes" to proceed, or Esc to cancel.`
+		render(screenPowerConfirm)
+		m.power.ConfirmError = ""
+
+		render(screenPowerApply)
+		m.power.Pipeline.Done = true
+		render(screenPowerApply)
+		m.power.Pipeline.Done = false
+		m.power.Pipeline.Failed = true
+		render(screenPowerApply)
+		m.power.Pipeline = pipeline.Model{}
+	}
 }
 
 // TestStabilizerScreensRender is a lightweight smoke test (matches this

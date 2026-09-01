@@ -408,7 +408,7 @@ var SettingFields = []SettingField{
 		},
 	},
 	{
-		Key: "system.auto_update", Label: "Automatic updates",
+		Key: "system.auto_update", Label: "Automatic OS package updates",
 		Get: func(c *Config) string {
 			if c.System.AutoUpdate {
 				return "on"

@@ -403,7 +403,7 @@ func (m UpdateModel) ViewVersions(p UpdateViewParams) string {
 		case r.IsSelfUpdate:
 			label = "ruddervirt-setup"
 		case r.IsOSUpdate:
-			label = "Operating system"
+			label = "OS Packages"
 		default:
 			label = r.Field.Label
 		}

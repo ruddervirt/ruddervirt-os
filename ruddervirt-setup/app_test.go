@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"ruddervirt-setup/internal/config"
 	"ruddervirt-setup/internal/exec/exectest"
+	"ruddervirt-setup/internal/power"
 	"ruddervirt-setup/internal/stabilizer/settings"
 	"ruddervirt-setup/internal/tui/pipeline"
 	"ruddervirt-setup/internal/tui/screens"
@@ -51,23 +52,25 @@ func TestMenuArrowNavigation(t *testing.T) {
 		t.Fatalf("menu.Cursor after Down x%d = %d, want %d (clamped)", len(screens.MenuOrder)+2, m.menu.Cursor, len(screens.MenuOrder)-1)
 	}
 
-	// menu.Cursor is on "logout" (last item) - Enter with no typed input
-	// should submit it directly, same as typing "5"/"logout" would.
-	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
-		t.Fatalf("cmd = nil, want tea.Quit (logout)")
+	// menu.Cursor is on "power options" (last item) - Enter with no typed
+	// input should submit it directly, same as typing "5"/"power options"
+	// would, landing on screenPowerOptions.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := next.(model).current; got != screenPowerOptions {
+		t.Fatalf("current after Enter on \"power options\" = %v, want screenPowerOptions", got)
 	}
 }
 
 // TestMenuTypedInputWinsOverCursor confirms Enter prefers typed input over
 // the ↑/↓ cursor when both are present.
 func TestMenuTypedInputWinsOverCursor(t *testing.T) {
-	m := model{current: screenMenu, menu: screens.MenuModel{Input: "3", Cursor: 4}} // cursor on "logout", typed "3" (shell)
+	m := model{current: screenMenu, menu: screens.MenuModel{Input: "3", Cursor: 4}} // cursor on "power options", typed "3" (shell)
 
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := next.(model)
 
 	if !got.shellMode {
-		t.Fatalf("shellMode = false, want true - typed \"3\" (shell) should win over the cursor's \"logout\"")
+		t.Fatalf("shellMode = false, want true - typed \"3\" (shell) should win over the cursor's \"power options\"")
 	}
 }
 
@@ -394,5 +397,162 @@ func TestPasswordChangeCtrlSSkipsToSettingsWithoutMarkingChanged(t *testing.T) {
 	}
 	if got.password.NewInput.Value() != "" {
 		t.Fatalf("password.NewInput.Value() = %q, want cleared", got.password.NewInput.Value())
+	}
+}
+
+// TestPowerOptionsDisconnectQuits confirms "power options" -> "Disconnect"
+// still just ends the TUI session, same as the old bare "logout" menu entry.
+func TestPowerOptionsDisconnectQuits(t *testing.T) {
+	m := model{current: screenPowerOptions, power: screens.PowerModel{Cursor: 2}} // 2 = "Disconnect" (screens.PowerOrder)
+
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
+		t.Fatal("cmd = nil, want tea.Quit (Disconnect)")
+	}
+}
+
+// TestPowerOptionsRebootConfirmLaunchesPipeline confirms "power options" ->
+// "Reboot" requires typing "yes" before launching power.RebootSteps, and
+// that Esc before confirming cancels back to the options list without
+// running anything.
+func TestPowerOptionsRebootConfirmLaunchesPipeline(t *testing.T) {
+	t.Run("Esc from the options list cancels back to the menu", func(t *testing.T) {
+		m := model{current: screenPowerOptions, power: screens.PowerModel{Cursor: 1}} // 1 = "Reboot"
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		got := next.(model)
+		if got.current != screenMenu {
+			t.Fatalf("current = %v, want screenMenu", got.current)
+		}
+	})
+
+	t.Run("Reboot row opens the confirm screen, Esc cancels back to the options list", func(t *testing.T) {
+		m := model{current: screenPowerOptions, power: screens.PowerModel{Cursor: 1, ConfirmInput: textinput.New()}}
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		got := next.(model)
+		if got.current != screenPowerConfirm {
+			t.Fatalf("current = %v, want screenPowerConfirm", got.current)
+		}
+		if got.power.Action != "reboot" {
+			t.Fatalf("power.Action = %q, want \"reboot\"", got.power.Action)
+		}
+
+		next, _ = got.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		got = next.(model)
+		if got.current != screenPowerOptions {
+			t.Fatalf("current = %v, want screenPowerOptions", got.current)
+		}
+	})
+
+	t.Run("typing \"yes\" launches power.RebootSteps", func(t *testing.T) {
+		// Same fake-runner-and-drain reasoning as the stabilizer-version
+		// confirm test above: pipeline.New starts Run in its own goroutine,
+		// which would otherwise really shell out to systemctl.
+		exectest.WithFakeRunner(&exectest.FakeRunner{}, func() {
+			m := model{
+				current: screenPowerConfirm,
+				cfg:     config.DefaultConfig(),
+				power:   screens.PowerModel{Action: "reboot", ConfirmInput: textinput.New()},
+			}
+			m.power.ConfirmInput.SetValue("yes")
+
+			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			got := next.(model)
+			if got.current != screenPowerApply {
+				t.Fatalf("current = %v, want screenPowerApply", got.current)
+			}
+			if len(got.power.Pipeline.Steps) != 1 || got.power.Pipeline.Steps[0].Label != power.RebootStepLabel {
+				t.Fatalf("Pipeline.Steps = %+v, want a single %q step", got.power.Pipeline.Steps, power.RebootStepLabel)
+			}
+			if cmd == nil {
+				t.Fatal("want pipeline.New's tea.Cmd")
+			}
+			for {
+				if _, done := cmd().(stepDoneMsg); done {
+					break
+				}
+			}
+		})
+	})
+}
+
+// TestOSPackagesAutoUpdateNotice confirms selecting the OS Packages row
+// warns first (screenOSUpdateConfirm) when automatic OS package updates are
+// already on, but launches OSUpdateSteps directly - same as before this
+// notice existed - when they're off.
+func TestOSPackagesAutoUpdateNotice(t *testing.T) {
+	t.Run("AutoUpdate on: Enter shows the notice instead of updating directly", func(t *testing.T) {
+		m := model{
+			current: screenUpdateVersions,
+			cfg:     config.Config{System: config.SystemConfig{AutoUpdate: true}},
+			update:  screens.UpdateModel{Cursor: 1}, // 1 = OS Packages row (screens.UpdateRows)
+		}
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		got := next.(model)
+		if got.current != screenOSUpdateConfirm {
+			t.Fatalf("current = %v, want screenOSUpdateConfirm", got.current)
+		}
+		if got.osUpdate.Pipeline.Steps != nil {
+			t.Fatalf("Pipeline.Steps = %+v, want nil - must not launch until the notice is acknowledged", got.osUpdate.Pipeline.Steps)
+		}
+
+		// Enter on the notice proceeds anyway.
+		exectest.WithFakeRunner(&exectest.FakeRunner{}, func() {
+			next, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			got = next.(model)
+			if got.current != screenOSUpdate {
+				t.Fatalf("current = %v, want screenOSUpdate", got.current)
+			}
+			if cmd == nil {
+				t.Fatal("want pipeline.New's tea.Cmd")
+			}
+			for {
+				if _, done := cmd().(stepDoneMsg); done {
+					break
+				}
+			}
+		})
+	})
+
+	t.Run("AutoUpdate off: Enter updates directly, no notice", func(t *testing.T) {
+		exectest.WithFakeRunner(&exectest.FakeRunner{}, func() {
+			m := model{
+				current: screenUpdateVersions,
+				cfg:     config.Config{System: config.SystemConfig{AutoUpdate: false}},
+				update:  screens.UpdateModel{Cursor: 1},
+			}
+			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			got := next.(model)
+			if got.current != screenOSUpdate {
+				t.Fatalf("current = %v, want screenOSUpdate", got.current)
+			}
+			for {
+				if _, done := cmd().(stepDoneMsg); done {
+					break
+				}
+			}
+		})
+	})
+}
+
+// TestOSUpdateRebootShortcut confirms pressing "r" once OS Packages has
+// finished updating routes into the same reboot confirm+apply flow as
+// "power options" -> "Reboot" - see model.go's powerConfirmOrigin doc
+// comment - and that Esc cancels back to screenOSUpdate (not screenPowerOptions)
+// since that's where this shortcut was actually reached from.
+func TestOSUpdateRebootShortcut(t *testing.T) {
+	m := model{current: screenOSUpdate, osUpdate: screens.OSUpdateModel{Pipeline: pipeline.Model{Done: true}}, power: screens.PowerModel{ConfirmInput: textinput.New()}}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	got := next.(model)
+	if got.current != screenPowerConfirm {
+		t.Fatalf("current = %v, want screenPowerConfirm", got.current)
+	}
+	if got.power.Action != "reboot" {
+		t.Fatalf("power.Action = %q, want \"reboot\"", got.power.Action)
+	}
+
+	next, _ = got.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got = next.(model)
+	if got.current != screenOSUpdate {
+		t.Fatalf("current = %v, want screenOSUpdate (where the shortcut was pressed), not screenPowerOptions", got.current)
 	}
 }

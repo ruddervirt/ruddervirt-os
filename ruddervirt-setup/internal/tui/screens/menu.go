@@ -36,13 +36,13 @@ var MenuOptions = map[string]string{
 	"2": "k9s",
 	"3": "shell",
 	"4": "update",
-	"5": "logout",
+	"5": "power options",
 }
 
 // MenuOrder is MenuOptions in display/selection order - the arrow-key
 // alternative to typing a number needs an ordered list, which a map can't
 // give it.
-var MenuOrder = []string{"configure", "k9s", "shell", "update", "logout"}
+var MenuOrder = []string{"configure", "k9s", "shell", "update", "power options"}
 
 // ResolveInput normalizes input (case/whitespace) and resolves it to a
 // canonical menuOptions label, accepting either the number or the word

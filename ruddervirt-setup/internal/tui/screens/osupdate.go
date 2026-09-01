@@ -23,14 +23,34 @@ type OSUpdateModel struct {
 	Pipeline pipeline.Model
 }
 
+// ViewAutoUpdateNotice renders screenOSUpdateConfirm - a heads-up shown
+// before starting OSUpdateSteps only when cfg.System.AutoUpdate is already
+// on (see app.go's IsOSUpdate handling), since a manual update is likely
+// redundant with the background auto-update Zincati is already driving.
+// Enter proceeds anyway, Esc cancels back to Update - no "type yes" gate
+// like the destructive confirms elsewhere, since this doesn't need
+// protecting from itself: it's the same harmless, no-reboot-required
+// `rpm-ostree upgrade` OSUpdateSteps always runs, just possibly unnecessary.
+func (m OSUpdateModel) ViewAutoUpdateNotice() string {
+	s := "\n" + tui.TitleStyle.Render("Update Operating System") + "\n\n"
+	s += tui.WarningStyle.Render("Automatic OS package updates are already turned on for this host.") + "\n"
+	s += "A manual update here is likely unnecessary - Zincati is already staging\n"
+	s += "new deployments in the background on its own schedule.\n"
+	s += "\n" + tui.HintBar([2]string{"Enter", "update anyway"}, [2]string{"Esc", "cancel"}) + "\n"
+	return s
+}
+
 // View renders screenOSUpdate via pipeline.Model.View. Unlike
 // InstallModel.ViewInstall (which returns to the main menu), both hints
 // point back to the Update screen - this is only ever reached from
-// screenUpdateVersions.
+// screenUpdateVersions. The done copy's "Press r to reboot now" offers the
+// reboot it just told the operator they need, straight from here - see
+// app.go's tea.KeyRunes handling and model.go's powerConfirmOrigin doc
+// comment for how that reuses the power-options reboot flow.
 func (m OSUpdateModel) View(visibleLines int) string {
 	return m.Pipeline.View(
 		"Updating operating system...",
-		tui.SuccessStyle.Render("Staged. Reboot to switch into the new deployment.")+" "+tui.HelpStyle.Render("Press Esc to return to Update."),
+		tui.SuccessStyle.Render("Staged. Reboot to switch into the new deployment.")+" "+tui.HelpStyle.Render("Press r to reboot now, or Esc to return to Update."),
 		tui.ErrorStyle.Render("Update failed.")+" "+tui.HelpStyle.Render("Press Esc to return to Update."),
 		visibleLines,
 	)

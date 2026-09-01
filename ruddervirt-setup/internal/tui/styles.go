@@ -28,7 +28,7 @@ var (
 	HelpStyle     = lipgloss.NewStyle().Foreground(colorMuted)
 	ErrorStyle    = lipgloss.NewStyle().Bold(true).Foreground(colorDanger)
 	SuccessStyle  = lipgloss.NewStyle().Foreground(colorSuccess)
-	warningStyle  = lipgloss.NewStyle().Foreground(colorWarning)
+	WarningStyle  = lipgloss.NewStyle().Foreground(colorWarning)
 	LinkStyle     = lipgloss.NewStyle().Foreground(colorAccent).Underline(true)
 	CursorStyle   = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	SelectedStyle = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
@@ -117,14 +117,14 @@ func replaceAllRunes(s, runes string, style lipgloss.Style) string {
 
 // ColorUpdateIcon re-colors just the first rune of s (the Update screen's
 // leading ↑/space upgrade-available indicator, see updateRowIconPrefix in
-// view.go) with warningStyle - same shape as ColorToggleArrow, but amber for
+// view.go) with WarningStyle - same shape as ColorToggleArrow, but amber for
 // "worth a look" instead of the toggle's accent purple.
 func ColorUpdateIcon(s string) string {
 	r := []rune(s)
 	if len(r) == 0 {
 		return s
 	}
-	return warningStyle.Render(string(r[0])) + string(r[1:])
+	return WarningStyle.Render(string(r[0])) + string(r[1:])
 }
 
 // WrapHelp renders text in HelpStyle, word-wrapped to width (lipgloss wraps
@@ -202,7 +202,7 @@ func StyleUsagePercent(pct float64) string {
 	case pct >= 90:
 		return ErrorStyle.Render(text)
 	case pct >= 75:
-		return warningStyle.Render(text)
+		return WarningStyle.Render(text)
 	default:
 		return SuccessStyle.Render(text)
 	}

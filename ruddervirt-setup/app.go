@@ -12,6 +12,7 @@ import (
 	"ruddervirt-setup/internal/hostname"
 	"ruddervirt-setup/internal/network"
 	"ruddervirt-setup/internal/osupdate"
+	"ruddervirt-setup/internal/power"
 	"ruddervirt-setup/internal/selfupdate"
 	"ruddervirt-setup/internal/stabilizer"
 	"ruddervirt-setup/internal/stabilizer/settings"
@@ -100,6 +101,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.osUpdate.Pipeline, cmd = m.osUpdate.Pipeline.Update(msg, m.cfg)
 			return m, cmd
+		case screenPowerApply:
+			var cmd tea.Cmd
+			m.power.Pipeline, cmd = m.power.Pipeline.Update(msg, m.cfg)
+			return m, cmd
 		default:
 			// Only the install pipeline is left once every other screen
 			// is ruled out - at most one pipeline runs at a time.
@@ -109,6 +114,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case stepDoneMsg:
+		if m.current == screenPowerApply {
+			// No special-casing on success like the other pipelines here -
+			// systemctl reboot/poweroff hands off to systemd and this whole
+			// process goes down with the host moments later (see
+			// screens.PowerModel.ViewApply); nothing to re-fetch or re-exec
+			// into first.
+			var cmd tea.Cmd
+			m.power.Pipeline, cmd = m.power.Pipeline.Update(msg, m.cfg)
+			return m, cmd
+		}
 		if m.current == screenOSUpdate {
 			wasDone := m.osUpdate.Pipeline.Done
 			var cmd tea.Cmd
@@ -424,6 +439,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.osUpdate.Pipeline = pipeline.Model{}
 				return m, nil
 			}
+			if m.current == screenOSUpdateConfirm {
+				m.current = screenUpdateVersions
+				return m, nil
+			}
+			if m.current == screenPowerApply && !m.power.Pipeline.Done && !m.power.Pipeline.Failed {
+				return m, nil
+			}
+			if m.current == screenPowerApply {
+				// Only reachable on Failed in practice - a successful reboot/
+				// shutdown takes this whole process down with the host before
+				// Esc could ever be pressed (see screens.PowerModel.ViewApply).
+				// Back to wherever this action was launched from, same as
+				// screenPowerConfirm above.
+				m.current = m.powerConfirmOrigin
+				m.power.Pipeline = pipeline.Model{}
+				return m, nil
+			}
+			if m.current == screenPowerConfirm {
+				// Cancel back to wherever this confirm was reached from
+				// (normally the power options list, but the OS-update-done
+				// "press r to reboot" shortcut sends the operator here
+				// directly - see powerConfirmOrigin's doc comment).
+				m.current = m.powerConfirmOrigin
+				m.power = m.power.ClearConfirm()
+				return m, nil
+			}
+			if m.current == screenPowerOptions {
+				m.current = screenMenu
+				m.power = m.power.Reset()
+				return m, nil
+			}
 			if m.current == screenStabilizerSettingsApply && !m.stabilizerSettings.Pipeline.Done {
 				return m, nil
 			}
@@ -529,6 +575,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stabilizerSettings = m.stabilizerSettings.Reset()
 			m.stabilizerVersion = m.stabilizerVersion.Reset()
 			m.osUpdate.Pipeline = pipeline.Model{}
+			m.power = m.power.Reset()
 			return m, tea.Batch(fetchServiceStatusesCmd(m.cfg), fetchHostStatsCmd(m.cfg, m.prevCPUSample))
 
 		case tea.KeyUp:
@@ -546,6 +593,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.menu = m.menu.Up()
 				return m, nil
 			}
+			if m.current == screenPowerOptions {
+				m.power = m.power.Up()
+				return m, nil
+			}
 
 		case tea.KeyDown:
 			// Same fall-through note as tea.KeyUp above.
@@ -561,6 +612,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.menu = m.menu.Down()
 				return m, nil
 			}
+			if m.current == screenPowerOptions {
+				m.power = m.power.Down()
+				return m, nil
+			}
 
 		case tea.KeyEnter:
 			if m.current == screenMenu {
@@ -573,8 +628,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if label, ok := screens.ResolveInput(typed); ok {
 					m.menu.Input = ""
 					switch label {
-					case "logout":
-						return m, tea.Quit
+					case "power options":
+						m.current = screenPowerOptions
+						m.power = m.power.Reset()
+						return m, nil
 					case "configure":
 						if !m.cfg.System.HostnameDeclared && hostname.HostnameIsDefault() && !hostnameLocked() {
 							// Not yet declared, still default, and install
@@ -648,6 +705,50 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, cmd
 				}
 				m.update.ConfirmError = `Type "yes" to proceed, or Esc to cancel.`
+			} else if m.current == screenOSUpdateConfirm {
+				// Enter proceeds anyway past the auto-update notice (see
+				// IsOSUpdate above) - no "yes" gate needed, just launches the
+				// same pipeline the no-notice path would have.
+				m.current = screenOSUpdate
+				pl, cmd := pipeline.New(osupdate.OSUpdateSteps, m.cfg)
+				m.osUpdate.Pipeline = pl
+				return m, cmd
+			} else if m.current == screenPowerOptions {
+				switch screens.PowerOrder[m.power.Cursor] {
+				case "Disconnect":
+					// Same as the old bare "logout" menu entry - just ends this
+					// TUI session, nothing to confirm.
+					return m, tea.Quit
+				case "Shutdown":
+					m.power.Action = "shutdown"
+					m.powerConfirmOrigin = screenPowerOptions
+					m.current = screenPowerConfirm
+					m.power.ConfirmInput.Focus()
+					return m, nil
+				case "Reboot":
+					m.power.Action = "reboot"
+					m.powerConfirmOrigin = screenPowerOptions
+					m.current = screenPowerConfirm
+					m.power.ConfirmInput.Focus()
+					return m, nil
+				}
+			} else if m.current == screenPowerConfirm {
+				if strings.EqualFold(strings.TrimSpace(m.power.ConfirmInput.Value()), "yes") {
+					m.current = screenPowerApply
+					m.power.ConfirmInput.Blur()
+					steps := power.ShutdownSteps
+					if m.power.Action == "reboot" {
+						steps = power.RebootSteps
+					}
+					pl, cmd := pipeline.New(steps, m.cfg)
+					m.power.Pipeline = pl
+					return m, cmd
+				}
+				verb := "shut down"
+				if m.power.Action == "reboot" {
+					verb = "reboot"
+				}
+				m.power.ConfirmError = fmt.Sprintf(`Type "yes" to %s, or Esc to cancel.`, verb)
 			} else if m.current == screenInstallConfirm {
 				if strings.EqualFold(strings.TrimSpace(m.install.ConfirmInput.Value()), "yes") {
 					m.current = screenInstall
@@ -934,7 +1035,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// this can't move to something unexpected - rpm-ostree
 					// only moves to the latest deployment on the configured
 					// stream, and doesn't take effect until reboot - so
-					// there's nothing meaningful to confirm.
+					// there's nothing meaningful to confirm. Except when
+					// automatic OS package updates are already on
+					// (cfg.System.AutoUpdate): Zincati's already doing this in
+					// the background, so a heads-up notice (screenOSUpdateConfirm)
+					// comes first instead - see screens.OSUpdateModel.ViewAutoUpdateNotice.
+					if m.cfg.System.AutoUpdate {
+						m.current = screenOSUpdateConfirm
+						return m, nil
+					}
 					m.current = screenOSUpdate
 					pl, cmd := pipeline.New(osupdate.OSUpdateSteps, m.cfg)
 					m.osUpdate.Pipeline = pl
@@ -1102,6 +1211,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.menu = m.menu.Backspace()
 				return m, nil
 			}
+
+		case tea.KeyRunes:
+			// "press r to reboot" shortcut off a successful OS Packages
+			// update (see screens.OSUpdateModel.View's done copy) - reuses
+			// the power-options reboot confirm+apply flow instead of a
+			// separate one, so there's exactly one reboot implementation
+			// (see powerConfirmOrigin's doc comment for the Esc-back
+			// wrinkle that comes with reusing it from here).
+			if m.current == screenOSUpdate && m.osUpdate.Pipeline.Done && strings.EqualFold(msg.String(), "r") {
+				m.power.Action = "reboot"
+				m.powerConfirmOrigin = screenOSUpdate
+				m.current = screenPowerConfirm
+				m.power.ConfirmInput.Focus()
+				return m, nil
+			}
 		}
 	}
 
@@ -1168,6 +1292,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.current == screenStabilizerVersionConfirm {
 		var cmd tea.Cmd
 		m.stabilizerVersion.ConfirmInput, cmd = m.stabilizerVersion.ConfirmInput.Update(msg)
+		return m, cmd
+	}
+
+	if m.current == screenPowerConfirm {
+		var cmd tea.Cmd
+		m.power.ConfirmInput, cmd = m.power.ConfirmInput.Update(msg)
 		return m, cmd
 	}
 

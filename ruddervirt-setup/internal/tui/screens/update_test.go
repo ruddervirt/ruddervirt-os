@@ -247,7 +247,7 @@ func TestUpdateModelViewVersionsUpgradeIcon(t *testing.T) {
 	if !strings.Contains(findRowLine("ruddervirt-setup"), "↑") {
 		t.Error("ruddervirt-setup row should show the upgrade icon (SelfUpdateAvailable=true)")
 	}
-	if strings.Contains(findRowLine("Operating system"), "↑") {
-		t.Error("Operating system row should NOT show the upgrade icon (OSUpdateAvailable=false)")
+	if strings.Contains(findRowLine("OS Packages"), "↑") {
+		t.Error("OS Packages row should NOT show the upgrade icon (OSUpdateAvailable=false)")
 	}
 }

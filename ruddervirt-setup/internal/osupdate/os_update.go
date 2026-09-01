@@ -30,7 +30,7 @@ const osUpdateAvailableCheckTimeout = 20 * time.Second
 // UpdateStepLabel is the single step OSUpdateSteps runs.
 const UpdateStepLabel = "Updating operating system"
 
-// OSUpdateSteps is the Update screen's "Operating system" row pipeline:
+// OSUpdateSteps is the Update screen's "OS Packages" row pipeline:
 // `rpm-ostree upgrade --bypass-driver` stages the latest deployment
 // immediately, bypassing Zincati's own update-driver scheduling
 // (config.SystemConfig.AutoUpdate/WriteZincatiConfig) - an explicit

@@ -171,8 +171,20 @@ func (m model) View() string {
 	case screenUpdate:
 		return m.update.ViewRunning(m.installVisibleLogLines())
 
+	case screenOSUpdateConfirm:
+		return m.osUpdate.ViewAutoUpdateNotice()
+
 	case screenOSUpdate:
 		return m.osUpdate.View(m.installVisibleLogLines())
+
+	case screenPowerOptions:
+		return m.power.ViewOptions()
+
+	case screenPowerConfirm:
+		return m.power.ViewConfirm()
+
+	case screenPowerApply:
+		return m.power.ViewApply(m.installVisibleLogLines())
 
 	case screenUpdateVersions:
 		return m.update.ViewVersions(screens.UpdateViewParams{

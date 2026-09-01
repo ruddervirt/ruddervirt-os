@@ -30,6 +30,10 @@ const (
 	screenUpdateConfirm
 	screenUpdate
 	screenOSUpdate
+	screenOSUpdateConfirm
+	screenPowerOptions
+	screenPowerConfirm
+	screenPowerApply
 	screenPasswordCheck
 	screenPasswordChange
 	screenHostnameChange
@@ -116,6 +120,20 @@ type model struct {
 	// doesn't replace this process, so it returns to screenUpdateVersions on
 	// Esc instead of tea.Quit-ing.
 	osUpdate screens.OSUpdateModel
+
+	// power is the main menu's "power options" submenu's sub-model
+	// (screenPowerOptions, screenPowerConfirm, screenPowerApply) - see
+	// screens.PowerModel's doc comment. Like update above (and unlike
+	// osUpdate), a successful run never returns to this process: the host
+	// goes down with it.
+	power screens.PowerModel
+	// powerConfirmOrigin remembers which screen sent the operator into
+	// screenPowerConfirm - normally screenPowerOptions (the submenu itself),
+	// but screenOSUpdate's post-success "press r to reboot" shortcut sends
+	// them there directly too (see the "r" key handling in app.go), so Esc
+	// must cancel back to wherever they actually came from, same reasoning
+	// as installConfirmOrigin above.
+	powerConfirmOrigin screen
 
 	// Forced admin-password-change flow, gating entry into "configure" - see
 	// checkPasswordChangedCmd/password.go.
@@ -255,6 +273,8 @@ func initialModel() model {
 
 	stabilizerVersionConfirmInput := textinput.New()
 
+	powerConfirmInput := textinput.New()
+
 	cfg, _ := config.LoadConfig(config.ConfigPath)
 	if cfg.Network.InterfaceName == "" {
 		// Pre-fill with the internet-facing interface so Settings shows a
@@ -301,6 +321,7 @@ func initialModel() model {
 		},
 		stabilizerSettings: screens.StabilizerSettingsModel{ConfirmInput: stabilizerSettingsConfirmInput},
 		stabilizerVersion:  screens.StabilizerVersionModel{ConfirmInput: stabilizerVersionConfirmInput},
+		power:              screens.PowerModel{ConfirmInput: powerConfirmInput},
 		cfg:                cfg,
 		// Fallback until the first tea.WindowSizeMsg arrives.
 		termWidth:  80,

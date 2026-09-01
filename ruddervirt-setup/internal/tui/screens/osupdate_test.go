@@ -32,8 +32,8 @@ func TestOSUpdateModelPipelineWiringAdvancesToDone(t *testing.T) {
 	if !strings.Contains(out, "Staged. Reboot to switch into the new deployment.") {
 		t.Errorf("View() = %q, want the success message", out)
 	}
-	if !strings.Contains(out, "Press Esc to return to Update.") {
-		t.Errorf("View() = %q, want the return-to-Update hint", out)
+	if !strings.Contains(out, "Press r to reboot now, or Esc to return to Update.") {
+		t.Errorf("View() = %q, want the reboot-now/return-to-Update hint", out)
 	}
 }
 
