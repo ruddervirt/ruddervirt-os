@@ -112,7 +112,7 @@ storage:
           # placeholder - overwritten by ruddervirt-setup's "Installing k3s"
           # step, which always downloads the version selected in Settings.
     - path: /usr/local/bin/kubectl
-      mode: 0777
+      mode: 0755
       contents:
         inline: |
           #!/bin/sh
@@ -136,7 +136,7 @@ storage:
       contents:
         local: scripts/brand-ruddervirt.sh
     - path: /etc/profile.d/01-custom-profile.sh
-      mode: 0777
+      mode: 0644
       contents:
         inline: |
           alias vim="vi"
