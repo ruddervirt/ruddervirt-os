@@ -422,7 +422,7 @@ var SettingFields = []SettingField{
 		},
 	},
 	{
-		Key: "versions.k3s", Label: "k3s version", UpdateScreen: true,
+		Key: "versions.k3s", Label: "k3s", UpdateScreen: true,
 		Get: func(c *Config) string { return c.Versions.K3s },
 		Options: func(c *Config, versions VersionCache) []string {
 			// k3s doesn't support downgrades, so never offer anything older
@@ -444,7 +444,7 @@ var SettingFields = []SettingField{
 		},
 	},
 	{
-		Key: "versions.kubeovn", Label: "kube-ovn version", UpdateScreen: true,
+		Key: "versions.kubeovn", Label: "kube-ovn", UpdateScreen: true,
 		Get: func(c *Config) string { return c.Versions.KubeOVN },
 		Options: func(c *Config, versions VersionCache) []string {
 			// Hand-curated allowlist (supported-versions.yaml), same as
@@ -458,7 +458,7 @@ var SettingFields = []SettingField{
 		},
 	},
 	{
-		Key: "versions.multus", Label: "Multus version", UpdateScreen: true,
+		Key: "versions.multus", Label: "Multus", UpdateScreen: true,
 		Get: func(c *Config) string { return c.Versions.Multus },
 		Options: func(c *Config, versions VersionCache) []string {
 			// Same hand-curated-allowlist reasoning as versions.kubeovn above.
@@ -470,7 +470,7 @@ var SettingFields = []SettingField{
 		},
 	},
 	{
-		Key: "versions.kubevirt", Label: "KubeVirt version", UpdateScreen: true,
+		Key: "versions.kubevirt", Label: "KubeVirt", UpdateScreen: true,
 		Get: func(c *Config) string { return c.Versions.KubeVirt },
 		Options: func(c *Config, versions VersionCache) []string {
 			return versionspkg.SupportedVersionsAtLeast(versionspkg.SupportedVersions.KubeVirt, c.Versions.KubeVirt)
@@ -481,7 +481,7 @@ var SettingFields = []SettingField{
 		},
 	},
 	{
-		Key: "versions.cdi", Label: "CDI version", UpdateScreen: true,
+		Key: "versions.cdi", Label: "CDI", UpdateScreen: true,
 		Get: func(c *Config) string { return c.Versions.CDI },
 		Options: func(c *Config, versions VersionCache) []string {
 			return versionspkg.SupportedVersionsAtLeast(versionspkg.SupportedVersions.CDI, c.Versions.CDI)
@@ -492,7 +492,7 @@ var SettingFields = []SettingField{
 		},
 	},
 	{
-		Key: "versions.aileron", Label: "Aileron version", UpdateScreen: true,
+		Key: "versions.aileron", Label: "Aileron", UpdateScreen: true,
 		Get: func(c *Config) string { return c.Versions.Aileron },
 		Options: func(c *Config, versions VersionCache) []string {
 			// Aileron ships too frequently for a hand-curated list (unlike

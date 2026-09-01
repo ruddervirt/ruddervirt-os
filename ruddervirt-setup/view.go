@@ -218,6 +218,13 @@ func (m model) View() string {
 			ServiceStatuses:    m.serviceStatuses,
 			HostStats:          m.hostStats,
 			StatusUpdatedAt:    statusUpdatedAt,
+			UpdateAvailable: screens.AnyUpdateAvailable(screens.UpdateViewParams{
+				Cfg:                     m.cfg,
+				Versions:                config.VersionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected},
+				StabilizerSettingsState: m.stabilizerSettingsState,
+				SelfUpdateAvailable:     m.cachedSelfUpdateAvailable,
+				OSUpdateAvailable:       m.cachedOSUpdateAvailable,
+			}),
 		})
 	}
 }

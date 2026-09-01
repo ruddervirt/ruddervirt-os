@@ -10,6 +10,7 @@ import (
 	"ruddervirt-setup/internal/network"
 	"ruddervirt-setup/internal/stabilizer/settings"
 	"ruddervirt-setup/internal/tui/pipeline"
+	versionspkg "ruddervirt-setup/internal/versions"
 )
 
 // TestNetworkSetupLabel/TestAdvancedSettingsLabel/TestSettingsRows/
@@ -67,8 +68,64 @@ func TestUpdateScreenUpgradeIcon(t *testing.T) {
 	if strings.Contains(findRowLine("Operating system"), "↑") {
 		t.Error("Operating system row should NOT show the upgrade icon (cachedOSUpdateAvailable=false)")
 	}
-	if !strings.Contains(findRowLine("k3s version"), "↑") {
-		t.Error("k3s version row should show the upgrade icon (v1.31.0 > v1.30.0 available)")
+	if !strings.Contains(findRowLine("k3s"), "↑") {
+		t.Error("k3s row should show the upgrade icon (v1.31.0 > v1.30.0 available)")
+	}
+}
+
+// TestHomeMenuUpdateAvailableIcon confirms the home screen's "update" row
+// picks up the ↑ icon from the same caches screenUpdateVersions itself
+// renders from (see screens.AnyUpdateAvailable), and doesn't show one when
+// nothing's out of date.
+func TestHomeMenuUpdateAvailableIcon(t *testing.T) {
+	findUpdateLine := func(m model) string {
+		lines := strings.Split(m.View(), "\n")
+		for _, l := range lines {
+			if strings.Contains(l, "update") {
+				return l
+			}
+		}
+		t.Fatalf("update row not found in rendered output:\n%s", m.View())
+		return ""
+	}
+
+	available := model{
+		cfg:                       config.Config{Versions: config.VersionsConfig{K3s: "v1.30.0"}},
+		termWidth:                 120,
+		termHeight:                40,
+		cachedK3sVersions:         []string{"v1.31.0", "v1.30.0"},
+		cachedSelfUpdateAvailable: false,
+		cachedOSUpdateAvailable:   false,
+	}
+	if !strings.Contains(findUpdateLine(available), "↑") {
+		t.Error("update row should show the upgrade icon when k3s has a newer version available")
+	}
+
+	// Newest supported release per hand-curated component (not
+	// Default*Version - default-versions.yaml can lag behind
+	// supported-versions.yaml, which would make that version look
+	// upgradable and defeat the point of this "nothing available" case).
+	// K3s/Aileron are left unset: their Options come from a fetch cache
+	// (empty here), so they report no upgrade regardless of value.
+	newest := func(all []string) string {
+		sorted := versionspkg.SupportedVersionsAtLeast(all, "")
+		if len(sorted) == 0 {
+			return ""
+		}
+		return sorted[0]
+	}
+	upToDate := model{
+		cfg: config.Config{Versions: config.VersionsConfig{
+			KubeOVN:  newest(versionspkg.SupportedVersions.KubeOVN),
+			Multus:   newest(versionspkg.SupportedVersions.Multus),
+			KubeVirt: newest(versionspkg.SupportedVersions.KubeVirt),
+			CDI:      newest(versionspkg.SupportedVersions.CDI),
+		}},
+		termWidth:  120,
+		termHeight: 40,
+	}
+	if strings.Contains(findUpdateLine(upToDate), "↑") {
+		t.Error("update row should NOT show the upgrade icon when nothing has an upgrade available")
 	}
 }
 

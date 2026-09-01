@@ -103,6 +103,65 @@ func UpdateRows() []UpdateRow {
 	return rows
 }
 
+// UpdateRowHasUpgrade reports whether r has something newer than what's
+// currently configured/running, given the same cross-group state
+// ViewVersions renders from (p). Generalized across every
+// config.SettingField row via its own options func (already filtered to "no
+// downgrades from current", so "any option isn't the current value" means
+// "an upgrade exists") rather than duplicating each component's version
+// comparator. The two non-SettingField rows (ruddervirt-setup, OS) and the
+// stabilizer-managed Aileron case (options come from
+// stabilizer.StabilizerVersionPickerOptions instead) are special-cased.
+// Exported so the home screen's menu can flag the "update" row without
+// duplicating this logic (see AnyUpdateAvailable, MenuModel.ViewHome).
+func UpdateRowHasUpgrade(r UpdateRow, p UpdateViewParams) bool {
+	versions := p.Versions
+	if r.IsSelfUpdate {
+		return p.SelfUpdateAvailable
+	}
+	if r.IsOSUpdate {
+		return p.OSUpdateAvailable
+	}
+	if r.Field.Key == "versions.aileron" && versions.StabilizerDetected {
+		if p.StabilizerSettingsState == nil {
+			return false
+		}
+		for _, o := range stabilizer.StabilizerVersionPickerOptions(versions.Aileron, p.StabilizerSettingsState.DeclaredVersion) {
+			if strings.TrimPrefix(o, "v") != p.StabilizerSettingsState.DeclaredVersion {
+				return true
+			}
+		}
+		return false
+	}
+	if r.Field.Locked != nil {
+		if locked, _ := r.Field.Locked(&p.Cfg, versions); locked {
+			return false
+		}
+	}
+	if r.Field.Options == nil {
+		return false
+	}
+	current := r.Field.Get(&p.Cfg)
+	for _, o := range r.Field.Options(&p.Cfg, versions) {
+		if o != current {
+			return true
+		}
+	}
+	return false
+}
+
+// AnyUpdateAvailable reports whether any screenUpdateVersions row
+// (ruddervirt-setup, OS, or a component) has an upgrade available, for the
+// home screen's "update" menu row (see MenuModel.ViewHome).
+func AnyUpdateAvailable(p UpdateViewParams) bool {
+	for _, r := range UpdateRows() {
+		if UpdateRowHasUpgrade(r, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // ScrollCursor caps Cursor at the last real table row for scroll-window
 // purposes - mirrors SettingsModel.ScrollCursor.
 func (m UpdateModel) ScrollCursor() int {
@@ -324,49 +383,7 @@ func (m UpdateModel) ViewVersions(p UpdateViewParams) string {
 	total := len(rows)
 
 	versions := p.Versions
-
-	// rowHasUpgrade reports whether r has something newer than what's
-	// currently configured/running. Generalized across every
-	// config.SettingField row via its own options func (already filtered to
-	// "no downgrades from current", so "any option isn't the current value"
-	// means "an upgrade exists") rather than duplicating each component's
-	// version comparator. The two non-SettingField rows (ruddervirt-setup,
-	// OS) and the stabilizer-managed Aileron case (options come from
-	// stabilizer.StabilizerVersionPickerOptions instead) are special-cased.
-	rowHasUpgrade := func(r UpdateRow) bool {
-		if r.IsSelfUpdate {
-			return p.SelfUpdateAvailable
-		}
-		if r.IsOSUpdate {
-			return p.OSUpdateAvailable
-		}
-		if r.Field.Key == "versions.aileron" && versions.StabilizerDetected {
-			if p.StabilizerSettingsState == nil {
-				return false
-			}
-			for _, o := range stabilizer.StabilizerVersionPickerOptions(versions.Aileron, p.StabilizerSettingsState.DeclaredVersion) {
-				if strings.TrimPrefix(o, "v") != p.StabilizerSettingsState.DeclaredVersion {
-					return true
-				}
-			}
-			return false
-		}
-		if r.Field.Locked != nil {
-			if locked, _ := r.Field.Locked(&p.Cfg, versions); locked {
-				return false
-			}
-		}
-		if r.Field.Options == nil {
-			return false
-		}
-		current := r.Field.Get(&p.Cfg)
-		for _, o := range r.Field.Options(&p.Cfg, versions) {
-			if o != current {
-				return true
-			}
-		}
-		return false
-	}
+	rowHasUpgrade := func(r UpdateRow) bool { return UpdateRowHasUpgrade(r, p) }
 
 	// updateRowIconPrefix is a fixed-width (2 column) plain-text prefix
 	// baked into the label BEFORE fitCell/width computation, so alignment

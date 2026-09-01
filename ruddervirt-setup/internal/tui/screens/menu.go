@@ -124,6 +124,11 @@ type HomeParams struct {
 	ServiceStatuses []status.ServiceStatus
 	HostStats       status.HostStats
 	StatusUpdatedAt time.Time
+	// UpdateAvailable marks the "update" row with an ↑ (see
+	// screens.AnyUpdateAvailable) - computed from the same caches
+	// screenUpdateVersions itself renders from, so this flag matches
+	// whatever that screen would show.
+	UpdateAvailable bool
 }
 
 // ViewHome renders screenMenu's default (home) view - moved verbatim from
@@ -143,10 +148,20 @@ func (m MenuModel) ViewHome(p HomeParams) string {
 	showCursor := m.Input == ""
 	for i, item := range MenuOrder {
 		cursor := "  "
-		label := item
+		// display bakes the ↑ prefix in before styling, same "style only
+		// after the plain text is final" rule as updateRowIconPrefix
+		// (internal/tui/screens/update.go), so it survives either branch
+		// below untouched by the other.
+		display := item
+		if item == "update" && p.UpdateAvailable {
+			display = "↑ " + item
+		}
+		label := display
 		if showCursor && i == m.Cursor {
 			cursor = tui.CursorStyle.Render(">") + " "
-			label = tui.SelectedStyle.Render(item)
+			label = tui.SelectedStyle.Render(display)
+		} else if item == "update" && p.UpdateAvailable {
+			label = tui.ColorUpdateIcon(display)
 		}
 		s += fmt.Sprintf("  %s%s %s\n", cursor, tui.MenuKeyStyle.Render(fmt.Sprintf("%d.", i+1)), label)
 	}
