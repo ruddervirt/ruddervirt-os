@@ -24,6 +24,17 @@ const (
 	cdiManifestMarkerPath      = "/var/lib/ruddervirt/cdi-manifest.applied"
 )
 
+// kubevirtClusterMarkerPath/cdiClusterMarkerPath record which KubeVirt/CDI
+// versions were last kubectl-applied to the live cluster - distinct from the
+// download markers above, which only track what's on disk. Lets
+// internal/k3s.PrepareK3sStep skip a redundant re-apply (and the Aileron
+// restart that must follow a real one) when the desired version was already
+// applied.
+const (
+	kubevirtClusterMarkerPath = "/var/lib/ruddervirt/kubevirt-cr.applied"
+	cdiClusterMarkerPath      = "/var/lib/ruddervirt/cdi-cr.applied"
+)
+
 // kubevirtCDIManifestFiles lists every file DownloadKubeVirtCDIManifestsStep
 // writes into manifestDir - shared with the skip-check so a manually
 // deleted file forces a re-download instead of trusting a stale marker.
@@ -76,6 +87,32 @@ func markKubeVirtManifestApplied(write func(path string, data []byte) error, ver
 
 func markCDIManifestApplied(write func(path string, data []byte) error, version string) error {
 	return marker.Write(write, cdiManifestMarkerPath, version)
+}
+
+// KubeVirtClusterApplySatisfied/CDIClusterApplySatisfied report whether the
+// KubeVirt/CDI operator+CR were already kubectl-applied to the cluster at the
+// desired version - a simple marker-version comparison, same idiom as
+// kubevirtCDIManifestsSatisfied's download check, with no live-cluster drift
+// detection.
+func KubeVirtClusterApplySatisfied(kubevirtVersion string) bool {
+	v, err := marker.Read(kubevirtClusterMarkerPath)
+	return err == nil && v == kubevirtVersion
+}
+
+func CDIClusterApplySatisfied(cdiVersion string) bool {
+	v, err := marker.Read(cdiClusterMarkerPath)
+	return err == nil && v == cdiVersion
+}
+
+// MarkKubeVirtClusterApplied/MarkCDIClusterApplied record that version was
+// just successfully kubectl-applied to the cluster. Exported for
+// internal/k3s.PrepareK3sStep, which owns the actual kubectl apply calls.
+func MarkKubeVirtClusterApplied(write func(path string, data []byte) error, version string) error {
+	return marker.Write(write, kubevirtClusterMarkerPath, version)
+}
+
+func MarkCDIClusterApplied(write func(path string, data []byte) error, version string) error {
+	return marker.Write(write, cdiClusterMarkerPath, version)
 }
 
 // kubevirtCDIManifestsPresent reports whether every file in

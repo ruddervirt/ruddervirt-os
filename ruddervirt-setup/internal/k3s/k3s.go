@@ -525,11 +525,11 @@ func ApplyKubeOvnStep(ch chan<- exec.StepMsg, wrap func(string) exec.StepMsg, wr
 // remaining solution manifests. kube-ovn itself is applied and verified
 // healthy earlier, by ApplyKubeOvnStep.
 //
-// engine/aileronUIEnabled/aileronVersion/multusVersion are already resolved
-// (configured-or-default). stabilizerPresent/applyAileronFn are injected
-// (package main's stabilizerChartPresent/applyAileron, aileron_bridge.go)
-// since this package has no access to package main - see package main's
-// prepareK3sStep adapter.
+// engine/aileronUIEnabled/aileronVersion/multusVersion/kubevirtVersion/
+// cdiVersion are already resolved (configured-or-default).
+// stabilizerPresent/applyAileronFn are injected (package main's
+// stabilizerChartPresent/applyAileron, aileron_bridge.go) since this package
+// has no access to package main - see package main's prepareK3sStep adapter.
 func PrepareK3sStep(
 	ch chan<- exec.StepMsg,
 	wrap func(string) exec.StepMsg,
@@ -537,6 +537,7 @@ func PrepareK3sStep(
 	engine string,
 	aileronUIEnabled bool,
 	aileronVersion, multusVersion string,
+	kubevirtVersion, cdiVersion string,
 	stabilizerPresent func() bool,
 	applyAileronFn func(ch chan<- exec.StepMsg, kubectlBin, version string, uiEnabled bool) error,
 ) error {
@@ -546,6 +547,14 @@ func PrepareK3sStep(
 	if _, err := os.Stat(kubeconfig); err != nil {
 		return fmt.Errorf("kubeconfig not found at %s: %w", kubeconfig, err)
 	}
+
+	// Captured before any KubeVirt CR (re)apply below, so the Aileron
+	// restart trigger further down can tell "Aileron was already running
+	// and might now be out of sync with the CR" apart from "Aileron is
+	// about to be freshly installed this same run and will pick up the
+	// current CR on its own first startup" - restarting in the latter case
+	// would just be a pointless second ~30-90s rollout.
+	aileronExistedBefore := exec.RunPrivileged(kubectlBin, "-n", "ruddervirt-system", "get", "deployment", "aileron").Run() == nil
 
 	// The CSI VolumeSnapshot CRDs/controller are shared infrastructure -
 	// every engine's VolumeSnapshotClass (applied below, after the engine
@@ -567,21 +576,9 @@ func PrepareK3sStep(
 		return err
 	}
 
-	for _, component := range kubevirt.CDIInstallSpecs {
-		ch <- wrap(fmt.Sprintf("Applying %s operator and CRDs...", component.DisplayName))
-		if err := exec.RunStreamed(ch, wrap, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/"+component.OperatorManifest); err != nil {
-			return err
-		}
-
-		ch <- wrap(fmt.Sprintf("Waiting for CRD %s to become Established...", component.CRDName))
-		if err := exec.RunStreamed(ch, wrap, kubectlBin, "wait", "--for=condition=Established", "crd/"+component.CRDName, "--timeout=300s"); err != nil {
-			return err
-		}
-
-		ch <- wrap(fmt.Sprintf("Applying %s custom resource...", component.DisplayName))
-		if err := exec.RunStreamed(ch, wrap, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/"+component.CustomResourceManifest); err != nil {
-			return err
-		}
+	kubevirtCRChanged, err := applyKubeVirtCDIStep(ch, wrap, write, kubectlBin, kubevirtVersion, cdiVersion)
+	if err != nil {
+		return err
 	}
 
 	// openebs's StorageProfile override needs the StorageProfile CRD, but
@@ -649,6 +646,10 @@ func PrepareK3sStep(
 		}
 	}
 
+	if err := restartAileronIfNeeded(ch, wrap, kubectlBin, kubevirtCRChanged, aileronExistedBefore); err != nil {
+		return err
+	}
+
 	if out, err := exec.RunPrivileged("/usr/bin/mkdir", "-p", "/var/lib/ruddervirt").CombinedOutput(); err != nil {
 		return exec.WrapCmdErr(out, err)
 	}
@@ -657,6 +658,81 @@ func PrepareK3sStep(
 	}
 
 	return nil
+}
+
+// applyKubeVirtCDIStep applies the KubeVirt/CDI operators, CRDs, and custom
+// resources to the cluster, skipping any component whose desired version was
+// already applied (kubevirt.KubeVirtClusterApplySatisfied/
+// CDIClusterApplySatisfied), and marking a component applied
+// (kubevirt.MarkKubeVirtClusterApplied/MarkCDIClusterApplied) once its own
+// apply succeeds. Returns whether the KubeVirt component specifically was
+// (re)applied - only its CR carries Aileron's feature-gate patches, so a
+// CDI-only change never needs the Aileron restart PrepareK3sStep triggers
+// off this.
+func applyKubeVirtCDIStep(ch chan<- exec.StepMsg, wrap func(string) exec.StepMsg, write func(path string, data []byte) error, kubectlBin, kubevirtVersion, cdiVersion string) (bool, error) {
+	kubevirtCRChanged := false
+	for _, component := range kubevirt.CDIInstallSpecs {
+		var desiredVersion string
+		var satisfied bool
+		switch component.DisplayName {
+		case "KubeVirt":
+			desiredVersion = kubevirtVersion
+			satisfied = kubevirt.KubeVirtClusterApplySatisfied(desiredVersion)
+		case "CDI":
+			desiredVersion = cdiVersion
+			satisfied = kubevirt.CDIClusterApplySatisfied(desiredVersion)
+		}
+		if satisfied {
+			ch <- wrap(fmt.Sprintf("%s %s already applied to the cluster - skipping", component.DisplayName, desiredVersion))
+			continue
+		}
+
+		ch <- wrap(fmt.Sprintf("Applying %s operator and CRDs...", component.DisplayName))
+		if err := exec.RunStreamed(ch, wrap, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/"+component.OperatorManifest); err != nil {
+			return kubevirtCRChanged, err
+		}
+
+		ch <- wrap(fmt.Sprintf("Waiting for CRD %s to become Established...", component.CRDName))
+		if err := exec.RunStreamed(ch, wrap, kubectlBin, "wait", "--for=condition=Established", "crd/"+component.CRDName, "--timeout=300s"); err != nil {
+			return kubevirtCRChanged, err
+		}
+
+		ch <- wrap(fmt.Sprintf("Applying %s custom resource...", component.DisplayName))
+		if err := exec.RunStreamed(ch, wrap, kubectlBin, "apply", "-f", "/etc/ruddervirt/manifests/"+component.CustomResourceManifest); err != nil {
+			return kubevirtCRChanged, err
+		}
+
+		switch component.DisplayName {
+		case "KubeVirt":
+			if err := kubevirt.MarkKubeVirtClusterApplied(write, desiredVersion); err != nil {
+				return kubevirtCRChanged, err
+			}
+			kubevirtCRChanged = true
+		case "CDI":
+			if err := kubevirt.MarkCDIClusterApplied(write, desiredVersion); err != nil {
+				return kubevirtCRChanged, err
+			}
+		}
+	}
+	return kubevirtCRChanged, nil
+}
+
+// restartAileronIfNeeded restarts Aileron's Deployment after the KubeVirt CR
+// was actually reapplied to a cluster where Aileron was already running -
+// Aileron only patches its required feature gates/emulated machines onto the
+// KubeVirt CR once, at its own controller-manager startup, and has no
+// watch/reconcile loop that would otherwise notice the CR changing
+// underneath it. Skipped when the KubeVirt CR wasn't actually reapplied this
+// run, or when Aileron wasn't running yet beforehand - a fresh install's own
+// first startup (applyAileronFn, called by PrepareK3sStep just before this)
+// already covers the current CR, so restarting it again would just be a
+// second, pointless rollout.
+func restartAileronIfNeeded(ch chan<- exec.StepMsg, wrap func(string) exec.StepMsg, kubectlBin string, kubevirtCRChanged, aileronExistedBefore bool) error {
+	if !kubevirtCRChanged || !aileronExistedBefore {
+		return nil
+	}
+	ch <- wrap("Restarting aileron so it re-applies required KubeVirt feature gates...")
+	return exec.RunStreamed(ch, wrap, kubectlBin, "-n", "ruddervirt-system", "rollout", "restart", "deployment/aileron")
 }
 
 // applyStorageEngine applies the kustomize overlay for engine and blocks

@@ -10,6 +10,7 @@ import (
 	"ruddervirt-setup/internal/config"
 	"ruddervirt-setup/internal/installsteps"
 	"ruddervirt-setup/internal/k3s"
+	"ruddervirt-setup/internal/kubevirt"
 	versionspkg "ruddervirt-setup/internal/versions"
 )
 
@@ -82,23 +83,40 @@ func prepareK3sStep(cfg config.Config, ch chan<- installsteps.StepMsg) {
 	if multusVersion == "" {
 		multusVersion = versionspkg.DefaultMultusVersion
 	}
+	kubevirtVersion := resolveKubeVirtVersion(cfg)
+	cdiVersion := resolveCDIVersion(cfg)
 
 	err := k3s.PrepareK3sStep(
 		ch, wrapStepOutput, config.WritePrivileged,
 		cfg.Storage.Engine, cfg.System.AileronUIEnabled, aileronVersion, multusVersion,
+		kubevirtVersion, cdiVersion,
 		stabilizerChartPresent, applyAileron,
 	)
 	ch <- stepDoneMsg{Label: label, Err: err}
 }
 
-// planApplyManifests deliberately never touches a live cluster - there may be
-// no k3s API to query yet (e.g. the first install, before k3s has started).
-// kubectl apply/wait are naturally idempotent (already-applied/already-Ready
-// is a fast no-op), so there's no meaningful skip-vs-do distinction to
-// predict here, unlike installK3sStep's or downloadKubeVirtCDIManifestsStep's
-// on-disk version checks.
+// planApplyManifests deliberately never touches a live cluster for most of
+// what this step does - there may be no k3s API to query yet (e.g. the first
+// install, before k3s has started), and kubectl apply/wait are naturally
+// idempotent (already-applied/already-Ready is a fast no-op) for the
+// storage/kube-ovn/multus/Aileron parts. The KubeVirt/CDI cluster-apply skip
+// decision, unlike those, is predictable from local markers alone (same as
+// planKubeVirtCDIDownload), so it's called out explicitly here.
 func planApplyManifests(cfg config.Config) string {
-	return "will run - applies storage plus KubeVirt/CDI operators, CRDs, and custom resources, and Aileron unless a \"stabilizer\" HelmChart already manages it (already-applied resources and Ready waits are no-ops)"
+	kubevirtVersion := resolveKubeVirtVersion(cfg)
+	cdiVersion := resolveCDIVersion(cfg)
+	kvNote := "will apply"
+	if kubevirt.KubeVirtClusterApplySatisfied(kubevirtVersion) {
+		kvNote = "already applied - skip"
+	}
+	cdiNote := "will apply"
+	if kubevirt.CDIClusterApplySatisfied(cdiVersion) {
+		cdiNote = "already applied - skip"
+	}
+	return fmt.Sprintf(
+		"will run - applies storage; KubeVirt %s (%s) and CDI %s (%s); Aileron unless a \"stabilizer\" HelmChart already manages it",
+		kubevirtVersion, kvNote, cdiVersion, cdiNote,
+	)
 }
 
 // k3sVersionsFetchedMsg carries fetchK3sVersions' result back into Update -
