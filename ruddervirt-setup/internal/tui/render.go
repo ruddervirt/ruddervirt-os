@@ -74,6 +74,17 @@ func formatGiB(v float64) string {
 	return fmt.Sprintf("%.0f GiB", v)
 }
 
+// formatDiskGi renders a GiB figure for the home screen's Disk row, switching
+// to TiB above 1024 like formatGiB, but without formatGiB's space before the
+// unit - Disk's "MGi" style predates Mem's "M GiB" and this keeps that
+// figure's format unchanged for the common (sub-TiB) case.
+func formatDiskGi(v float64) string {
+	if v >= 1024 {
+		return fmt.Sprintf("%.1fTi", v/1024)
+	}
+	return fmt.Sprintf("%.0fGi", v)
+}
+
 // formatDiskUsage renders the home screen's Disk figure as
 // "MGi used/NGi total - X% (YGi free)" (used%, colored via
 // StyleUsagePercent). Leads with "used", like Mem, so the number matches the
@@ -84,7 +95,7 @@ func formatDiskUsage(freeGiB, totalGiB float64) string {
 	if totalGiB > 0 {
 		usedPercent = usedGiB / totalGiB * 100
 	}
-	return fmt.Sprintf("%.0fGi used/%.0fGi total - %s (%.0fGi free)", usedGiB, totalGiB, StyleUsagePercent(usedPercent), freeGiB)
+	return fmt.Sprintf("%s used/%s total - %s (%s free)", formatDiskGi(usedGiB), formatDiskGi(totalGiB), StyleUsagePercent(usedPercent), formatDiskGi(freeGiB))
 }
 
 // hostStatsLine formats the home screen's System row - CPU/mem/disk/VM

@@ -120,9 +120,10 @@ func TestFormatDiskUsage(t *testing.T) {
 		free, total float64
 		want        string
 	}{
-		{412, 1863, "1451Gi used/1863Gi total - 78% (412Gi free)"},
-		{1843.2, 2048, "205Gi used/2048Gi total - 10% (1843Gi free)"},
+		{412, 1863, "1.4Ti used/1.8Ti total - 78% (412Gi free)"},
+		{1843.2, 2048, "205Gi used/2.0Ti total - 10% (1.8Ti free)"},
 		{0, 0, "0Gi used/0Gi total - 0% (0Gi free)"},
+		{500, 10569, "9.8Ti used/10.3Ti total - 95% (500Gi free)"},
 	}
 	for _, c := range cases {
 		if got := formatDiskUsage(c.free, c.total); got != c.want {
@@ -143,7 +144,7 @@ func TestHostStatsLine(t *testing.T) {
 		VMRunning: 3, VMTotal: 5, VMKnown: true,
 	}
 	got := hostStatsLine(hs)
-	want := "CPU 12%   Mem 45% (28 GiB / 63 GiB)   Disk 1451Gi used/1863Gi total - 78% (412Gi free)   VMs 3 running / 5 total"
+	want := "CPU 12%   Mem 45% (28 GiB / 63 GiB)   Disk 1.4Ti used/1.8Ti total - 78% (412Gi free)   VMs 3 running / 5 total"
 	if got != want {
 		t.Errorf("hostStatsLine(...) = %q, want %q", got, want)
 	}
