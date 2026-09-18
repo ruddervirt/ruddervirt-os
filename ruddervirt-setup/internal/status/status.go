@@ -117,9 +117,32 @@ func FetchServiceStatuses(engine string, configSaved func() bool, stabilizerPres
 
 	statuses := []ServiceStatus{{Name: "k3s", State: "running"}}
 
+	// Probed per-workload as "are its live pods Ready", NOT as `rollout
+	// status` (what k3s.go's install-time waitForKubeOvnHealthy uses). The
+	// two look interchangeable but aren't, and only the install path can
+	// safely ask about rollouts.
+	//
+	// A graceful node shutdown (shutdownGracePeriod, /etc/kubelet.config)
+	// has kubelet reject every pod the controllers keep recreating on the
+	// way down, marking each Failed/NodeShutdown - one reboot can leave
+	// >100 such corpses, and nothing reaps them at k3s's default
+	// terminated-pod-gc-threshold. DaemonSet status is then permanently
+	// wrong: the DaemonSet controller grades a node by whichever of its
+	// pods sorts first by creation timestamp, WITHOUT filtering terminal
+	// ones, so .status.numberAvailable (exactly what `rollout status`
+	// reads) can sit at 0 forever while the real pod is Ready. Deployments
+	// escape this only because the ReplicaSet controller runs its pod list
+	// through FilterActivePods first - so this bit the two DaemonSets here
+	// and reported a healthy CNI as "not ready" until the next reinstall.
+	//
+	// status.phase=Running excludes the corpses outright. It still fails
+	// closed: a component that is genuinely down matches no Running pods,
+	// and `kubectl wait` exits non-zero ("no matching resources found")
+	// rather than vacuously passing on an empty set.
 	kubeOvnReady := true
 	for _, w := range k3s.KubeOvnCoreWorkloads {
-		if !nonInteractiveSucceeds(kubectlBin, "-n", "kube-system", "rollout", "status", w.Kind+"/"+w.Name, "--timeout=1s") {
+		if !nonInteractiveSucceeds(kubectlBin, "-n", "kube-system", "wait", "--for=condition=Ready",
+			"pod", "-l", "app="+w.Selector, "--field-selector=status.phase=Running", "--timeout=1s") {
 			kubeOvnReady = false
 			break
 		}

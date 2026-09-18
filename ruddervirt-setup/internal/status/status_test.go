@@ -4,9 +4,11 @@ package status
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"ruddervirt-setup/internal/exec/exectest"
+	"ruddervirt-setup/internal/k3s"
 	"ruddervirt-setup/internal/storage"
 )
 
@@ -80,9 +82,9 @@ func TestFetchServiceStatuses(t *testing.T) {
 		}
 	})
 
-	t.Run("kube-ovn still rolling out is reflected while everything else is ready", func(t *testing.T) {
+	t.Run("kube-ovn dataplane down is reflected while everything else is ready", func(t *testing.T) {
 		r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
-			if exectest.CmdContains(name, args, "rollout", "status", "ovs-ovn") {
+			if exectest.CmdContains(name, args, "wait", "app=ovs") {
 				return exectest.Outcome{Err: exectest.ErrFake}
 			}
 			return exectest.Outcome{}
@@ -98,6 +100,44 @@ func TestFetchServiceStatuses(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("FetchServiceStatuses() = %+v, want %+v", got, want)
+		}
+	})
+
+	// Regression: leftover Failed/NodeShutdown pods from a graceful reboot
+	// pin a DaemonSet's .status.numberAvailable at 0 forever, so the home
+	// screen must never grade kube-ovn with `rollout status` - see the
+	// probe's comment in status.go. A runner that fails every rollout call
+	// but passes the pod waits stands in for exactly that cluster.
+	t.Run("kube-ovn reads ready after a reboot leaves stale pods behind", func(t *testing.T) {
+		r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
+			if exectest.CmdContains(name, args, "rollout", "status") {
+				return exectest.Outcome{Err: exectest.ErrFake}
+			}
+			return exectest.Outcome{}
+		}}
+		var got []ServiceStatus
+		exectest.WithFakeRunner(r, func() { got = FetchServiceStatuses("openebs", configured, noStabilizer) })
+		for _, s := range got {
+			if s.Name == "kube-ovn" && s.State != "ready" {
+				t.Errorf("kube-ovn = %q, want %q - the check still depends on rollout status", s.State, "ready")
+			}
+		}
+	})
+
+	t.Run("kube-ovn checks only live pods, so corpses can't be graded", func(t *testing.T) {
+		r := &exectest.FakeRunner{}
+		exectest.WithFakeRunner(r, func() { FetchServiceStatuses("openebs", configured, noStabilizer) })
+		for _, w := range k3s.KubeOvnCoreWorkloads {
+			var saw bool
+			for _, c := range r.Calls {
+				if exectest.CmdContains("", strings.Fields(c), "wait", "app="+w.Selector, "status.phase=Running") {
+					saw = true
+					break
+				}
+			}
+			if !saw {
+				t.Errorf("no live-pod readiness check for %s/%s, calls = %v", w.Kind, w.Name, r.Calls)
+			}
 		}
 	})
 

@@ -441,11 +441,16 @@ func applyKubeOvn(ch chan<- exec.StepMsg, wrap func(string) exec.StepMsg, write 
 // app.kubernetes.io/instance selector, and a namespace-wide wait would
 // also catch helm-controller's bootstrap Job pod (which never reports
 // Ready). Exported: status.go's home-screen service check ranges over this.
-var KubeOvnCoreWorkloads = []struct{ Kind, Name string }{
-	{"daemonset", "ovs-ovn"},
-	{"daemonset", "kube-ovn-cni"},
-	{"deployment", "kube-ovn-controller"},
-	{"deployment", "ovn-central"},
+//
+// Selector is each workload's own "app" pod label, which status.go needs
+// because it asks a different question than waitForKubeOvnHealthy does -
+// "is this up right now" rather than "did a rollout converge". See that
+// caller for why the distinction matters after a reboot.
+var KubeOvnCoreWorkloads = []struct{ Kind, Name, Selector string }{
+	{"daemonset", "ovs-ovn", "ovs"},
+	{"daemonset", "kube-ovn-cni", "kube-ovn-cni"},
+	{"deployment", "kube-ovn-controller", "kube-ovn-controller"},
+	{"deployment", "ovn-central", "ovn-central"},
 }
 
 // waitForKubeOvnHealthy blocks until kube-ovn's core workloads finish
