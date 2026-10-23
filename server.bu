@@ -212,6 +212,13 @@ storage:
         inline: |
           fs.inotify.max_user_instances=8192
           fs.inotify.max_user_watches=524288
+    - path: /etc/systemd/journald.conf.d/01-ruddervirt.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          [Journal]
+          SystemMaxUse=1024M
     - path: /etc/ssh/sshd_config.d/01-allow-password.conf
       mode: 0644
       overwrite: true
