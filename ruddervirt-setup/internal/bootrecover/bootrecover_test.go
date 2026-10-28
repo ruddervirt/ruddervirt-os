@@ -72,6 +72,13 @@ func TestWriteAssetsWritesEveryAssetWithCorrectModes(t *testing.T) {
 	if !strings.Contains(f.data["/usr/local/bin/ruddervirt-boot-recover"], "reap_corpses") {
 		t.Error("embedded recovery script looks wrong (missing reap_corpses)")
 	}
+	// Cadence guard: the reaper must sweep repeatedly through the CNI
+	// convergence window, not once at boot - corpse bursts can be born at any
+	// point in that window, not just in the first seconds. The reap call
+	// inside wait_for_cni's loop is that guarantee; assert it survived.
+	if !strings.Contains(f.data["/usr/local/bin/ruddervirt-boot-recover"], "while :; do\n    reap_corpses") {
+		t.Error("reaper is not looped inside wait_for_cni (corpse-burst regression risk)")
+	}
 	// The unit must point at the exact ExecStart the script is written to.
 	if !strings.Contains(strings.TrimSpace(f.data["/etc/systemd/system/ruddervirt-boot-recover.service"]), "ExecStart=/usr/local/bin/ruddervirt-boot-recover") {
 		t.Error("unit ExecStart does not match script path")
