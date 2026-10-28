@@ -31,7 +31,8 @@ TUI_BIN   := scripts/ruddervirt-setup
 # tracking most of the tree.
 TUI_SRC   := $(shell find ruddervirt-setup -name '*.go' ! -name '*_test.go' 2>/dev/null) \
              ruddervirt-setup/go.mod ruddervirt-setup/go.sum \
-             $(shell find ruddervirt-setup -name '*.yaml' 2>/dev/null)
+             $(shell find ruddervirt-setup -name '*.yaml' 2>/dev/null) \
+             $(shell find ruddervirt-setup -name '*.sh' 2>/dev/null)  # go:embed'd scripts
 # Port for the dev binary-serving HTTP server (must match the URL in server.bu).
 TUI_SERVE_PORT ?= 8080
 # Host port forwarded to the guest's aileron-ui NodePort (30806 - the

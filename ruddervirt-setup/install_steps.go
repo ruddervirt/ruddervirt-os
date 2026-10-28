@@ -16,6 +16,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"ruddervirt-setup/internal/bootrecover"
 	"ruddervirt-setup/internal/config"
 	execpkg "ruddervirt-setup/internal/exec"
 	"ruddervirt-setup/internal/installsteps"
@@ -41,6 +42,8 @@ LimitNPROC=infinity
 LimitCORE=infinity
 TasksMax=infinity
 TimeoutStartSec=0
+# Let kubelet graceful shutdown (120s) drain pod statuses before SIGKILL.
+TimeoutStopSec=180
 Restart=always
 RestartSec=5s
 ExecStartPre=/bin/mkdir -p /etc/rancher/k3s
@@ -287,6 +290,50 @@ var installSteps = []installsteps.Step{
 				ch <- stepOutputMsg(s)
 			}
 			ch <- stepDoneMsg{Label: label, Err: err}
+		},
+	},
+	// Delivered here, not via server.bu: Ignition runs once at install, so
+	// nodes that predate boot recovery would never receive it. Idempotent -
+	// every run re-syncs script/unit/kubelet-config/watchdog onto the node.
+	// Runs before "Enabling and starting k3s" below, so the k3s restart that
+	// step performs on a re-run picks up the new kubelet.config immediately.
+	{
+		Label: "Writing boot-recover assets",
+		Run: func(cfg config.Config, ch chan<- installsteps.StepMsg) {
+			const label = "Writing boot-recover assets"
+			if err := bootrecover.WriteAssets(
+				func(path string, data []byte) error {
+					ch <- stepOutputMsg(fmt.Sprintf("Writing %s...", path))
+					return config.WritePrivileged(path, data)
+				},
+				func(path string, mode os.FileMode) error {
+					out, err := execpkg.RunPrivileged("/usr/bin/chmod", fmt.Sprintf("%04o", mode), path).CombinedOutput()
+					if err != nil {
+						return execpkg.WrapCmdErr(out, err)
+					}
+					return nil
+				},
+			); err != nil {
+				ch <- stepDoneMsg{Label: label, Err: err}
+				return
+			}
+
+			ch <- stepOutputMsg("Running systemctl daemon-reload...")
+			if out, err := execpkg.RunPrivileged("/usr/bin/systemctl", "daemon-reload").CombinedOutput(); err != nil {
+				ch <- stepDoneMsg{Label: label, Err: execpkg.WrapCmdErr(out, err)}
+				return
+			}
+
+			ch <- stepOutputMsg("Enabling ruddervirt-boot-recover.service...")
+			if out, err := execpkg.RunPrivileged("/usr/bin/systemctl", "enable", "ruddervirt-boot-recover.service").CombinedOutput(); err != nil {
+				ch <- stepDoneMsg{Label: label, Err: execpkg.WrapCmdErr(out, err)}
+				return
+			}
+
+			ch <- stepOutputMsg(
+				"boot recovery installed; watchdog and shutdown-grace take effect on the next reboot",
+			)
+			ch <- stepDoneMsg{Label: label}
 		},
 	},
 	{
