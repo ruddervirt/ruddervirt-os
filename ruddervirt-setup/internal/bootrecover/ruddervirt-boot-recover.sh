@@ -60,8 +60,72 @@ reap_corpses() {
   done <<< "$corpses"
   REAPED_TOTAL=$((REAPED_TOTAL + count))
   if (( count > 0 )); then
-    log "reaped ${count} shutdown corpse(s) (${REAPED_TOTAL} this boot)"
+    log "reaped ${count} shutdown corpse(s) (running total ${REAPED_TOTAL} this run)"
   fi
+}
+
+sweep_failed() {
+  # Controller-owned pods ended in phase Failed with real termination records
+  # (exit codes) - the siblings of the ContainerStatusUnknown corpses: after a
+  # reboot/k3s restart, kubelet records a clean death for everything it could
+  # reconcile before dying, the controller replaces the pod, and the Failed
+  # object is never cleaned (kubelet's terminated-pod GC threshold is far too
+  # high to ever kick in). One wave per reboot, harmless but accumulating.
+  #
+  # Deleting is safe: phase=Failed guarantees no live containers, and every
+  # Deployment/DaemonSet/StatefulSet pod is recreated if (and only if) the
+  # controller still needs it - a superseded dead pod is never resurrected.
+  # Job-owned pods are excluded (-l '!job-name'): the Job controller counts
+  # failed pods against backoffLimit and deleting an object can reset that
+  # accounting, causing bounded retries to loop forever.
+  local failed ns name count
+  failed=$("$KUBECTL" get pods -A -l '!job-name' --no-headers \
+      --field-selector=status.phase=Failed 2>/dev/null)
+  count=0
+  while read -r ns name _; do
+    [ -n "${ns:-}" ] || continue
+    [ -n "${name:-}" ] || continue
+    if "$KUBECTL" -n "$ns" delete pod "$name" --force --grace-period=0 >/dev/null 2>&1; then
+      count=$((count + 1))
+      log "removed stale failed pod $ns/$name"
+    fi
+  done <<< "$failed"
+  REAPED_TOTAL=$((REAPED_TOTAL + count))
+  if (( count > 0 )); then
+    log "removed ${count} stale failed pod(s) (running total ${REAPED_TOTAL} this run)"
+  fi
+}
+
+sweep_completed() {
+  # ReplicaSet-owned pods kubelet finalized as Succeeded when it re-adopts
+  # pods after a reboot - a controller pod can never "complete" under
+  # restartPolicy=Always in normal life, so Succeeded here means finalization
+  # residue from a restart wave, superseded by the controller's real pods.
+  # Deleting is safe for the same reasons as sweep_failed, and Job-owned pods
+  # are excluded likewise (their finished Job objects are the owner's domain,
+  # not a pod sweeper's).
+  local succeeded ns name count
+  succeeded=$("$KUBECTL" get pods -A -l '!job-name' --no-headers \
+      --field-selector=status.phase=Succeeded 2>/dev/null)
+  count=0
+  while read -r ns name _; do
+    [ -n "${ns:-}" ] || continue
+    [ -n "${name:-}" ] || continue
+    if "$KUBECTL" -n "$ns" delete pod "$name" --force --grace-period=0 >/dev/null 2>&1; then
+      count=$((count + 1))
+      log "removed completed pod $ns/$name"
+    fi
+  done <<< "$succeeded"
+  REAPED_TOTAL=$((REAPED_TOTAL + count))
+  if (( count > 0 )); then
+    log "removed ${count} completed pod(s) (running total ${REAPED_TOTAL} this run)"
+  fi
+}
+
+sweep_all() {
+  reap_corpses
+  sweep_failed
+  sweep_completed
 }
 
 wait_for_cni() {
@@ -77,7 +141,7 @@ wait_for_cni() {
   # after a cycle that required no further work.
   local deadline=$((SECONDS + CNI_DEADLINE)) w kind sel done_workloads
   while :; do
-    reap_corpses
+    sweep_all
     for w in "${CNI_WORKLOADS[@]}"; do
       set -- $w
       kind=$1; sel=$2
@@ -103,11 +167,23 @@ wait_for_cni() {
 }
 
 main() {
+  # --reap-only: single sweep, no API/CNI waits - the timer unit's mode. A
+  # k3s/containerd restart (ruddervirt-setup re-run, crash-restart, ...)
+  # kills containers outside the boot window, so a low-frequency sweep that
+  # runs indefinitely catches what the boot oneshot can't (it exits once
+  # CNI converges). API-down is a silent no-op: reap_corpses just finds
+  # nothing.
+  if [ "${1:-}" = "--reap-only" ]; then
+    log "starting stale-pod sweep (timer)"
+    sweep_all
+    log "sweep complete (${REAPED_TOTAL:-0} stale pod(s) removed)"
+    return 0
+  fi
   log "starting post-boot recovery"
   wait_for_api || return 1
-  reap_corpses
+  sweep_all
   wait_for_cni || return 1
-  log "cluster converged (${REAPED_TOTAL:-0} corpse(s) reaped this boot)"
+  log "cluster converged (${REAPED_TOTAL:-0} stale pod(s) removed this boot)"
 }
 
-main
+main "$@"

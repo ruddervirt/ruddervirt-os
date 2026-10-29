@@ -330,6 +330,15 @@ var installSteps = []installsteps.Step{
 				return
 			}
 
+			// The timer sweeps corpses from k3s/containerd restarts that happen
+			// outside the boot oneshot's window (it exits once CNI converges),
+			// e.g. a setup re-run restarting k3s minutes after boot.
+			ch <- stepOutputMsg("Enabling ruddervirt-boot-recover.timer...")
+			if out, err := execpkg.RunPrivileged("/usr/bin/systemctl", "enable", "ruddervirt-boot-recover.timer").CombinedOutput(); err != nil {
+				ch <- stepDoneMsg{Label: label, Err: execpkg.WrapCmdErr(out, err)}
+				return
+			}
+
 			ch <- stepOutputMsg(
 				"boot recovery installed; watchdog and shutdown-grace take effect on the next reboot",
 			)

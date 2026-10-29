@@ -50,6 +50,35 @@ ExecStart=/usr/local/bin/ruddervirt-boot-recover
 WantedBy=multi-user.target
 `
 
+// TimerUnit runs a --reap-only sweep shortly after every boot and every 5
+// minutes indefinitely. The boot oneshot above exits once CNI converges, so
+// a k3s/containerd restart later (setup re-run, crash-restart, ...) would
+// leave a fresh corpse flock with no sweeper - the observed failure mode
+// where corpses appeared minutes after boot. One kubectl list per 5 minutes
+// is the cost of that guarantee. Enabled via systemctl, same as the oneshot.
+const TimerUnit = `[Unit]
+Description=Sweep shutdown corpses after k3s/containerd restarts
+
+[Timer]
+OnActiveSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+`
+
+// TimerServiceUnit is the service the timer fires: the same script in
+// --reap-only mode (single sweep, no waits; no-op when the API is down).
+// No [Install] section: only the timer activates it, so enabling it would
+// only add a redundant boot-time run the oneshot already performs.
+const TimerServiceUnit = `[Unit]
+Wants=ruddervirt-boot-recover.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ruddervirt-boot-recover --reap-only
+`
+
 // KubeletConfig gives kubelet up to 120s to mark its pods terminating
 // (statuses flushed to the API server) before the local k3s process is
 // SIGKILLed (k3sUnitContent's TimeoutStopSec=180 in install_steps.go).
@@ -98,6 +127,16 @@ func Assets() []Asset {
 			Path: "/etc/kubelet.config",
 			Mode: 0o644,
 			Data: []byte(KubeletConfig),
+		},
+		{
+			Path: "/etc/systemd/system/ruddervirt-boot-recover.timer",
+			Mode: 0o644,
+			Data: []byte(TimerUnit),
+		},
+		{
+			Path: "/etc/systemd/system/ruddervirt-boot-recover-sweep.service",
+			Mode: 0o644,
+			Data: []byte(TimerServiceUnit),
 		},
 		{
 			Path: "/etc/systemd/system.conf.d/10-ruddervirt-watchdog.conf",

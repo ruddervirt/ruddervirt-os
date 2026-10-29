@@ -44,11 +44,13 @@ func TestWriteAssetsWritesEveryAssetWithCorrectModes(t *testing.T) {
 	}
 
 	want := map[string]os.FileMode{
-		"/usr/local/bin/ruddervirt-boot-recover":                 0o755, // executable script
-		"/etc/systemd/system/ruddervirt-boot-recover.service":    0o644,
-		"/etc/kubelet.config":                                    0o644,
-		"/etc/systemd/system.conf.d/10-ruddervirt-watchdog.conf": 0o644,
-		"/etc/modules-load.d/ruddervirt-watchdog.conf":           0o644,
+		"/usr/local/bin/ruddervirt-boot-recover":                    0o755, // executable script
+		"/etc/systemd/system/ruddervirt-boot-recover.service":       0o644,
+		"/etc/kubelet.config":                                       0o644,
+		"/etc/systemd/system.conf.d/10-ruddervirt-watchdog.conf":    0o644,
+		"/etc/modules-load.d/ruddervirt-watchdog.conf":              0o644,
+		"/etc/systemd/system/ruddervirt-boot-recover.timer":         0o644,
+		"/etc/systemd/system/ruddervirt-boot-recover-sweep.service": 0o644,
 	}
 	gotWrites := map[string]bool{}
 	for _, p := range f.writes {
@@ -76,8 +78,26 @@ func TestWriteAssetsWritesEveryAssetWithCorrectModes(t *testing.T) {
 	// convergence window, not once at boot - corpse bursts can be born at any
 	// point in that window, not just in the first seconds. The reap call
 	// inside wait_for_cni's loop is that guarantee; assert it survived.
-	if !strings.Contains(f.data["/usr/local/bin/ruddervirt-boot-recover"], "while :; do\n    reap_corpses") {
+	if !strings.Contains(f.data["/usr/local/bin/ruddervirt-boot-recover"], "while :; do\n    sweep_all") {
 		t.Error("reaper is not looped inside wait_for_cni (corpse-burst regression risk)")
+	}
+	// Failed-phase cleanup guard: controller-owned pods that died with
+	// recorded exit codes (a reboot wave) must be swept too, except Job-owned
+	// ones (backoffLimit accounting resets on deletion).
+	script, ok := f.data["/usr/local/bin/ruddervirt-boot-recover"]
+	if !ok {
+		t.Fatal("script not written")
+	}
+	if !strings.Contains(script, "sweep_failed()") {
+		t.Error("script missing the failed-phase sweep")
+	}
+	// Finalization-residue guard: Succeeded pods kubelet finalized on
+	// re-adoption (reboot waves) must be swept too, same non-Job rule.
+	if !strings.Contains(script, "sweep_completed()") {
+		t.Error("script missing the completed-phase sweep")
+	}
+	if !strings.Contains(script, "-'!job-name'") && !strings.Contains(script, "-l '!job-name'") {
+		t.Error("failed-phase sweep must exclude Job-owned pods")
 	}
 	// The unit must point at the exact ExecStart the script is written to.
 	if !strings.Contains(strings.TrimSpace(f.data["/etc/systemd/system/ruddervirt-boot-recover.service"]), "ExecStart=/usr/local/bin/ruddervirt-boot-recover") {
@@ -85,6 +105,29 @@ func TestWriteAssetsWritesEveryAssetWithCorrectModes(t *testing.T) {
 	}
 	if !strings.Contains(f.data["/etc/kubelet.config"], "shutdownGracePeriod: 120s") {
 		t.Error("kubelet config missing shutdownGracePeriod 120s")
+	}
+
+	// Restart-sweep coverage: the timer must exist, fire on a schedule, and
+	// invoke the script in --reap-only mode (the oneshot alone can't cover
+	// k3s/containerd restarts that happen after it converges).
+	timer, ok := f.data["/etc/systemd/system/ruddervirt-boot-recover.timer"]
+	if !ok {
+		t.Fatal("timer unit not written")
+	}
+	if !strings.Contains(timer, "OnUnitActiveSec=5min") {
+		t.Error("timer missing repeating schedule (OnUnitActiveSec)")
+	}
+	sweep, ok := f.data["/etc/systemd/system/ruddervirt-boot-recover-sweep.service"]
+	if !ok {
+		t.Fatal("sweep service not written")
+	}
+	if !strings.Contains(sweep, "--reap-only") {
+		t.Error("sweep service does not invoke --reap-only mode")
+	}
+	if script, ok := f.data["/usr/local/bin/ruddervirt-boot-recover"]; ok {
+		if !strings.Contains(script, "--reap-only") {
+			t.Error("script missing --reap-only dispatch")
+		}
 	}
 }
 
