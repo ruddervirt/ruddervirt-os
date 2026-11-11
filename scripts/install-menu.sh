@@ -12,8 +12,9 @@ INSTALLER_D="/etc/coreos/installer.d"
 DEST_FILE="${INSTALLER_D}/99-dest-device.yaml"
 
 # Minimum target disk size. The Ignition config in server.bu resizes the root
-# partition to 51200 MiB (50 GiB), so a smaller disk cannot hold the install.
-MIN_DISK_MIB=51200
+# partition to 102400 MiB (100 GiB); we require 2x that (200 GiB) so the
+# operator has room for /var and other use on top of the OS.
+MIN_DISK_MIB=204800
 MIN_DISK_BYTES=$((MIN_DISK_MIB * 1024 * 1024))
 
 # Bind stdio to the operator console. The auto-install service has no

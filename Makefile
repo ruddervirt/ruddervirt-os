@@ -85,10 +85,11 @@ boot: iso $(TUI_BIN)  ## Boot the newest ISO in QEMU (KVM if available; needs qe
 	serve_pid=$$!
 	trap 'kill $$serve_pid 2>/dev/null || true' EXIT
 	# Start every run from a fresh disk so each boot does a clean install. The
-	# installer requires >=50 GiB; qcow2 is sparse so 100G costs almost nothing.
+	# installer requires >=200 GiB (204800 MiB) plus room for /var and GPT
+	# overhead; qcow2 is sparse so 240G costs almost nothing.
 	rm -f "$(TEST_DISK)"
-	echo ">>> Creating fresh test disk $(TEST_DISK) (100G)"
-	qemu-img create -f qcow2 "$(TEST_DISK)" 100G
+	echo ">>> Creating fresh test disk $(TEST_DISK) (240G)"
+	qemu-img create -f qcow2 "$(TEST_DISK)" 240G
 	kvm=""
 	if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
 	  kvm="-accel kvm -cpu host"

@@ -65,7 +65,7 @@ storage:
       partitions:
         - number: 4
           resize: true
-          size_mib: 51200 # root at 50GB
+          size_mib: 102400 # root at 100GB
         - number: 5
           size_mib: 0
   files:
