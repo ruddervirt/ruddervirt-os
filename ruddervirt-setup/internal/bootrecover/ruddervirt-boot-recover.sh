@@ -139,7 +139,11 @@ wait_for_cni() {
   # still coming up after a hard reboot. Each cycle reaps first, then
   # checks which core workloads are Ready, and we only declare convergence
   # after a cycle that required no further work.
-  local deadline=$((SECONDS + CNI_DEADLINE)) w kind sel done_workloads
+  # NB: under `set -u`, `local name` without `=` declares the variable UNSET
+  # in function scope, so the first ${done_workloads} read below would abort
+  # with "unbound variable" (203/EXEC-adjacent bash trap - observed in the
+  # field on the boot oneshot). The explicit ="" seeds the accumulated set.
+  local deadline=$((SECONDS + CNI_DEADLINE)) w kind sel done_workloads="" done_count=0
   while :; do
     sweep_all
     for w in "${CNI_WORKLOADS[@]}"; do
@@ -152,10 +156,14 @@ wait_for_cni() {
           --field-selector=status.phase=Running --timeout=1s >/dev/null 2>&1; then
         log "kube-ovn $kind ready"
         done_workloads="$done_workloads $w"
+        done_count=$((done_count + 1))
       fi
     done
-    set -- $done_workloads
-    if (( $# == ${#CNI_WORKLOADS[@]} )); then
+    # Count entries, not words: each workload id "$w" is "kind selector"
+    # (two words), so `set -- $done_workloads; (( $# == N ))` never holds
+    # (2N words) and the wait would always burn CNI_DEADLINE even with all
+    # core workloads Ready.
+    if (( done_count == ${#CNI_WORKLOADS[@]} )); then
       return 0
     fi
     if ((SECONDS >= deadline)); then

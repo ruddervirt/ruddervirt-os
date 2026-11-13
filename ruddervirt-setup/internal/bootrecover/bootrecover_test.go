@@ -4,6 +4,8 @@ package bootrecover
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -146,5 +148,79 @@ func TestRecoveryScriptIsValidBashHeader(t *testing.T) {
 	head := string(recoveryScript[:64])
 	if !strings.HasPrefix(head, "#!/bin/bash") && !strings.HasPrefix(head, "#!/usr/bin/env bash") {
 		t.Errorf("recovery script missing shebang: %q", head)
+	}
+}
+
+// TestRecoveryScriptRunsUnderSetU executes the embedded script under `bash -u`
+// with a stub kubectl (API up, no corpses, configurable CNI readiness) and
+// asserts both convergence paths. Regression coverage for two field bugs:
+//
+//   - `local name` without `=` leaves the variable UNSET in function scope, so
+//     `set -u` aborts the script the first time it is read ("unbound
+//     variable"); done_workloads must be seeded with "".
+//   - convergence was checked via word count (`set -- $done_workloads`), but
+//     each workload id is "kind selector" (two words), so $#==N never held
+//     and the wait always burned the full CNI_DEADLINE before failing.
+func TestRecoveryScriptRunsUnderSetU(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "kubectl")
+	if err := os.WriteFile(stub, []byte(`#!/bin/bash
+case " $* " in
+  *" --raw=/readyz "*) exit 0 ;;
+  *" wait --for=condition=Ready "*) exit "${READY_RC:-0}" ;;
+  *" get pods "*) exit 0 ;;
+  *) echo "unexpected: $*" >&2; exit 1 ;;
+esac
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// No-op sleep so the deadline-bounded convergence polls don't stall the
+	// test (the deadline check still terminates the loop).
+	if err := os.WriteFile(filepath.Join(dir, "sleep"), []byte(`#!/bin/bash
+exit 0
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	script := filepath.Join(dir, "ruddervirt-boot-recover.sh")
+	body := string(recoveryScript)
+	for old, new := range map[string]string{
+		"KUBECTL=/usr/local/bin/kubectl": "KUBECTL=" + stub,
+		"API_DEADLINE=300":               "API_DEADLINE=1",
+		"CNI_DEADLINE=300":               "CNI_DEADLINE=1",
+	} {
+		if !strings.Contains(body, old) {
+			t.Fatalf("cannot stub %q in embedded script", old)
+		}
+		body = strings.ReplaceAll(body, old, new)
+	}
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(readyRC string) (string, int) {
+		t.Helper()
+		cmd := exec.Command(bash, "-u", script)
+		cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "READY_RC="+readyRC)
+		out, runErr := cmd.CombinedOutput()
+		code := 0
+		if exit, ok := runErr.(*exec.ExitError); ok {
+			code = exit.ExitCode()
+		} else if runErr != nil {
+			t.Fatalf("running script: %v", runErr)
+		}
+		return string(out), code
+	}
+
+	if out, code := run("0"); code != 0 || !strings.Contains(out, "cluster converged") {
+		t.Errorf("converged path: exit=%d output=%q\n", code, out)
+	}
+	if out, code := run("1"); code > 1 || !strings.Contains(out, "giving up") {
+		t.Errorf("never-converges path: exit=%d output=%q\n", code, out)
 	}
 }

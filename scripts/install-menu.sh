@@ -119,8 +119,10 @@ while read -r name type; do
   fi
   model="$(/usr/bin/lsblk -dnro MODEL "${name}" 2>/dev/null | /usr/bin/head -n1)"
   [[ -n "${model}" ]] || model="(unknown model)"
+  serial="$(/usr/bin/lsblk -dnro SERIAL "${name}" 2>/dev/null | /usr/bin/head -n1)"
+  [[ -n "${serial}" ]] || serial="(no serial)"
   candidates+=("${name}")
-  labels+=("${name}  ${size}  ${model}")
+  labels+=("${name}  ${size}  ${model}  serial: ${serial}")
 done < <(/usr/bin/lsblk -dpno NAME,TYPE)
 
 banner "RudderVirt installer: choose the installation disk"

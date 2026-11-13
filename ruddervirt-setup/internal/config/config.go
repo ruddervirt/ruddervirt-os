@@ -214,6 +214,22 @@ func WritePrivileged(path string, data []byte) error {
 	if out, err := exec.RunPrivileged("/usr/bin/mv", tmpPath, path).CombinedOutput(); err != nil {
 		return exec.WrapCmdErr(out, err)
 	}
+	// The temp file was created in /tmp as the invoking (non-root) user, so
+	// the rename above preserves both that ownership and /tmp's SELinux
+	// label (tmp_t). Each written file is mode 0644 so plain DAC checks pass
+	// for root, but Fedora CoreOS enforces SELinux: a tmp_t file read by a
+	// service in its own domain (e.g. systemd-modules-load reading a
+	// modules-load.d drop-in) is rejected with EACCES / "Permission denied"
+	// at boot. Normalize both attributes now so the moved file is root:root
+	// and carries the context its destination path dictates.
+	if out, err := exec.RunPrivileged("/usr/bin/chown", "root:root", path).CombinedOutput(); err != nil {
+		return exec.WrapCmdErr(out, err)
+	}
+	if out, err := exec.RunPrivileged("/usr/sbin/restorecon", path).CombinedOutput(); err != nil {
+		// Best-effort: only SELinux hosts (FCOS) have relabeling to do, and
+		// failing here would block writing config on permissive/dev hosts.
+		_ = out
+	}
 	return nil
 }
 
