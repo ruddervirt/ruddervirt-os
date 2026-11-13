@@ -135,6 +135,10 @@ storage:
       mode: 0755
       contents:
         local: scripts/brand-ruddervirt.sh
+    - path: /usr/lib/ruddervirt/ruddervirt-private-storage-network-setup.sh
+      mode: 0755
+      contents:
+        local: scripts/ruddervirt-private-storage-network.sh
     - path: /etc/profile.d/01-custom-profile.sh
       mode: 0644
       contents:
