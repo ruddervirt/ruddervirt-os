@@ -120,10 +120,17 @@ type HomeParams struct {
 	// AileronUIURL is "" if config isn't saved yet, or Aileron has no URL to
 	// show - computed by package main's aileronUIURL, which this package
 	// can't call (domain packages never depend on package main).
-	AileronUIURL    string
-	ServiceStatuses []status.ServiceStatus
-	HostStats       status.HostStats
-	StatusUpdatedAt time.Time
+	AileronUIURL string
+	// ClusterJoinTarget is the cluster this node joined (k3s's `server:`
+	// key), or "" on a node that bootstrapped its own - see package main's
+	// cachedClusterJoinTarget. Worth a line of its own on the home screen:
+	// it's the one piece of this node's identity an operator can't infer
+	// from the Services summary, and it silently changes what "configure ->
+	// Apply" will do (see k3s_bridge.go's skipWhenJoining).
+	ClusterJoinTarget string
+	ServiceStatuses   []status.ServiceStatus
+	HostStats         status.HostStats
+	StatusUpdatedAt   time.Time
 	// UpdateAvailable marks the "update" row with an ↑ (see
 	// screens.AnyUpdateAvailable) - computed from the same caches
 	// screenUpdateVersions itself renders from, so this flag matches
@@ -137,6 +144,9 @@ func (m MenuModel) ViewHome(p HomeParams) string {
 	s := "\n" + tui.BigTitle(p.TermWidth) + "\n\n"
 	if p.StabilizerDetected {
 		s += tui.HelpStyle.Render("This system is connected to and managed by ruddervirt.com") + "\n\n"
+	}
+	if p.ClusterJoinTarget != "" {
+		s += tui.HelpStyle.Render(fmt.Sprintf("Joined to the cluster at %s as an additional control-plane node", p.ClusterJoinTarget)) + "\n\n"
 	}
 	if p.AileronUIURL != "" {
 		s += fmt.Sprintf("Aileron UI:  %s\n\n", tui.LinkStyle.Render(p.AileronUIURL))

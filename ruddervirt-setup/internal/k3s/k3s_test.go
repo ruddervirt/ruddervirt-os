@@ -3,11 +3,14 @@
 package k3s
 
 import (
+	"io/fs"
+	"os"
 	"strings"
 	"testing"
 
 	"ruddervirt-setup/internal/exec"
 	"ruddervirt-setup/internal/exec/exectest"
+	"ruddervirt-setup/internal/network"
 )
 
 func TestParseInstalledK3sVersionOutput(t *testing.T) {
@@ -369,5 +372,297 @@ func TestRestartAileronIfNeeded(t *testing.T) {
 				t.Errorf("restarted = %v, want %v; calls = %v", restarted, tt.wantRestart, r.Calls)
 			}
 		})
+	}
+}
+
+// fakeFiles builds a readFile double over an in-memory file set - the
+// injected-reader seam ReadMembership/RenderK3sConfigStep take, so these
+// tests never touch /etc. A path mapped to nil reads back as a permission
+// error (the mode-0600 config an operator placed with sudo); an unmapped
+// path reads back as not-exist.
+func fakeFiles(files map[string][]byte) func(string) ([]byte, error) {
+	return func(path string) ([]byte, error) {
+		data, ok := files[path]
+		if !ok {
+			return nil, &os.PathError{Op: "open", Path: path, Err: fs.ErrNotExist}
+		}
+		if data == nil {
+			return nil, &os.PathError{Op: "open", Path: path, Err: fs.ErrPermission}
+		}
+		return data, nil
+	}
+}
+
+// templateConfig is the stock server.bu template: its server/cluster-init
+// hints are commented out, so it declares no membership.
+const templateConfig = `# server: https://192.168.1.5:6443
+# token: MYTOKEN
+# cluster-init: true
+bind-address: __LOCAL_IP__
+node-ip: __LOCAL_IP__
+tls-san:
+  - "__LOCAL_IP__"
+flannel-backend: none
+disable:
+  - "local-storage"
+`
+
+func TestReadMembership(t *testing.T) {
+	cases := []struct {
+		name    string
+		content []byte
+		want    Membership
+		wantErr bool
+	}{
+		{"stock template declares nothing", []byte(templateConfig), Membership{}, false},
+		{"joining node", []byte("server: https://10.0.0.5:6443\ntoken: sekrit\n"), Membership{JoinServer: "https://10.0.0.5:6443"}, false},
+		{"server url is trimmed", []byte("server: \"  https://10.0.0.5:6443  \"\n"), Membership{JoinServer: "https://10.0.0.5:6443"}, false},
+		{"joinable first node", []byte("cluster-init: true\n" + templateConfig), Membership{ClusterInit: true}, false},
+		{"cluster-init explicitly false", []byte("cluster-init: false\n"), Membership{}, false},
+		{"both keys", []byte("server: https://10.0.0.5:6443\ncluster-init: true\n"), Membership{JoinServer: "https://10.0.0.5:6443", ClusterInit: true}, false},
+		{"empty file", []byte(""), Membership{}, false},
+		{"malformed yaml", []byte("server: [unclosed\n"), Membership{}, true},
+		{"wrong type for cluster-init", []byte("cluster-init: yesplease\n"), Membership{}, true},
+	}
+	for _, c := range cases {
+		got, err := ReadMembership(fakeFiles(map[string][]byte{ClusterConfigPath: c.content}), ClusterConfigPath)
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: ReadMembership() err = %v, wantErr %v", c.name, err, c.wantErr)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s: ReadMembership() = %+v, want %+v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestReadMembershipMissingFile covers the "nothing declared yet" case - a
+// node that hasn't rendered a k3s config at all must not read as an error,
+// since every caller would then treat it the same as a corrupt one.
+func TestReadMembershipMissingFile(t *testing.T) {
+	got, err := ReadMembership(fakeFiles(nil), ClusterConfigPath)
+	if err != nil {
+		t.Fatalf("ReadMembership() err = %v, want nil for a missing file", err)
+	}
+	if got.Declared() {
+		t.Errorf("ReadMembership() = %+v, want nothing declared", got)
+	}
+}
+
+func TestNodeMembership(t *testing.T) {
+	joining := []byte("server: https://10.0.0.5:6443\ntoken: sekrit\n")
+	cases := []struct {
+		name  string
+		files map[string][]byte
+		want  Membership
+	}{
+		{
+			"live config wins over the template",
+			map[string][]byte{ClusterConfigPath: joining, ConfigTemplatePath: []byte(templateConfig)},
+			Membership{JoinServer: "https://10.0.0.5:6443"},
+		},
+		{
+			"falls back to the template when the live config declares nothing",
+			map[string][]byte{ClusterConfigPath: []byte(templateConfig), ConfigTemplatePath: []byte("cluster-init: true\n")},
+			Membership{ClusterInit: true},
+		},
+		{
+			"template-declared join, before the first render",
+			map[string][]byte{ConfigTemplatePath: joining},
+			Membership{JoinServer: "https://10.0.0.5:6443"},
+		},
+		{
+			"nothing anywhere - today's single-node default",
+			map[string][]byte{ClusterConfigPath: []byte(templateConfig), ConfigTemplatePath: []byte(templateConfig)},
+			Membership{},
+		},
+		{
+			"unreadable live config falls back rather than guessing from it",
+			map[string][]byte{ClusterConfigPath: nil, ConfigTemplatePath: []byte("cluster-init: true\n")},
+			Membership{ClusterInit: true},
+		},
+		{
+			"malformed template reads as nothing declared",
+			map[string][]byte{ConfigTemplatePath: []byte("server: [unclosed\n")},
+			Membership{},
+		},
+	}
+	for _, c := range cases {
+		if got := NodeMembership(fakeFiles(c.files)); got != c.want {
+			t.Errorf("%s: NodeMembership() = %+v, want %+v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestConfigIsOperatorOwned(t *testing.T) {
+	joining := []byte("server: https://10.0.0.5:6443\ntoken: sekrit\n")
+	cases := []struct {
+		name       string
+		files      map[string][]byte
+		want       bool
+		wantReason string
+	}{
+		{
+			"hand-placed joining config",
+			map[string][]byte{ClusterConfigPath: joining, ConfigTemplatePath: []byte(templateConfig)},
+			true, "server: is set (joining https://10.0.0.5:6443)",
+		},
+		{
+			"hand-placed cluster-init config",
+			map[string][]byte{ClusterConfigPath: []byte("cluster-init: true\n"), ConfigTemplatePath: []byte(templateConfig)},
+			true, "cluster-init: is set",
+		},
+		{
+			// The operator declared membership in the template instead, so
+			// rendering still owns the live config - that's the whole point
+			// of that route (__LOCAL_IP__ keeps following the DHCP lease).
+			"template declares membership too",
+			map[string][]byte{ClusterConfigPath: joining, ConfigTemplatePath: joining},
+			false, "",
+		},
+		{
+			"stock single-node install",
+			map[string][]byte{ClusterConfigPath: []byte(templateConfig), ConfigTemplatePath: []byte(templateConfig)},
+			false, "",
+		},
+		{
+			"no live config yet",
+			map[string][]byte{ConfigTemplatePath: []byte(templateConfig)},
+			false, "",
+		},
+		{
+			"malformed live config is not claimed as the operator's",
+			map[string][]byte{ClusterConfigPath: []byte("server: [unclosed\n"), ConfigTemplatePath: []byte(templateConfig)},
+			false, "",
+		},
+	}
+	for _, c := range cases {
+		got, reason := ConfigIsOperatorOwned(fakeFiles(c.files))
+		if got != c.want || reason != c.wantReason {
+			t.Errorf("%s: ConfigIsOperatorOwned() = (%v, %q), want (%v, %q)", c.name, got, reason, c.want, c.wantReason)
+		}
+	}
+}
+
+// TestRenderK3sConfigStepSkipsOperatorOwnedConfig is the load-bearing case
+// for joining a cluster: rendering over a hand-placed config would drop the
+// server:/token: that makes this node a cluster member at all.
+func TestRenderK3sConfigStepSkipsOperatorOwnedConfig(t *testing.T) {
+	files := map[string][]byte{
+		ClusterConfigPath:  []byte("server: https://10.0.0.5:6443\ntoken: sekrit\n"),
+		ConfigTemplatePath: []byte(templateConfig),
+	}
+	ch := make(chan exec.StepMsg, 16)
+	wrote := false
+	err := RenderK3sConfigStep(
+		network.NetworkConfig{Addressing: "static", StaticIP: "10.0.0.6", SvcCIDR: "10.43.0.0/16", PodCIDR: "10.42.0.0/16"},
+		ch, func(line string) exec.StepMsg { return line },
+		fakeFiles(files),
+		func(path string, data []byte) error { wrote = true; return nil },
+	)
+	if err != nil {
+		t.Fatalf("RenderK3sConfigStep() err = %v, want nil", err)
+	}
+	if wrote {
+		t.Fatal("RenderK3sConfigStep() wrote the k3s config, want the operator-provided one left in place")
+	}
+	close(ch)
+	var log []string
+	for msg := range ch {
+		log = append(log, msg.(string))
+	}
+	joined := strings.Join(log, "\n")
+	if !strings.Contains(joined, "https://10.0.0.5:6443") || !strings.Contains(joined, "leaving the operator-provided config in place") {
+		t.Errorf("RenderK3sConfigStep() log = %q, want it to say which cluster and that the config was left alone", joined)
+	}
+}
+
+// TestRenderK3sConfigStepRendersTemplate is the other side of the same
+// branch: with no operator-declared membership, placeholder substitution
+// still happens exactly as before.
+func TestRenderK3sConfigStepRendersTemplate(t *testing.T) {
+	files := map[string][]byte{ConfigTemplatePath: []byte(templateConfig)}
+	ch := make(chan exec.StepMsg, 16)
+	var gotPath string
+	var gotData []byte
+	err := RenderK3sConfigStep(
+		network.NetworkConfig{Addressing: "static", StaticIP: "10.0.0.6", SvcCIDR: "10.43.0.0/16", PodCIDR: "10.42.0.0/16"},
+		ch, func(line string) exec.StepMsg { return line },
+		fakeFiles(files),
+		func(path string, data []byte) error { gotPath, gotData = path, data; return nil },
+	)
+	if err != nil {
+		t.Fatalf("RenderK3sConfigStep() err = %v, want nil", err)
+	}
+	if gotPath != ClusterConfigPath {
+		t.Errorf("RenderK3sConfigStep() wrote %q, want %q", gotPath, ClusterConfigPath)
+	}
+	if strings.Contains(string(gotData), "__LOCAL_IP__") {
+		t.Errorf("RenderK3sConfigStep() output = %q, want __LOCAL_IP__ substituted", gotData)
+	}
+	if !strings.Contains(string(gotData), "10.0.0.6") {
+		t.Errorf("RenderK3sConfigStep() output = %q, want the local IP rendered in", gotData)
+	}
+}
+
+// TestRenderK3sConfigStepTemplateDeclaredJoin covers the template route: an
+// operator who uncomments server:/token: in the template still gets normal
+// rendering, and the join keys ride through into the live config.
+func TestRenderK3sConfigStepTemplateDeclaredJoin(t *testing.T) {
+	tmpl := "server: https://10.0.0.5:6443\ntoken: sekrit\n" + templateConfig
+	files := map[string][]byte{
+		ConfigTemplatePath: []byte(tmpl),
+		ClusterConfigPath:  []byte(tmpl),
+	}
+	ch := make(chan exec.StepMsg, 16)
+	var gotData []byte
+	err := RenderK3sConfigStep(
+		network.NetworkConfig{Addressing: "static", StaticIP: "10.0.0.6", SvcCIDR: "10.43.0.0/16", PodCIDR: "10.42.0.0/16"},
+		ch, func(line string) exec.StepMsg { return line },
+		fakeFiles(files),
+		func(path string, data []byte) error { gotData = data; return nil },
+	)
+	if err != nil {
+		t.Fatalf("RenderK3sConfigStep() err = %v, want nil", err)
+	}
+	if !strings.Contains(string(gotData), "server: https://10.0.0.5:6443") {
+		t.Errorf("RenderK3sConfigStep() output = %q, want the template's join keys carried through", gotData)
+	}
+	if strings.Contains(string(gotData), "__LOCAL_IP__") {
+		t.Errorf("RenderK3sConfigStep() output = %q, want __LOCAL_IP__ substituted", gotData)
+	}
+}
+
+// TestRenderK3sConfigStepRefusesUnreadableConfig: an unreadable or malformed
+// live config is almost always one an operator wrote by hand, so overwriting
+// it would silently undo exactly the thing they set up.
+func TestRenderK3sConfigStepRefusesUnreadableConfig(t *testing.T) {
+	cases := []struct {
+		name string
+		live []byte
+	}{
+		// nil => the reader reports a permission error, i.e. a sudo-placed
+		// mode-0600 config the unprivileged TUI can't read.
+		{"unreadable", nil},
+		{"malformed", []byte("server: [unclosed\n")},
+	}
+	for _, c := range cases {
+		files := map[string][]byte{ClusterConfigPath: c.live, ConfigTemplatePath: []byte(templateConfig)}
+		ch := make(chan exec.StepMsg, 16)
+		wrote := false
+		err := RenderK3sConfigStep(
+			network.NetworkConfig{Addressing: "static", StaticIP: "10.0.0.6", SvcCIDR: "10.43.0.0/16", PodCIDR: "10.42.0.0/16"},
+			ch, func(line string) exec.StepMsg { return line },
+			fakeFiles(files),
+			func(path string, data []byte) error { wrote = true; return nil },
+		)
+		if err == nil {
+			t.Errorf("%s: RenderK3sConfigStep() err = nil, want a refusal", c.name)
+		} else if !strings.Contains(err.Error(), "refusing to overwrite") {
+			t.Errorf("%s: RenderK3sConfigStep() err = %v, want it to say it's refusing to overwrite", c.name, err)
+		}
+		if wrote {
+			t.Errorf("%s: RenderK3sConfigStep() wrote the config anyway", c.name)
+		}
 	}
 }

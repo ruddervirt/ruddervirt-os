@@ -116,6 +116,80 @@ func partitionSuffix(disk string) string {
 	return ""
 }
 
+// EngineProbe is how to recognize one storage engine on a live cluster: the
+// CSIDriver its operator registers - unique per engine, and the object that
+// actually provisions volumes, so its presence means the engine is really
+// installed rather than half-applied - plus the namespace its workloads run
+// in. Single source of truth for both: internal/k3s's applyStorageEngine
+// waits on these after applying an engine, and DetectClusterEngine below
+// reads them back.
+type EngineProbe struct {
+	CSIDriver string
+	Namespace string
+}
+
+// EngineProbes covers exactly the engines the storage.engine SettingField
+// offers (see internal/config). Adding an engine there means adding it here
+// AND to EngineProbeOrder below.
+var EngineProbes = map[string]EngineProbe{
+	"openebs":   {CSIDriver: "local.csi.openebs.io", Namespace: "openebs"},
+	"longhorn":  {CSIDriver: "driver.longhorn.io", Namespace: "longhorn-system"},
+	"rook-ceph": {CSIDriver: "rook-ceph.rbd.csi.ceph.com", Namespace: "rook-ceph"},
+}
+
+// EngineProbeOrder fixes the order DetectClusterEngine probes engines in. Go
+// randomizes map iteration, so ranging over EngineProbes directly would make
+// a cluster that has more than one CSIDriver registered - mid-migration, or
+// one left behind by a half-removed engine - report a different engine run
+// to run, and with it a different accept/refuse decision for the same host.
+var EngineProbeOrder = []string{"openebs", "longhorn", "rook-ceph"}
+
+// MetalNodeLabel is the node label every storage engine's CSI *node* plugin
+// selects on: openebs via nodeSelector, longhorn via nodeSelector, rook-ceph
+// via nodeAffinity (see internal/manifests/manifests/*/base). A node without
+// it joins the cluster and runs workloads perfectly well but gets no CSI node
+// plugin, so it can never host VM storage - and nothing notices, because the
+// engine's pods are Ready everywhere else. k3s applies it from the
+// `node-label:` list in its config, but only at first registration.
+const (
+	MetalNodeLabelKey   = "ruddervirt"
+	MetalNodeLabelValue = "metal"
+)
+
+// DetectClusterEngine reports which storage engine is already installed on
+// the cluster, by looking for each engine's CSIDriver. ok is false when none
+// is found, which is the normal case while the first node is still
+// bootstrapping (the engine is applied a step later, by PrepareK3sStep) or
+// whenever kubectl can't reach a cluster at all - callers then fall back to
+// the configured engine, i.e. today's behaviour.
+//
+// This exists for joining nodes: the engine is cluster-wide, but
+// PrepareStorageDevice formats THIS host's disk for it, and the two
+// disagreeing produces a disk that can't serve the cluster plus a readiness
+// wait that can never pass.
+func DetectClusterEngine(kubectlBin string) (string, bool) {
+	for _, engine := range EngineProbeOrder {
+		if exec.RunPrivileged(kubectlBin, "get", "csidriver", EngineProbes[engine].CSIDriver).Run() == nil {
+			return engine, true
+		}
+	}
+	return "", false
+}
+
+// NodeIsStorageCapable reports whether nodeName carries MetalNodeLabel, i.e.
+// whether any storage engine's CSI node plugin will ever schedule onto it.
+// ok is false when the node object can't be read at all - it hasn't
+// registered yet, or there's no reachable cluster - in which case callers
+// must not treat "not labelled" as a verdict.
+func NodeIsStorageCapable(kubectlBin, nodeName string) (labelled bool, ok bool) {
+	out, err := exec.RunPrivileged(kubectlBin, "get", "node", nodeName,
+		"-o", "jsonpath={.metadata.labels."+MetalNodeLabelKey+"}").Output()
+	if err != nil {
+		return false, false
+	}
+	return strings.TrimSpace(string(out)) == MetalNodeLabelValue, true
+}
+
 // StorageEngineApplied reports whether the storage device has already been
 // prepared for some engine - used by the storage.engine settingField to
 // lock itself.

@@ -135,7 +135,7 @@ storage:
       mode: 0755
       contents:
         local: scripts/brand-ruddervirt.sh
-    - path: /usr/lib/ruddervirt/ruddervirt-private-storage-network-setup.sh
+    - path: /usr/local/bin/ruddervirt-private-storage-network-setup
       mode: 0755
       contents:
         local: scripts/ruddervirt-private-storage-network.sh
@@ -157,7 +157,7 @@ storage:
 
           # initialize the cluster; only on first server
           # cluster-init: true
-          # backup the cluster
+          # back up the cluster
           # etcd-s3: true
           # etcd-s3-config-secret: k3s-etcd-snapshot-s3-config
 

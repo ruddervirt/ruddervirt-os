@@ -110,7 +110,7 @@ func (m model) View() string {
 		return m.install.ViewPlanning()
 
 	case screenInstallConfirm:
-		return m.install.ViewConfirm(installSteps)
+		return m.install.ViewConfirm(installSteps, m.cachedClusterJoinTarget)
 
 	case screenInstall:
 		return m.install.ViewInstall(m.installVisibleLogLines())
@@ -189,7 +189,7 @@ func (m model) View() string {
 	case screenUpdateVersions:
 		return m.update.ViewVersions(screens.UpdateViewParams{
 			Cfg:                     m.cfg,
-			Versions:                config.VersionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected},
+			Versions:                m.versionCache(),
 			StabilizerSettingsState: m.stabilizerSettingsState,
 			SelfUpdateAvailable:     m.cachedSelfUpdateAvailable,
 			OSUpdateAvailable:       m.cachedOSUpdateAvailable,
@@ -202,7 +202,7 @@ func (m model) View() string {
 	case screenSettings:
 		return m.settings.View(screens.SettingsViewParams{
 			Cfg:                     m.cfg,
-			Versions:                config.VersionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected},
+			Versions:                m.versionCache(),
 			StabilizerSettingsState: m.stabilizerSettingsState,
 			StabilizerValue: func(d settings.StabilizerSettingDef, state *settings.StabilizerSettingsState) string {
 				value, _ := stabilizerSettingListValue(d, state)
@@ -226,13 +226,14 @@ func (m model) View() string {
 		return m.menu.ViewHome(screens.HomeParams{
 			TermWidth:          m.termWidth,
 			StabilizerDetected: m.cachedStabilizerDetected,
+			ClusterJoinTarget:  m.cachedClusterJoinTarget,
 			AileronUIURL:       homeURL,
 			ServiceStatuses:    m.serviceStatuses,
 			HostStats:          m.hostStats,
 			StatusUpdatedAt:    statusUpdatedAt,
 			UpdateAvailable: screens.AnyUpdateAvailable(screens.UpdateViewParams{
 				Cfg:                     m.cfg,
-				Versions:                config.VersionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected},
+				Versions:                m.versionCache(),
 				StabilizerSettingsState: m.stabilizerSettingsState,
 				SelfUpdateAvailable:     m.cachedSelfUpdateAvailable,
 				OSUpdateAvailable:       m.cachedOSUpdateAvailable,

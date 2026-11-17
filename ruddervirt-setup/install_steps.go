@@ -264,6 +264,7 @@ var installSteps = []installsteps.Step{
 	{
 		Label: "Rendering k3s config",
 		Run:   renderK3sConfigStep,
+		Plan:  planRenderK3sConfig,
 	},
 	{
 		Label: "Writing k3s systemd unit",

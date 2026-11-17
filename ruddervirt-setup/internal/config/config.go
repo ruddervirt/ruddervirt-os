@@ -244,6 +244,11 @@ type VersionCache struct {
 	// on the cluster (see internal/aileron.StabilizerChartPresent). Locks
 	// the Aileron SettingFields below.
 	StabilizerDetected bool
+	// ClusterJoinTarget is non-empty on a node that joined an existing
+	// cluster (see internal/k3s.NodeMembership, surfaced as package main's
+	// cachedClusterJoinTarget). Locks every cluster-scoped SettingField -
+	// see clusterComponentLocked.
+	ClusterJoinTarget string
 }
 
 // SettingField binds one editable Settings-screen row to the Config field it
@@ -322,6 +327,35 @@ func stabilizerLocked(c *Config, versions VersionCache) (bool, string) {
 		return true, "managed by stabilizer"
 	}
 	return false, ""
+}
+
+// clusterComponentLocked locks the SettingFields whose value is cluster-wide
+// state rather than this node's. Every one of them is applied by
+// prepareK3sStep/ApplyKubeOvnStep, which a node joining an existing cluster
+// skips entirely (see k3s_bridge.go's skipWhenJoining) - so without this
+// lock the Update screen would offer upgrades it won't perform, then persist
+// the new version into this node's config and render it as applied, while
+// the cluster still runs whatever its first node set. Upgrade these from the
+// node that bootstrapped the cluster.
+//
+// Deliberately NOT applied to versions.k3s: the k3s binary is per-node
+// (/usr/local/bin/k3s, installed by InstallK3sStep), so each server is
+// upgraded on its own.
+func clusterComponentLocked(c *Config, versions VersionCache) (bool, string) {
+	if versions.ClusterJoinTarget != "" {
+		return true, "managed by the cluster's first node"
+	}
+	return false, ""
+}
+
+// stabilizerOrClusterLocked backs the two Aileron fields, which have two
+// independent reasons not to be this node's to change - either alone is
+// enough.
+func stabilizerOrClusterLocked(c *Config, versions VersionCache) (bool, string) {
+	if locked, reason := clusterComponentLocked(c, versions); locked {
+		return locked, reason
+	}
+	return stabilizerLocked(c, versions)
 }
 
 var SettingFields = []SettingField{
@@ -472,6 +506,8 @@ var SettingFields = []SettingField{
 			c.Versions.KubeOVN = v
 			return nil
 		},
+		// Cluster-wide - see clusterComponentLocked.
+		Locked: clusterComponentLocked,
 	},
 	{
 		Key: "versions.multus", Label: "Multus", UpdateScreen: true,
@@ -484,6 +520,8 @@ var SettingFields = []SettingField{
 			c.Versions.Multus = v
 			return nil
 		},
+		// Cluster-wide - see clusterComponentLocked.
+		Locked: clusterComponentLocked,
 	},
 	{
 		Key: "versions.kubevirt", Label: "KubeVirt", UpdateScreen: true,
@@ -495,6 +533,8 @@ var SettingFields = []SettingField{
 			c.Versions.KubeVirt = v
 			return nil
 		},
+		// Cluster-wide - see clusterComponentLocked.
+		Locked: clusterComponentLocked,
 	},
 	{
 		Key: "versions.cdi", Label: "CDI", UpdateScreen: true,
@@ -506,6 +546,8 @@ var SettingFields = []SettingField{
 			c.Versions.CDI = v
 			return nil
 		},
+		// Cluster-wide - see clusterComponentLocked.
+		Locked: clusterComponentLocked,
 	},
 	{
 		Key: "versions.aileron", Label: "Aileron", UpdateScreen: true,
@@ -532,9 +574,10 @@ var SettingFields = []SettingField{
 			c.Versions.Aileron = v
 			return nil
 		},
-		// Locks whenever a HelmChart named "stabilizer" is on the cluster -
-		// see stabilizerLocked.
-		Locked: stabilizerLocked,
+		// Locks whenever a HelmChart named "stabilizer" is on the cluster,
+		// or this node joined one it doesn't own - see
+		// stabilizerOrClusterLocked.
+		Locked: stabilizerOrClusterLocked,
 	},
 	{
 		// UNAUTHENTICATED when on - see AileronUIEnabled's doc comment.
@@ -551,8 +594,9 @@ var SettingFields = []SettingField{
 			return nil
 		},
 		// Same reasoning as versions.aileron above - both Aileron fields
-		// lock together once a "stabilizer" chart is detected.
-		Locked: stabilizerLocked,
+		// lock together once a "stabilizer" chart is detected, or this node
+		// joined a cluster it doesn't own.
+		Locked: stabilizerOrClusterLocked,
 	},
 	{
 		Key: "storage.engine", Label: "Storage engine", Advanced: true,

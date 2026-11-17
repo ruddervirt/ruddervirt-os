@@ -111,3 +111,26 @@ func TestMenuModelViewResultShowsResult(t *testing.T) {
 		t.Errorf("ViewResult() = %q, want it to contain the result text", out)
 	}
 }
+
+// TestMenuModelViewHomeShowsClusterJoinTarget: a joined node looks identical
+// to a standalone one in the Services summary, so the home screen has to say
+// so outright - it's also what makes "configure -> Apply" skip the
+// cluster-wide steps (see k3s_bridge.go's skipWhenJoining).
+func TestMenuModelViewHomeShowsClusterJoinTarget(t *testing.T) {
+	m := MenuModel{}
+	out := m.ViewHome(HomeParams{TermWidth: 100, ClusterJoinTarget: "https://10.0.0.5:6443"})
+	if !strings.Contains(out, "https://10.0.0.5:6443") {
+		t.Errorf("ViewHome() = %q, want the joined cluster's server URL", out)
+	}
+	if !strings.Contains(out, "control-plane") {
+		t.Errorf("ViewHome() = %q, want the node's role in the cluster named", out)
+	}
+}
+
+func TestMenuModelViewHomeOmitsClusterLineWhenStandalone(t *testing.T) {
+	m := MenuModel{}
+	out := m.ViewHome(HomeParams{TermWidth: 100})
+	if strings.Contains(out, "Joined to the cluster") {
+		t.Errorf("ViewHome() = %q, want no cluster line when ClusterJoinTarget is empty", out)
+	}
+}

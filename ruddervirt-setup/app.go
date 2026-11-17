@@ -8,7 +8,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"ruddervirt-setup/internal/config"
 	"ruddervirt-setup/internal/hostname"
 	"ruddervirt-setup/internal/network"
 	"ruddervirt-setup/internal/osupdate"
@@ -901,7 +900,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				field := row.Field
-				versions := config.VersionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected}
+				versions := m.versionCache()
 				if field.Locked != nil {
 					if locked, reason := field.Locked(&m.cfg, versions); locked {
 						m.settingsError = reason
@@ -1035,7 +1034,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, cmd
 				}
 				field := row.Field
-				versions := config.VersionCache{K3s: m.cachedK3sVersions, Aileron: m.cachedAileronVersions, StabilizerDetected: m.cachedStabilizerDetected}
+				versions := m.versionCache()
 				if field.Key == "versions.aileron" && versions.StabilizerDetected {
 					// Once stabilizer manages Aileron, "Aileron version" means
 					// the stabilizer chart's own spec.version (Aileron ships as

@@ -73,11 +73,22 @@ func (m InstallModel) ViewPlanning() string {
 // (install_steps.go), passed in rather than imported since
 // internal/installsteps.Step is this package's dependency-free type but
 // the actual install pipeline var still lives in package main.
-func (m InstallModel) ViewConfirm(steps []installsteps.Step) string {
+//
+// joinTarget is package main's cachedClusterJoinTarget: non-empty means this
+// node joins an existing cluster, which skips the cluster-wide steps and so
+// changes both what the operator is agreeing to and how long it takes.
+func (m InstallModel) ViewConfirm(steps []installsteps.Step, joinTarget string) string {
 	s := "\n" + tui.TitleStyle.Render("Confirm Install") + "\n\n"
 	s += "This will restart k3s, causing a brief interruption to the\n"
-	s += "Kubernetes API and any running workloads. The full process can\n"
-	s += "take 30+ minutes, mostly waiting for storage to become ready.\n"
+	if joinTarget == "" {
+		s += "Kubernetes API and any running workloads. The full process can\n"
+		s += "take 30+ minutes, mostly waiting for storage to become ready.\n"
+	} else {
+		s += "Kubernetes API and any running workloads on this node.\n\n"
+		s += fmt.Sprintf("This node joins the existing cluster at %s as an\n", joinTarget)
+		s += "additional control-plane node, so the cluster-wide steps below\n"
+		s += "are skipped - expect minutes, not 30+.\n"
+	}
 	s += "\nPlan:\n"
 	labelWidth := 0
 	for _, step := range steps {

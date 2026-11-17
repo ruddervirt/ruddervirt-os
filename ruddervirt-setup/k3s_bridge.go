@@ -4,10 +4,12 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"ruddervirt-setup/internal/config"
+	execpkg "ruddervirt-setup/internal/exec"
 	"ruddervirt-setup/internal/installsteps"
 	"ruddervirt-setup/internal/k3s"
 	"ruddervirt-setup/internal/kubevirt"
@@ -52,18 +54,92 @@ func installK3sStep(cfg config.Config, ch chan<- installsteps.StepMsg) {
 
 func renderK3sConfigStep(cfg config.Config, ch chan<- installsteps.StepMsg) {
 	const label = "Rendering k3s config"
-	err := k3s.RenderK3sConfigStep(cfg.Network, ch, wrapStepOutput, config.WritePrivileged)
+	err := k3s.RenderK3sConfigStep(cfg.Network, ch, wrapStepOutput, execpkg.ReadFilePrivileged, config.WritePrivileged)
 	ch <- stepDoneMsg{Label: label, Err: err}
+}
+
+// planRenderK3sConfig previews renderK3sConfigStep: the one case worth
+// calling out is an operator-provided config the step won't touch, since
+// "Rendering k3s config" otherwise reads as though it will.
+func planRenderK3sConfig(cfg config.Config) string {
+	if line, ok := planConfigReadProblem(); ok {
+		return line
+	}
+	if owned, reason := k3s.ConfigIsOperatorOwned(os.ReadFile); owned {
+		return fmt.Sprintf("skip - %s; leaving it as-is", reason)
+	}
+	return fmt.Sprintf("will render %s from %s", k3s.ClusterConfigPath, k3s.ConfigTemplatePath)
+}
+
+// planConfigReadProblem turns an unreadable/unparseable k3s config into a
+// plan line, for the three previews whose answer depends on it. Without this
+// they'd silently fall back to "new cluster" and the pipeline would then
+// overwrite a config it simply couldn't read - most likely one an operator
+// placed with sudo at mode 0600. Reads with plain os.ReadFile, never a
+// privileged one: Step.Plan must never risk a sudo prompt fighting
+// bubbletea's raw-terminal mode (see installsteps.Step's doc comment).
+func planConfigReadProblem() (string, bool) {
+	if _, err := k3s.ReadMembership(os.ReadFile, k3s.ClusterConfigPath); err != nil {
+		return fmt.Sprintf(
+			"cannot read %s (%v) - make it readable (mode 0644) so the installer can tell whether this node joins an existing cluster",
+			k3s.ClusterConfigPath, err,
+		), true
+	}
+	return "", false
+}
+
+// joiningCluster reports the cluster this node is configured to join, from
+// whichever config the next k3s start will use (see k3s.NodeMembership) -
+// empty when it bootstraps its own cluster, i.e. today's single-node default.
+func joiningCluster() string {
+	return k3s.NodeMembership(execpkg.ReadFilePrivileged).JoinServer
+}
+
+// skipWhenJoining announces and completes label's step when this node is
+// joining an existing cluster, reporting true so the caller returns early.
+// The steps that use it apply cluster-singleton resources that the cluster's
+// first node already owns - re-applying them from a joining node would at
+// best be redundant and at worst fight the existing cluster over resource
+// ownership and versions.
+func skipWhenJoining(label string, ch chan<- installsteps.StepMsg) bool {
+	server := joiningCluster()
+	if server == "" {
+		return false
+	}
+	ch <- stepOutputMsg(fmt.Sprintf(
+		"Joining the existing cluster at %s - %q belongs to the cluster's first node, skipping", server, label))
+	ch <- stepDoneMsg{Label: label}
+	return true
+}
+
+// planJoinSkip returns the plan line for a cluster-singleton step, and
+// whether it applies - true on a joining node (the step is skipped) or when
+// the k3s config can't be read at all (nothing about this node's role can be
+// previewed until that's fixed). False means preview the step normally.
+func planJoinSkip() (string, bool) {
+	if line, ok := planConfigReadProblem(); ok {
+		return line, true
+	}
+	if server := k3s.NodeMembership(os.ReadFile).JoinServer; server != "" {
+		return "skip - joining the existing cluster at " + server, true
+	}
+	return "", false
 }
 
 // planApplyKubeOvn deliberately never touches a live cluster, same
 // reasoning as planApplyManifests below.
 func planApplyKubeOvn(cfg config.Config) string {
+	if line, ok := planJoinSkip(); ok {
+		return line
+	}
 	return "will run - applies kube-ovn CNI and waits for it to become healthy"
 }
 
 func applyKubeOvnStep(cfg config.Config, ch chan<- installsteps.StepMsg) {
 	const label = "Applying kube-ovn"
+	if skipWhenJoining(label, ch) {
+		return
+	}
 	kubeOvnVersion := strings.TrimSpace(cfg.Versions.KubeOVN)
 	if kubeOvnVersion == "" {
 		kubeOvnVersion = versionspkg.DefaultKubeOVNVersion
@@ -74,6 +150,9 @@ func applyKubeOvnStep(cfg config.Config, ch chan<- installsteps.StepMsg) {
 
 func prepareK3sStep(cfg config.Config, ch chan<- installsteps.StepMsg) {
 	const label = "Applying manifests"
+	if skipWhenJoining(label, ch) {
+		return
+	}
 
 	aileronVersion := strings.TrimSpace(cfg.Versions.Aileron)
 	if aileronVersion == "" {
@@ -103,6 +182,9 @@ func prepareK3sStep(cfg config.Config, ch chan<- installsteps.StepMsg) {
 // decision, unlike those, is predictable from local markers alone (same as
 // planKubeVirtCDIDownload), so it's called out explicitly here.
 func planApplyManifests(cfg config.Config) string {
+	if line, ok := planJoinSkip(); ok {
+		return line
+	}
 	kubevirtVersion := resolveKubeVirtVersion(cfg)
 	cdiVersion := resolveCDIVersion(cfg)
 	kvNote := "will apply"

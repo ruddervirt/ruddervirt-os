@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -16,6 +17,7 @@ import (
 type fakeRunner struct {
 	calls  []string
 	stream []string
+	out    []byte
 	err    error
 }
 
@@ -30,7 +32,7 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) error {
 
 func (f *fakeRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
 	f.record(name, args)
-	return nil, f.err
+	return f.out, f.err
 }
 
 func (f *fakeRunner) CombinedOutput(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -177,6 +179,81 @@ func TestRunStreamedPropagatesError(t *testing.T) {
 		err := RunStreamed(ch, func(line string) StepMsg { return line }, "false")
 		if !errors.Is(err, sentinel) {
 			t.Errorf("RunStreamed err = %v, want %v", err, sentinel)
+		}
+	})
+}
+
+func TestReadFilePrivileged(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("readable file needs no privileged fallback", func(t *testing.T) {
+		path := filepath.Join(dir, "readable.yaml")
+		if err := os.WriteFile(path, []byte("server: https://10.0.0.5:6443\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		f := &fakeRunner{}
+		var got []byte
+		var err error
+		withFakeRunner(f, func() { got, err = ReadFilePrivileged(path) })
+		if err != nil {
+			t.Fatalf("ReadFilePrivileged() err = %v, want nil", err)
+		}
+		if !strings.Contains(string(got), "10.0.0.5") {
+			t.Errorf("ReadFilePrivileged() = %q, want the file's contents", got)
+		}
+		if len(f.calls) != 0 {
+			t.Errorf("calls = %v, want none - a readable file must never shell out to sudo", f.calls)
+		}
+	})
+
+	t.Run("missing file is returned as-is, not retried under sudo", func(t *testing.T) {
+		f := &fakeRunner{}
+		var err error
+		withFakeRunner(f, func() { _, err = ReadFilePrivileged(filepath.Join(dir, "nope.yaml")) })
+		if !os.IsNotExist(err) {
+			t.Errorf("ReadFilePrivileged() err = %v, want a not-exist error", err)
+		}
+		if len(f.calls) != 0 {
+			t.Errorf("calls = %v, want none", f.calls)
+		}
+	})
+
+	t.Run("unreadable file falls back to a privileged cat", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("running as root: mode 0000 is still readable, so the fallback isn't reachable")
+		}
+		path := filepath.Join(dir, "locked.yaml")
+		if err := os.WriteFile(path, []byte("unreadable\n"), 0000); err != nil {
+			t.Fatal(err)
+		}
+		f := &fakeRunner{out: []byte("server: https://10.0.0.5:6443\n")}
+		var got []byte
+		var err error
+		withFakeRunner(f, func() { got, err = ReadFilePrivileged(path) })
+		if err != nil {
+			t.Fatalf("ReadFilePrivileged() err = %v, want nil", err)
+		}
+		if !strings.Contains(string(got), "10.0.0.5") {
+			t.Errorf("ReadFilePrivileged() = %q, want the privileged cat's output", got)
+		}
+		if len(f.calls) != 1 || !strings.Contains(f.calls[0], "cat") {
+			t.Errorf("calls = %v, want one privileged cat", f.calls)
+		}
+	})
+
+	t.Run("failed fallback reports the original permission error", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("running as root: mode 0000 is still readable, so the fallback isn't reachable")
+		}
+		path := filepath.Join(dir, "locked-and-no-sudo.yaml")
+		if err := os.WriteFile(path, []byte("unreadable\n"), 0000); err != nil {
+			t.Fatal(err)
+		}
+		f := &fakeRunner{err: errors.New("sudo: a password is required")}
+		var err error
+		withFakeRunner(f, func() { _, err = ReadFilePrivileged(path) })
+		if !errors.Is(err, os.ErrPermission) {
+			t.Errorf("ReadFilePrivileged() err = %v, want the original permission error", err)
 		}
 	})
 }

@@ -7,6 +7,7 @@ package exec
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -154,4 +155,26 @@ func WrapCmdErr(out []byte, err error) error {
 		return nil
 	}
 	return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
+}
+
+// ReadFilePrivileged reads path as the invoking user, falling back to a
+// privileged `cat` when the file's mode denies that. Config files this tool
+// writes itself are mode 0644 (see internal/config.WritePrivileged), but one
+// an operator placed by hand with sudo may well be 0600 - and silently
+// reading nothing there would be worse than prompting, since callers use the
+// contents to decide what to do (see internal/k3s.NodeMembership). Only for
+// Step.Run paths: Step.Plan must never risk a sudo prompt, so it passes plain
+// os.ReadFile instead.
+func ReadFilePrivileged(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err == nil || !errors.Is(err, os.ErrPermission) {
+		return data, err
+	}
+	out, cmdErr := RunPrivileged("/usr/bin/cat", path).Output()
+	if cmdErr != nil {
+		// Report the original permission error, not sudo/cat's - it's the
+		// one that tells the operator what's actually wrong with the file.
+		return nil, err
+	}
+	return out, nil
 }

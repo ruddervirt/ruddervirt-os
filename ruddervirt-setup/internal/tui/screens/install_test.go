@@ -67,9 +67,12 @@ func TestInstallModelViewConfirm(t *testing.T) {
 		ConfirmInput: textinput.New(),
 		ConfirmError: "boom",
 	}
-	out := m.ViewConfirm(steps)
+	out := m.ViewConfirm(steps, "")
 	if !strings.Contains(out, "Step one") || !strings.Contains(out, "Step two") {
 		t.Errorf("ViewConfirm() = %q, want both step labels", out)
+	}
+	if !strings.Contains(out, "30+ minutes") {
+		t.Errorf("ViewConfirm() = %q, want the full-install preamble when not joining", out)
 	}
 	if !strings.Contains(out, "will do X") {
 		t.Errorf("ViewConfirm() = %q, want the first step's plan line", out)
@@ -161,5 +164,26 @@ func TestInstallModelResetClearsPlanConfirmAndPipeline(t *testing.T) {
 	}
 	if got.Pipeline.Done || got.Pipeline.Steps != nil {
 		t.Errorf("Pipeline = %+v, want the zero value", got.Pipeline)
+	}
+}
+
+// TestInstallModelViewConfirmJoining covers the join preamble: a node joining
+// an existing cluster skips the cluster-wide steps, so the "30+ minutes,
+// mostly waiting for storage" warning would be actively misleading.
+func TestInstallModelViewConfirmJoining(t *testing.T) {
+	steps := []installsteps.Step{installStep("Applying kube-ovn", nil)}
+	m := InstallModel{
+		PlanLines:    []string{"skip - joining the existing cluster at https://10.0.0.5:6443"},
+		ConfirmInput: textinput.New(),
+	}
+	out := m.ViewConfirm(steps, "https://10.0.0.5:6443")
+	if !strings.Contains(out, "https://10.0.0.5:6443") {
+		t.Errorf("ViewConfirm() = %q, want the joined cluster named", out)
+	}
+	if !strings.Contains(out, "additional control-plane node") {
+		t.Errorf("ViewConfirm() = %q, want the control-plane-join wording", out)
+	}
+	if strings.Contains(out, "30+ minutes") {
+		t.Errorf("ViewConfirm() = %q, want the full-install duration warning dropped when joining", out)
 	}
 }

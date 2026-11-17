@@ -26,11 +26,13 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
 	"ruddervirt-setup/internal/exec"
 	"ruddervirt-setup/internal/kubevirt"
 	"ruddervirt-setup/internal/manifests"
 	"ruddervirt-setup/internal/multus"
 	"ruddervirt-setup/internal/network"
+	"ruddervirt-setup/internal/storage"
 )
 
 var k3sVersionPattern = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)(?:-rc(\d+))?\+k3s(\d+)$`)
@@ -334,17 +336,134 @@ func deriveClusterDNS(svcCIDR string) (string, error) {
 	return net.IPv4(ip4[0], ip4[1], ip4[2], ip4[3]+10).String(), nil
 }
 
+const (
+	// ClusterConfigPath is the file k3s reads at startup: the one
+	// RenderK3sConfigStep writes, and the one an operator joining an existing
+	// cluster places by hand. ConfigTemplatePath is the Ignition-provisioned
+	// template RenderK3sConfigStep renders from (see server.bu).
+	ClusterConfigPath  = "/etc/rancher/k3s/config.yaml"
+	ConfigTemplatePath = "/etc/ruddervirt/k3s-config.yaml"
+)
+
+// Membership is how a node relates to a cluster, as declared by a k3s config
+// file. Only these two keys matter here; k3s's many others are ignored.
+//
+// There is deliberately no equivalent in config.Config: a join token is a
+// secret, and Config never holds one (see StabilizerConfig's doc comment).
+// The k3s config file is also the only thing k3s itself consults, so reading
+// it keeps "what this node will do" in exactly one place.
+type Membership struct {
+	// JoinServer is k3s's `server:` key - a non-empty value means this node
+	// joins an existing cluster rather than bootstrapping its own.
+	JoinServer string `yaml:"server"`
+	// ClusterInit is k3s's `cluster-init:` key - bootstraps a joinable
+	// (embedded-etcd) cluster instead of the default single-node SQLite
+	// datastore. A cluster is only joinable if its first node set this.
+	ClusterInit bool `yaml:"cluster-init"`
+}
+
+// Declared reports whether this Membership says anything about cluster
+// membership at all. False for the stock template, whose server/cluster-init
+// hints are commented out.
+func (m Membership) Declared() bool { return m.JoinServer != "" || m.ClusterInit }
+
+// ReadMembership parses path's k3s config for the membership keys. readFile
+// is injected (same reasoning as RenderK3sConfigStep's write) so Step.Run
+// callers can pass exec.ReadFilePrivileged while Step.Plan callers pass plain
+// os.ReadFile. A missing file is not an error - it just means nothing is
+// declared yet.
+func ReadMembership(readFile func(path string) ([]byte, error), path string) (Membership, error) {
+	data, err := readFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Membership{}, nil
+		}
+		return Membership{}, err
+	}
+	var m Membership
+	// yaml.v3 ignores unknown keys by default, so the template's
+	// __LOCAL_IP__ placeholders (plain scalars) parse fine and every other
+	// k3s key is skipped.
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		return Membership{}, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	m.JoinServer = strings.TrimSpace(m.JoinServer)
+	return m, nil
+}
+
+// NodeMembership reports the membership the next k3s start will use: what the
+// live config declares, or - when it declares nothing - what the template
+// RenderK3sConfigStep is about to render from declares. Any read/parse error
+// is reported as "nothing declared", which is the status quo behaviour
+// (bootstrap a new single-node cluster); callers that need to tell a
+// corrupt/unreadable config apart from an absent one use ReadMembership.
+func NodeMembership(readFile func(path string) ([]byte, error)) Membership {
+	if m, err := ReadMembership(readFile, ClusterConfigPath); err == nil && m.Declared() {
+		return m
+	}
+	m, err := ReadMembership(readFile, ConfigTemplatePath)
+	if err != nil {
+		return Membership{}
+	}
+	return m
+}
+
+// ConfigIsOperatorOwned reports whether the live k3s config is the
+// operator's to manage rather than RenderK3sConfigStep's, plus a short reason
+// for the progress log. True when the live config declares cluster membership
+// that the template does not: rendering over it would drop the
+// server:/token: (or cluster-init:) that makes the node a cluster member at
+// all, which is the whole point of placing it by hand.
+//
+// An operator who instead declares membership by editing the *template* (the
+// server.bu recipe's route for a first node) keeps normal rendering, so
+// __LOCAL_IP__ substitution still follows e.g. a changed DHCP lease. The
+// trade-off of the by-hand route is the mirror image: bind-address/
+// advertise-address/node-ip/tls-san are then the operator's to keep correct,
+// since nothing substitutes them any more.
+func ConfigIsOperatorOwned(readFile func(path string) ([]byte, error)) (bool, string) {
+	live, err := ReadMembership(readFile, ClusterConfigPath)
+	if err != nil || !live.Declared() {
+		return false, ""
+	}
+	if tmpl, err := ReadMembership(readFile, ConfigTemplatePath); err == nil && tmpl.Declared() {
+		return false, ""
+	}
+	if live.JoinServer != "" {
+		return true, fmt.Sprintf("server: is set (joining %s)", live.JoinServer)
+	}
+	return true, "cluster-init: is set"
+}
+
 // RenderK3sConfigStep is the Go port of the former
 // scripts/render-k3s-config.sh: substitutes net's values into the
 // /etc/ruddervirt/k3s-config.yaml template (see server.bu) and writes
 // /etc/rancher/k3s/config.yaml, the file k3s reads at startup. Takes
 // network.NetworkConfig rather than the full Config, since that's all it
 // ever used.
-func RenderK3sConfigStep(netCfg network.NetworkConfig, ch chan<- exec.StepMsg, wrap func(line string) exec.StepMsg, write func(path string, data []byte) error) error {
-	const templatePath = "/etc/ruddervirt/k3s-config.yaml"
-	const outputPath = "/etc/rancher/k3s/config.yaml"
+//
+// Bows out entirely when the live config declares cluster membership the
+// template doesn't - see ConfigIsOperatorOwned.
+func RenderK3sConfigStep(netCfg network.NetworkConfig, ch chan<- exec.StepMsg, wrap func(line string) exec.StepMsg, readFile func(path string) ([]byte, error), write func(path string, data []byte) error) error {
+	const templatePath = ConfigTemplatePath
+	const outputPath = ClusterConfigPath
 
-	data, err := os.ReadFile(templatePath)
+	// A config that can't be read or parsed must never be overwritten: the
+	// most likely reason for either is that an operator wrote it by hand (a
+	// sudo-placed mode-0600 file, or a typo in one), and rendering over it
+	// would destroy the server:/token: that makes this node a cluster member.
+	// Fail loudly instead - the plan preview warns about this before Apply
+	// (see planConfigReadProblem, k3s_bridge.go).
+	if _, err := ReadMembership(readFile, outputPath); err != nil {
+		return fmt.Errorf("refusing to overwrite %s: %w - fix or remove it, then re-apply", outputPath, err)
+	}
+
+	if operatorOwned, reason := ConfigIsOperatorOwned(readFile); operatorOwned {
+		ch <- wrap(fmt.Sprintf("%s in %s - leaving the operator-provided config in place", reason, outputPath))
+		return nil
+	}
+
+	data, err := readFile(templatePath)
 	if err != nil {
 		return err
 	}
@@ -753,16 +872,18 @@ func applyStorageEngine(ch chan<- exec.StepMsg, wrap func(string) exec.StepMsg, 
 	if err := manifests.WriteStorageManifests(ch, wrap, write, engine); err != nil {
 		return err
 	}
-	switch engine {
-	case "rook-ceph":
-		return applyRookCeph(ch, wrap, kubectlBin)
-	case "longhorn":
-		return applyGenericStorageEngine(ch, wrap, kubectlBin, "longhorn", "longhorn-system", "driver.longhorn.io")
-	case "openebs":
-		return applyGenericStorageEngine(ch, wrap, kubectlBin, "openebs", "openebs", "local.csi.openebs.io")
-	default:
+	// Rook-Ceph gets its own wait; Longhorn and OpenEBS share the generic
+	// one, keyed off internal/storage.EngineProbes so the CSIDriver/namespace
+	// this waits on and the ones storage.DetectClusterEngine reads back can
+	// never drift apart.
+	probe, ok := storage.EngineProbes[engine]
+	if !ok {
 		return fmt.Errorf("unknown storage engine %q", engine)
 	}
+	if engine == "rook-ceph" {
+		return applyRookCeph(ch, wrap, kubectlBin)
+	}
+	return applyGenericStorageEngine(ch, wrap, kubectlBin, engine, probe.Namespace, probe.CSIDriver)
 }
 
 func applyRookCeph(ch chan<- exec.StepMsg, wrap func(string) exec.StepMsg, kubectlBin string) error {

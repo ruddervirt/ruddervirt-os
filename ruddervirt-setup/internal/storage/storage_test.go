@@ -237,3 +237,54 @@ func TestPrepareStorageDevice(t *testing.T) {
 		}
 	})
 }
+
+// TestEngineProbesCoverEverySupportedEngine: EngineProbes is now the single
+// source of truth for both internal/k3s's post-apply readiness wait and
+// DetectClusterEngine's lookup, so a missing entry would make an engine
+// unappliable AND undetectable at once.
+func TestEngineProbesCoverEverySupportedEngine(t *testing.T) {
+	// Mirrors the storage.engine SettingField's Options (internal/config);
+	// internal/config can't be imported here without inverting this module's
+	// dependency direction, so the list is restated.
+	for _, engine := range []string{"openebs", "longhorn", "rook-ceph"} {
+		probe, ok := EngineProbes[engine]
+		if !ok {
+			t.Errorf("EngineProbes is missing %q", engine)
+			continue
+		}
+		if probe.CSIDriver == "" || probe.Namespace == "" {
+			t.Errorf("EngineProbes[%q] = %+v, want both fields set", engine, probe)
+		}
+	}
+	if len(EngineProbes) != 3 {
+		t.Errorf("EngineProbes has %d entries, want 3 - add the new engine to this test and to internal/config's options", len(EngineProbes))
+	}
+}
+
+func TestDetectClusterEngine(t *testing.T) {
+	cases := []struct {
+		name      string
+		installed string // the CSIDriver the fake cluster has, "" for none
+		want      string
+		wantOK    bool
+	}{
+		{"longhorn cluster", "driver.longhorn.io", "longhorn", true},
+		{"openebs cluster", "local.csi.openebs.io", "openebs", true},
+		{"rook-ceph cluster", "rook-ceph.rbd.csi.ceph.com", "rook-ceph", true},
+		{"no engine installed yet", "", "", false},
+	}
+	for _, c := range cases {
+		fake := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
+			if c.installed != "" && exectest.CmdContains(name, args, "get", "csidriver", c.installed) {
+				return exectest.Outcome{}
+			}
+			return exectest.Outcome{Err: exectest.ErrFake}
+		}}
+		var got string
+		var ok bool
+		exectest.WithFakeRunner(fake, func() { got, ok = DetectClusterEngine("/usr/local/bin/kubectl") })
+		if got != c.want || ok != c.wantOK {
+			t.Errorf("%s: DetectClusterEngine() = (%q, %v), want (%q, %v)", c.name, got, ok, c.want, c.wantOK)
+		}
+	}
+}

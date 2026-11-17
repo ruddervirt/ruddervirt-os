@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	versionspkg "ruddervirt-setup/internal/versions"
@@ -180,4 +181,72 @@ func TestLoadConfig(t *testing.T) {
 			t.Errorf("LoadConfig(%q) on error = %+v, want defaults %+v", path, cfg, DefaultConfig())
 		}
 	})
+}
+
+// TestClusterScopedFieldsLockOnAJoiningNode: every component applied by
+// prepareK3sStep/ApplyKubeOvnStep is cluster-wide, and a joining node skips
+// those steps - so offering an upgrade there would persist a version this
+// node will never apply, and render it as though it had. k3s is the
+// exception: its binary is per-node.
+func TestClusterScopedFieldsLockOnAJoiningNode(t *testing.T) {
+	clusterScoped := map[string]bool{
+		"versions.kubeovn":          true,
+		"versions.multus":           true,
+		"versions.kubevirt":         true,
+		"versions.cdi":              true,
+		"versions.aileron":          true,
+		"system.aileron_ui_enabled": true,
+	}
+	nodeScoped := map[string]bool{
+		"versions.k3s":       true,
+		"system.auto_update": true,
+	}
+
+	joining := VersionCache{ClusterJoinTarget: "https://10.0.0.5:6443"}
+	standalone := VersionCache{}
+	cfg := DefaultConfig()
+
+	seen := map[string]bool{}
+	for _, f := range SettingFields {
+		locked := false
+		reason := ""
+		if f.Locked != nil {
+			locked, reason = f.Locked(&cfg, joining)
+		}
+		switch {
+		case clusterScoped[f.Key]:
+			seen[f.Key] = true
+			if !locked {
+				t.Errorf("%s: Locked() = false on a joining node, want it locked as cluster-wide", f.Key)
+			}
+			if !strings.Contains(reason, "first node") {
+				t.Errorf("%s: Locked() reason = %q, want it to point at the cluster's first node", f.Key, reason)
+			}
+		case nodeScoped[f.Key]:
+			seen[f.Key] = true
+			if locked {
+				t.Errorf("%s: Locked() = true (%q) on a joining node, want a per-node field to stay editable", f.Key, reason)
+			}
+		}
+
+		// Nothing may lock on a node that bootstrapped its own cluster, which
+		// is every install that predates join support. storage.engine is
+		// excluded: it locks on its own on-disk marker, not on cfg.
+		if f.Locked != nil && f.Key != "storage.engine" {
+			if locked, reason := f.Locked(&cfg, standalone); locked {
+				t.Errorf("%s: Locked() = true (%q) on a standalone node, want it editable", f.Key, reason)
+			}
+		}
+	}
+
+	for key := range clusterScoped {
+		if !seen[key] {
+			t.Errorf("%s is no longer a SettingField - this test's cluster-scoped list is stale", key)
+		}
+	}
+	for key := range nodeScoped {
+		if !seen[key] {
+			t.Errorf("%s is no longer a SettingField - this test's node-scoped list is stale", key)
+		}
+	}
 }

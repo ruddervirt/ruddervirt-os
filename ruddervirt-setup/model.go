@@ -3,6 +3,7 @@
 package main
 
 import (
+	"os"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -10,6 +11,7 @@ import (
 	"ruddervirt-setup/internal/config"
 	"ruddervirt-setup/internal/hostname"
 	"ruddervirt-setup/internal/installsteps"
+	"ruddervirt-setup/internal/k3s"
 	"ruddervirt-setup/internal/network"
 	"ruddervirt-setup/internal/stabilizer/settings"
 	"ruddervirt-setup/internal/status"
@@ -203,6 +205,15 @@ type model struct {
 	// the rest of the process's life.
 	cachedStabilizerDetected bool
 
+	// cachedClusterJoinTarget is the cluster this node is configured to join
+	// (k3s's `server:` key), or "" when it bootstraps its own - read once in
+	// initialModel via k3s.NodeMembership, since the answer only changes when
+	// an operator edits a config file outside this process. Display only (the
+	// home screen's "Cluster" line and the install-confirm preamble): the
+	// install pipeline re-reads it per step with a privileged reader, which a
+	// render path must never use - see k3s_bridge.go's joiningCluster.
+	cachedClusterJoinTarget string
+
 	// stabilizerAdopt is the "Adopt to ruddervirt.com" wizard's sub-model
 	// (screenStabilizerAileronCheck through screenStabilizerAdopt, Settings
 	// -> Advanced -> new action row, see
@@ -323,9 +334,29 @@ func initialModel() model {
 		stabilizerVersion:  screens.StabilizerVersionModel{ConfirmInput: stabilizerVersionConfirmInput},
 		power:              screens.PowerModel{ConfirmInput: powerConfirmInput},
 		cfg:                cfg,
+		// Plain os.ReadFile, not exec.ReadFilePrivileged: initialModel runs
+		// before the TUI's first paint, where a sudo prompt would be both
+		// surprising and fighting bubbletea's terminal setup. An unreadable
+		// config just means no "Cluster" line on the home screen; the plan
+		// preview calls that out properly (planConfigReadProblem).
+		cachedClusterJoinTarget: k3s.NodeMembership(os.ReadFile).JoinServer,
 		// Fallback until the first tea.WindowSizeMsg arrives.
 		termWidth:  80,
 		termHeight: 24,
+	}
+}
+
+// versionCache bundles the root Model's live-detected state for
+// config.SettingField's Options/Locked funcs. A method rather than five
+// identical struct literals across view.go/app.go: a field missed at one
+// site would silently unlock a row (or empty a picker) on exactly one
+// screen.
+func (m model) versionCache() config.VersionCache {
+	return config.VersionCache{
+		K3s:                m.cachedK3sVersions,
+		Aileron:            m.cachedAileronVersions,
+		StabilizerDetected: m.cachedStabilizerDetected,
+		ClusterJoinTarget:  m.cachedClusterJoinTarget,
 	}
 }
 
