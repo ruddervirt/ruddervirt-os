@@ -491,6 +491,9 @@ func RenderK3sConfigStep(netCfg network.NetworkConfig, ch chan<- exec.StepMsg, w
 
 type k8sNodeList struct {
 	Items []struct {
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
 		Status struct {
 			Addresses []struct {
 				Type    string `json:"type"`
@@ -500,37 +503,86 @@ type k8sNodeList struct {
 	} `json:"items"`
 }
 
-// discoverMasterNodeIPs returns the IPv4 InternalIP of every control-plane
-// (or, failing that, master-labeled) node and the selector that found them.
-// Only IPv4 is kept: kube-ovn.yaml pins networking.stack to IPv4, and a
-// mixed-family KUBE_NODE_IPS list breaks ovs-ovn/ic-controller. The
-// selector is also used to apply kube-ovn's required master label.
-func discoverMasterNodeIPs(kubectlBin string) ([]string, string, error) {
+// localNodeName is the name k3s registers this host under: its hostname,
+// lowercased, which is what the kubelet does. Empty when the hostname can't
+// be read, which callers treat as "can't identify this node" rather than as
+// a match.
+func localNodeName() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(h))
+}
+
+// masterNodes is the control-plane set kube-ovn needs: every node's name,
+// every node's IPv4 InternalIP, and the label selector that found them.
+type masterNodes struct {
+	Names    []string
+	IPs      []string
+	Selector string
+}
+
+// includes reports whether name is one of these nodes, case-insensitively -
+// k3s registers a node under its lowercased hostname, so a host whose
+// /etc/hostname has any uppercase in it would otherwise never match itself.
+func (m masterNodes) includes(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, n := range m.Names {
+		if strings.EqualFold(n, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// discoverMasterNodes returns the name and IPv4 InternalIP of every
+// control-plane (or, failing that, master-labeled) node and the selector
+// that found them. Only IPv4 is kept: kube-ovn.yaml pins networking.stack to
+// IPv4, and a mixed-family KUBE_NODE_IPS list breaks ovs-ovn/ic-controller.
+// The selector is also used to apply kube-ovn's required master label.
+func discoverMasterNodes(kubectlBin string) (masterNodes, error) {
 	for _, label := range []string{"node-role.kubernetes.io/control-plane", "node-role.kubernetes.io/master"} {
 		out, err := exec.RunPrivileged(kubectlBin, "get", "nodes", "-l", label, "-o", "json").Output()
 		if err != nil {
 			continue
 		}
-		var list k8sNodeList
-		if err := json.Unmarshal(out, &list); err != nil {
+		found, err := parseMasterNodes(out, label)
+		if err != nil {
 			continue
 		}
-		var ips []string
-		for _, item := range list.Items {
-			for _, addr := range item.Status.Addresses {
-				if addr.Type != "InternalIP" {
-					continue
-				}
-				if ip := net.ParseIP(addr.Address); ip != nil && ip.To4() != nil {
-					ips = append(ips, addr.Address)
+		if len(found.IPs) > 0 {
+			return found, nil
+		}
+	}
+	return masterNodes{}, fmt.Errorf("no control-plane node IPs found")
+}
+
+// parseMasterNodes turns `kubectl get nodes -o json` output into a
+// masterNodes. Split from discoverMasterNodes so the IPv4-only filter and
+// the name extraction are testable without a cluster.
+func parseMasterNodes(out []byte, selector string) (masterNodes, error) {
+	var list k8sNodeList
+	if err := json.Unmarshal(out, &list); err != nil {
+		return masterNodes{}, err
+	}
+	found := masterNodes{Selector: selector}
+	for _, item := range list.Items {
+		for _, addr := range item.Status.Addresses {
+			if addr.Type != "InternalIP" {
+				continue
+			}
+			if ip := net.ParseIP(addr.Address); ip != nil && ip.To4() != nil {
+				found.IPs = append(found.IPs, addr.Address)
+				if item.Metadata.Name != "" {
+					found.Names = append(found.Names, item.Metadata.Name)
 				}
 			}
 		}
-		if len(ips) > 0 {
-			return ips, label, nil
-		}
 	}
-	return nil, "", fmt.Errorf("no control-plane node IPs found")
+	return found, nil
 }
 
 // applyKubeOvn renders manifests/kube-ovn.yaml's placeholders
@@ -612,22 +664,47 @@ func ApplyKubeOvnStep(ch chan<- exec.StepMsg, wrap func(string) exec.StepMsg, wr
 		return err
 	}
 
-	var masterIPs []string
-	var masterNodeSelector string
-	if err := PollUntil(ch, wrap, "Waiting for a control-plane node", 60, 1*time.Second, func() bool {
-		ips, selector, err := discoverMasterNodeIPs(kubectlBin)
+	// Wait for THIS node to be registered as control-plane, not merely for
+	// some node to be - the distinction is load-bearing on a node joining an
+	// existing cluster. kube-ovn's ovn-central runs one OVN DB raft member
+	// per entry in the chart's masterNodes value (it drives both the replica
+	// count and NODE_IPS), and nodeSelector pins those replicas to
+	// kube-ovn/role=master. A node that is labeled master but absent from
+	// NODE_IPS is eligible to host an ovn-central replica that isn't a raft
+	// member - a broken OVN database. The previous "any control-plane node"
+	// poll returned as soon as it saw the node that was already there, so on
+	// a join it could render masterNodes without the joining node and then
+	// label it master anyway, producing exactly that state.
+	//
+	// On timeout, fall back to applying with whatever did register rather
+	// than failing the install: a cluster whose CNI is applied for the
+	// existing nodes is recoverable (re-apply once this node registers),
+	// while a hard failure here leaves the node with no CNI at all. The
+	// warning says which happened.
+	var masters masterNodes
+	selfName := localNodeName()
+	if err := PollUntil(ch, wrap, "Waiting for this node to register as control-plane", 60, 1*time.Second, func() bool {
+		found, err := discoverMasterNodes(kubectlBin)
 		if err != nil {
 			return false
 		}
-		masterIPs = ips
-		masterNodeSelector = selector
-		return true
+		masters = found
+		return found.includes(selfName)
 	}); err != nil {
-		return err
+		if len(masters.IPs) == 0 {
+			return err
+		}
+		ch <- wrap(fmt.Sprintf(
+			"WARNING: %q has not registered as a control-plane node yet - applying kube-ovn for the %d node(s) that have. Re-apply from any node once it appears in `kubectl get nodes` so it joins ovn-central.",
+			selfName, len(masters.IPs)))
 	}
 
+	// Labels every control-plane node, this one included - kube-ovn's
+	// ovn-central/kube-ovn-cni select on it, and k3s only applies a config
+	// file's node-label at a node's FIRST registration, so a node that
+	// joined without it in place never gets it any other way.
 	ch <- wrap("Labeling kube-ovn master nodes...")
-	if err := exec.RunStreamed(ch, wrap, kubectlBin, "label", "nodes", "-l", masterNodeSelector, "kube-ovn/role=master", "--overwrite"); err != nil {
+	if err := exec.RunStreamed(ch, wrap, kubectlBin, "label", "nodes", "-l", masters.Selector, "kube-ovn/role=master", "--overwrite"); err != nil {
 		return err
 	}
 
@@ -637,7 +714,7 @@ func ApplyKubeOvnStep(ch chan<- exec.StepMsg, wrap func(string) exec.StepMsg, wr
 	}
 
 	ch <- wrap("Applying kube-ovn...")
-	if err := applyKubeOvn(ch, wrap, write, kubectlBin, kubeOvnVersion, podCIDR, podGateway, svcCIDR, masterIPs); err != nil {
+	if err := applyKubeOvn(ch, wrap, write, kubectlBin, kubeOvnVersion, podCIDR, podGateway, svcCIDR, masters.IPs); err != nil {
 		return err
 	}
 

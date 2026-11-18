@@ -73,3 +73,31 @@ func TestCompareSemver(t *testing.T) {
 		}
 	}
 }
+
+// TestNewerVersion covers the single reconciliation rule the multi-node
+// upgrade path rests on: a node's configured version and the version read
+// back off the live cluster are merged by taking the newer, so a stale
+// config is repaired upward and an operator's pick is never undone.
+func TestNewerVersion(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b string
+		want string
+	}{
+		{"b newer", "v1.9.0", "v1.9.1", "v1.9.1"},
+		{"a newer", "v1.10.0", "v1.9.1", "v1.10.0"},
+		{"equal", "v1.9.1", "v1.9.1", "v1.9.1"},
+		{"b unknown", "v1.9.1", "", "v1.9.1"},
+		{"a unknown", "", "v1.9.1", "v1.9.1"},
+		{"both unknown", "", "", ""},
+		{"b unparseable keeps a", "v1.9.1", "not-a-version", "v1.9.1"},
+		{"a unparseable keeps a", "1.9-rc1", "v1.9.1", "1.9-rc1"},
+		{"minor beats patch", "v1.9.9", "v1.10.0", "v1.10.0"},
+		{"major beats minor", "v1.99.0", "v2.0.0", "v2.0.0"},
+	}
+	for _, c := range cases {
+		if got := NewerVersion(c.a, c.b); got != c.want {
+			t.Errorf("%s: NewerVersion(%q, %q) = %q, want %q", c.name, c.a, c.b, got, c.want)
+		}
+	}
+}

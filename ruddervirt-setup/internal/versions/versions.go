@@ -104,3 +104,30 @@ func SupportedVersionsAtLeast(all []string, floor string) []string {
 	})
 	return available
 }
+
+// NewerVersion returns whichever of a and b is the newer strict-semver tag,
+// treating an empty string as "unknown" (so the other wins) and a
+// non-parseable tag as "keep a". It exists so a *configured* version and a
+// version read back from the live cluster can be reconciled by one rule
+// everywhere - the Update screen's picker floor, the version persisted into
+// this node's config, and the version an install step actually applies.
+//
+// Monotonic by construction, which is what makes that reconciliation safe
+// on a multi-node cluster: it can raise a node's stale configured version
+// to what the cluster really runs, but can never lower a version the
+// operator just picked (their pick is always >= the cluster's, since the
+// picker floors at it). Without this, a node whose config predates an
+// upgrade performed from a different node would re-apply its own older
+// version and downgrade the cluster.
+func NewerVersion(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	if cmp, ok := CompareSemver(b, a); ok && cmp > 0 {
+		return b
+	}
+	return a
+}

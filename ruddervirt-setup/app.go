@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"ruddervirt-setup/internal/config"
 	"ruddervirt-setup/internal/hostname"
 	"ruddervirt-setup/internal/network"
 	"ruddervirt-setup/internal/osupdate"
@@ -44,6 +45,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case osUpdateAvailableMsg:
 		m.cachedOSUpdateAvailable = msg.available
+		return m, nil
+
+	case clusterComponentVersionsMsg:
+		m.cachedClusterVersions = msg.versions
+		// Reconcile this node's config up to what the cluster actually runs.
+		// Upward only (config.ReconcileClusterVersions), so this can repair a
+		// node whose config predates an upgrade performed from a different
+		// node - which would otherwise re-apply its own older version and
+		// downgrade the cluster on its next Apply - without ever undoing a
+		// version the operator just picked.
+		//
+		// Silent and best-effort: it only ever moves a value toward what is
+		// already installed, so there is nothing for the operator to confirm,
+		// and a failed save just means the next start reconciles again.
+		if changed := config.ReconcileClusterVersions(&m.cfg, m.versionCache()); len(changed) > 0 {
+			return m, reconcileClusterVersionsCmd(m.cfg)
+		}
+		return m, nil
+
+	case clusterVersionsReconciledMsg:
 		return m, nil
 
 	case stabilizerDetectedMsg:

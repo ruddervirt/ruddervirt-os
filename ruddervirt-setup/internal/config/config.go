@@ -246,9 +246,29 @@ type VersionCache struct {
 	StabilizerDetected bool
 	// ClusterJoinTarget is non-empty on a node that joined an existing
 	// cluster (see internal/k3s.NodeMembership, surfaced as package main's
-	// cachedClusterJoinTarget). Locks every cluster-scoped SettingField -
-	// see clusterComponentLocked.
+	// cachedClusterJoinTarget). Informational on this screen - the home
+	// screen renders it, and the install pipeline skips the cluster-wide
+	// steps off it - but deliberately NOT a reason to lock a cluster-scoped
+	// field: see ClusterVersions below.
 	ClusterJoinTarget string
+	// ClusterVersions maps a cluster-scoped SettingField.Key to the version
+	// the live cluster actually runs for that component (package main's
+	// cachedClusterVersions, from internal/status.FetchClusterComponentVersions).
+	// Empty/absent means "unknown" - not installed, unreachable, or k3s
+	// isn't up yet - never a version.
+	//
+	// Every cluster-scoped component is a single cluster-wide object, so it
+	// can legitimately be upgraded from any control-plane node and the rest
+	// of the cluster picks the change up by definition. What used to make
+	// that unsafe wasn't the node doing the upgrading, it was that each
+	// node's idea of "the current version" came from its own
+	// ruddervirt-setup.yaml: a joining node showed its image's defaults, and
+	// every node other than the one that performed an upgrade kept a stale
+	// value it would re-apply - a downgrade. Reading the running version
+	// back from the cluster removes the premise, so these fields stay
+	// editable on every node and reconcile through clusterVersionFloor
+	// below.
+	ClusterVersions map[string]string
 }
 
 // SettingField binds one editable Settings-screen row to the Config field it
@@ -329,33 +349,39 @@ func stabilizerLocked(c *Config, versions VersionCache) (bool, string) {
 	return false, ""
 }
 
-// clusterComponentLocked locks the SettingFields whose value is cluster-wide
-// state rather than this node's. Every one of them is applied by
-// prepareK3sStep/ApplyKubeOvnStep, which a node joining an existing cluster
-// skips entirely (see k3s_bridge.go's skipWhenJoining) - so without this
-// lock the Update screen would offer upgrades it won't perform, then persist
-// the new version into this node's config and render it as applied, while
-// the cluster still runs whatever its first node set. Upgrade these from the
-// node that bootstrapped the cluster.
+// ClusterScopedVersionFields lists, by SettingField.Key, the version fields
+// whose value is one cluster-wide object rather than this node's state, in
+// the order internal/status probes them. Exported so package main can
+// reconcile exactly these against the live cluster (and so a test can catch
+// a new cluster-scoped field being added without being listed here).
 //
-// Deliberately NOT applied to versions.k3s: the k3s binary is per-node
+// versions.k3s is deliberately absent: the k3s binary is per-node
 // (/usr/local/bin/k3s, installed by InstallK3sStep), so each server is
-// upgraded on its own.
-func clusterComponentLocked(c *Config, versions VersionCache) (bool, string) {
-	if versions.ClusterJoinTarget != "" {
-		return true, "managed by the cluster's first node"
-	}
-	return false, ""
+// upgraded on its own and its configured value is already the truth for
+// this node.
+var ClusterScopedVersionFields = []string{
+	"versions.kubeovn",
+	"versions.multus",
+	"versions.kubevirt",
+	"versions.cdi",
+	"versions.aileron",
 }
 
-// stabilizerOrClusterLocked backs the two Aileron fields, which have two
-// independent reasons not to be this node's to change - either alone is
-// enough.
-func stabilizerOrClusterLocked(c *Config, versions VersionCache) (bool, string) {
-	if locked, reason := clusterComponentLocked(c, versions); locked {
-		return locked, reason
-	}
-	return stabilizerLocked(c, versions)
+// clusterVersionFloor is what a cluster-scoped field's picker must treat as
+// "current": the newer of this node's configured value and what the cluster
+// actually runs. Both directions of that max() matter.
+//
+// Taking the cluster's value when it's newer is what lets a node whose
+// config predates an upgrade (including a node that just joined, whose
+// config is only its image's defaults) see the truth and never offer to
+// "upgrade" to something older than what's running. Keeping the configured
+// value when IT is newer is what makes the reconciliation race-free: an
+// operator's freshly picked version is always >= the cluster's, so a
+// cluster probe landing after their pick can never undo it.
+//
+// See versions.NewerVersion for the same rule applied at apply time.
+func clusterVersionFloor(key, configured string, versions VersionCache) string {
+	return versionspkg.NewerVersion(configured, versions.ClusterVersions[key])
 }
 
 var SettingFields = []SettingField{
@@ -500,54 +526,50 @@ var SettingFields = []SettingField{
 			// Hand-curated allowlist (supported-versions.yaml), same as
 			// KubeVirt/CDI below, not a live fetch - CNI components get no
 			// benefit of the doubt on an untested upstream release.
-			return versionspkg.SupportedVersionsAtLeast(versionspkg.SupportedVersions.KubeOVN, c.Versions.KubeOVN)
+			return versionspkg.SupportedVersionsAtLeast(versionspkg.SupportedVersions.KubeOVN,
+				clusterVersionFloor("versions.kubeovn", c.Versions.KubeOVN, versions))
 		},
 		Set: func(c *Config, v string) error {
 			c.Versions.KubeOVN = v
 			return nil
 		},
-		// Cluster-wide - see clusterComponentLocked.
-		Locked: clusterComponentLocked,
 	},
 	{
 		Key: "versions.multus", Label: "Multus", UpdateScreen: true,
 		Get: func(c *Config) string { return c.Versions.Multus },
 		Options: func(c *Config, versions VersionCache) []string {
 			// Same hand-curated-allowlist reasoning as versions.kubeovn above.
-			return versionspkg.SupportedVersionsAtLeast(versionspkg.SupportedVersions.Multus, c.Versions.Multus)
+			return versionspkg.SupportedVersionsAtLeast(versionspkg.SupportedVersions.Multus,
+				clusterVersionFloor("versions.multus", c.Versions.Multus, versions))
 		},
 		Set: func(c *Config, v string) error {
 			c.Versions.Multus = v
 			return nil
 		},
-		// Cluster-wide - see clusterComponentLocked.
-		Locked: clusterComponentLocked,
 	},
 	{
 		Key: "versions.kubevirt", Label: "KubeVirt", UpdateScreen: true,
 		Get: func(c *Config) string { return c.Versions.KubeVirt },
 		Options: func(c *Config, versions VersionCache) []string {
-			return versionspkg.SupportedVersionsAtLeast(versionspkg.SupportedVersions.KubeVirt, c.Versions.KubeVirt)
+			return versionspkg.SupportedVersionsAtLeast(versionspkg.SupportedVersions.KubeVirt,
+				clusterVersionFloor("versions.kubevirt", c.Versions.KubeVirt, versions))
 		},
 		Set: func(c *Config, v string) error {
 			c.Versions.KubeVirt = v
 			return nil
 		},
-		// Cluster-wide - see clusterComponentLocked.
-		Locked: clusterComponentLocked,
 	},
 	{
 		Key: "versions.cdi", Label: "CDI", UpdateScreen: true,
 		Get: func(c *Config) string { return c.Versions.CDI },
 		Options: func(c *Config, versions VersionCache) []string {
-			return versionspkg.SupportedVersionsAtLeast(versionspkg.SupportedVersions.CDI, c.Versions.CDI)
+			return versionspkg.SupportedVersionsAtLeast(versionspkg.SupportedVersions.CDI,
+				clusterVersionFloor("versions.cdi", c.Versions.CDI, versions))
 		},
 		Set: func(c *Config, v string) error {
 			c.Versions.CDI = v
 			return nil
 		},
-		// Cluster-wide - see clusterComponentLocked.
-		Locked: clusterComponentLocked,
 	},
 	{
 		Key: "versions.aileron", Label: "Aileron", UpdateScreen: true,
@@ -556,9 +578,10 @@ var SettingFields = []SettingField{
 			// Aileron ships too frequently for a hand-curated list (unlike
 			// KubeVirt/CDI) - fetch live from GitHub, same reasoning as
 			// versions.k3s: never offer a downgrade from what's configured.
+			floor := clusterVersionFloor("versions.aileron", c.Versions.Aileron, versions)
 			var available []string
 			for _, v := range versions.Aileron {
-				cmp, ok := versionspkg.CompareSemver(v, c.Versions.Aileron)
+				cmp, ok := versionspkg.CompareSemver(v, floor)
 				if ok && cmp < 0 {
 					continue
 				}
@@ -574,10 +597,11 @@ var SettingFields = []SettingField{
 			c.Versions.Aileron = v
 			return nil
 		},
-		// Locks whenever a HelmChart named "stabilizer" is on the cluster,
-		// or this node joined one it doesn't own - see
-		// stabilizerOrClusterLocked.
-		Locked: stabilizerOrClusterLocked,
+		// Locks whenever a HelmChart named "stabilizer" is on the cluster -
+		// then it's that chart's version to set, not ruddervirt-setup's.
+		// Being on a joining node is NOT a lock reason: see
+		// VersionCache.ClusterVersions.
+		Locked: stabilizerLocked,
 	},
 	{
 		// UNAUTHENTICATED when on - see AileronUIEnabled's doc comment.
@@ -594,9 +618,12 @@ var SettingFields = []SettingField{
 			return nil
 		},
 		// Same reasoning as versions.aileron above - both Aileron fields
-		// lock together once a "stabilizer" chart is detected, or this node
-		// joined a cluster it doesn't own.
-		Locked: stabilizerOrClusterLocked,
+		// lock together once a "stabilizer" chart is detected. Unlike the
+		// version fields there is nothing to reconcile against the cluster
+		// here: this is a Helm value the operator sets deliberately, not a
+		// version that goes stale into a downgrade, and it is cluster-wide
+		// in exactly the same way - so any control-plane node may change it.
+		Locked: stabilizerLocked,
 	},
 	{
 		Key: "storage.engine", Label: "Storage engine", Advanced: true,
@@ -616,4 +643,52 @@ var SettingFields = []SettingField{
 			return false, ""
 		},
 	},
+}
+
+// EffectiveVersion reports the version to show for f and to compare its
+// picker options against: for a cluster-scoped field, the newer of this
+// node's configured value and what the cluster actually runs; for every
+// other field, simply the configured value.
+//
+// One function so the Update screen's value column and its "an upgrade is
+// available" arrow can never disagree about what "current" means - the bug
+// that produced was an arrow offering a version the cluster had already
+// moved past. Non-cluster-scoped keys are never present in
+// VersionCache.ClusterVersions, so they fall through unchanged.
+func EffectiveVersion(f SettingField, cfg *Config, versions VersionCache) string {
+	return clusterVersionFloor(f.Key, f.Get(cfg), versions)
+}
+
+// ReconcileClusterVersions raises every cluster-scoped version in cfg to
+// what the live cluster reports, returning the keys it changed.
+//
+// Upward only, which is the whole safety argument: it repairs a node whose
+// config predates an upgrade performed from another node - the case that
+// would otherwise re-apply an older version and downgrade the cluster - and
+// it cannot touch a version the operator just picked, since that is by
+// construction >= the cluster's (the pickers floor at clusterVersionFloor).
+// A cluster probe landing at any moment is therefore safe to apply.
+//
+// Callers persist cfg when the returned slice is non-empty; an empty slice
+// means this node already agreed with the cluster and nothing was written.
+func ReconcileClusterVersions(cfg *Config, versions VersionCache) []string {
+	var changed []string
+	for _, f := range SettingFields {
+		if _, ok := versions.ClusterVersions[f.Key]; !ok {
+			continue
+		}
+		current := f.Get(cfg)
+		effective := clusterVersionFloor(f.Key, current, versions)
+		if effective == current {
+			continue
+		}
+		if err := f.Set(cfg, effective); err != nil {
+			// Set can only fail on validation, and effective came from
+			// the same curated version shape as current - skip rather
+			// than abort the rest of the reconciliation.
+			continue
+		}
+		changed = append(changed, f.Key)
+	}
+	return changed
 }

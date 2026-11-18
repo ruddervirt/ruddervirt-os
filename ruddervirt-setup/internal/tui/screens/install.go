@@ -75,8 +75,12 @@ func (m InstallModel) ViewPlanning() string {
 // the actual install pipeline var still lives in package main.
 //
 // joinTarget is package main's cachedClusterJoinTarget: non-empty means this
-// node joins an existing cluster, which skips the cluster-wide steps and so
-// changes both what the operator is agreeing to and how long it takes.
+// node joins an existing cluster, which changes what the operator is
+// agreeing to. The plan lines below carry the detail - a cluster-wide step
+// is skipped when the cluster already runs what it would apply, and runs
+// when the operator is driving a cluster-wide upgrade from this node (see
+// k3s_bridge.go's planJoinSkip), so this preamble points at them rather
+// than promising either outcome.
 func (m InstallModel) ViewConfirm(steps []installsteps.Step, joinTarget string) string {
 	s := "\n" + tui.TitleStyle.Render("Confirm Install") + "\n\n"
 	s += "This will restart k3s, causing a brief interruption to the\n"
@@ -86,8 +90,8 @@ func (m InstallModel) ViewConfirm(steps []installsteps.Step, joinTarget string) 
 	} else {
 		s += "Kubernetes API and any running workloads on this node.\n\n"
 		s += fmt.Sprintf("This node joins the existing cluster at %s as an\n", joinTarget)
-		s += "additional control-plane node, so the cluster-wide steps below\n"
-		s += "are skipped - expect minutes, not 30+.\n"
+		s += "additional control-plane node. Cluster-wide steps are skipped\n"
+		s += "unless a component version differs - check the plan below.\n"
 	}
 	s += "\nPlan:\n"
 	labelWidth := 0

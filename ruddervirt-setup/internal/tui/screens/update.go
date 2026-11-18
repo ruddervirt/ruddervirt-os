@@ -103,6 +103,23 @@ func UpdateRows() []UpdateRow {
 	return rows
 }
 
+// UpdateRowCurrentValue renders the "Version" column for a
+// config.SettingField row: the field's lock reason if it's locked, otherwise
+// the version currently in effect (config.EffectiveVersion - the newer of
+// this node's configured value and what the live cluster runs).
+//
+// The two non-SettingField rows (ruddervirt-setup, OS) and the
+// stabilizer-managed Aileron row are handled by ViewVersions' own rowValue
+// before it reaches here, since each has its own source of truth.
+func UpdateRowCurrentValue(r UpdateRow, p UpdateViewParams) string {
+	if r.Field.Locked != nil {
+		if locked, reason := r.Field.Locked(&p.Cfg, p.Versions); locked {
+			return reason
+		}
+	}
+	return config.EffectiveVersion(r.Field, &p.Cfg, p.Versions)
+}
+
 // UpdateRowHasUpgrade reports whether r has something newer than what's
 // currently configured/running, given the same cross-group state
 // ViewVersions renders from (p). Generalized across every
@@ -141,7 +158,13 @@ func UpdateRowHasUpgrade(r UpdateRow, p UpdateViewParams) bool {
 	if r.Field.Options == nil {
 		return false
 	}
-	current := r.Field.Get(&p.Cfg)
+	// config.EffectiveVersion, not Field.Get: on a cluster-scoped field the
+	// configured value can be older than what the cluster runs (a joining
+	// node's image defaults, or any node other than the one an upgrade was
+	// performed from), and comparing against it would flag a stale "upgrade
+	// available" for a version already installed - or worse, one older than
+	// installed. Same value the row renders, see UpdateRowCurrentValue.
+	current := config.EffectiveVersion(r.Field, &p.Cfg, versions)
 	for _, o := range r.Field.Options(&p.Cfg, versions) {
 		if o != current {
 			return true
@@ -438,12 +461,7 @@ func (m UpdateModel) ViewVersions(p UpdateViewParams) string {
 			}
 			return applied
 		}
-		if r.Field.Locked != nil {
-			if locked, reason := r.Field.Locked(&p.Cfg, versions); locked {
-				return reason
-			}
-		}
-		return r.Field.Get(&p.Cfg)
+		return UpdateRowCurrentValue(r, p)
 	}
 
 	labelWidth := len("Component")

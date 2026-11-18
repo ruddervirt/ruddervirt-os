@@ -5,6 +5,7 @@ package k3s
 import (
 	"io/fs"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -664,5 +665,78 @@ func TestRenderK3sConfigStepRefusesUnreadableConfig(t *testing.T) {
 		if wrote {
 			t.Errorf("%s: RenderK3sConfigStep() wrote the config anyway", c.name)
 		}
+	}
+}
+
+// TestParseMasterNodes covers what kube-ovn's masterNodes value is built
+// from. Both halves are load-bearing: the IPv4-only filter (kube-ovn.yaml
+// pins networking.stack to IPv4, and a mixed-family NODE_IPS list breaks
+// ovs-ovn), and the node names, which ApplyKubeOvnStep uses to confirm THIS
+// node registered before rendering - without that it could render
+// masterNodes without the joining node and then label it master anyway,
+// leaving an ovn-central replica that is not a raft member.
+func TestParseMasterNodes(t *testing.T) {
+	const nodes = `{"items":[
+		{"metadata":{"name":"node-a"},"status":{"addresses":[
+			{"type":"Hostname","address":"node-a"},
+			{"type":"InternalIP","address":"10.0.0.1"}]}},
+		{"metadata":{"name":"node-b"},"status":{"addresses":[
+			{"type":"InternalIP","address":"fd00::2"},
+			{"type":"InternalIP","address":"10.0.0.2"},
+			{"type":"ExternalIP","address":"203.0.113.9"}]}}
+	]}`
+
+	got, err := parseMasterNodes([]byte(nodes), "node-role.kubernetes.io/control-plane")
+	if err != nil {
+		t.Fatalf("parseMasterNodes() err = %v, want nil", err)
+	}
+	if want := []string{"10.0.0.1", "10.0.0.2"}; !reflect.DeepEqual(got.IPs, want) {
+		t.Errorf("parseMasterNodes().IPs = %v, want %v (IPv4 InternalIPs only)", got.IPs, want)
+	}
+	if want := []string{"node-a", "node-b"}; !reflect.DeepEqual(got.Names, want) {
+		t.Errorf("parseMasterNodes().Names = %v, want %v", got.Names, want)
+	}
+	if got.Selector != "node-role.kubernetes.io/control-plane" {
+		t.Errorf("parseMasterNodes().Selector = %q, want the selector it was given", got.Selector)
+	}
+
+	if _, err := parseMasterNodes([]byte("not json"), "x"); err == nil {
+		t.Error("parseMasterNodes(garbage) err = nil, want an error so the caller tries the next selector")
+	}
+
+	empty, err := parseMasterNodes([]byte(`{"items":[]}`), "x")
+	if err != nil {
+		t.Fatalf("parseMasterNodes(empty) err = %v, want nil", err)
+	}
+	if len(empty.IPs) != 0 {
+		t.Errorf("parseMasterNodes(empty).IPs = %v, want none", empty.IPs)
+	}
+}
+
+// TestMasterNodesIncludes: k3s registers a node under its LOWERCASED
+// hostname, so a host whose /etc/hostname carries any uppercase would never
+// match itself with a case-sensitive compare - and ApplyKubeOvnStep would
+// then wait out its full poll and fall back to the warning path on a
+// perfectly healthy node.
+func TestMasterNodesIncludes(t *testing.T) {
+	m := masterNodes{Names: []string{"node-a", "node-b"}}
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"node-a", true},
+		{"node-b", true},
+		{"NODE-A", true},
+		{"node-c", false},
+		{"", false},
+		{"node", false},
+	}
+	for _, c := range cases {
+		if got := m.includes(c.name); got != c.want {
+			t.Errorf("masterNodes{%v}.includes(%q) = %v, want %v", m.Names, c.name, got, c.want)
+		}
+	}
+	if (masterNodes{}).includes("node-a") {
+		t.Error("an empty masterNodes includes nothing")
 	}
 }

@@ -115,3 +115,72 @@ func fetchHostStatsCmd(cfg config.Config, prevSample status.CPUSample) tea.Cmd {
 		return hostStatsMsg{stats: stats, sample: sample}
 	}
 }
+
+// clusterComponentVersionsMsg carries fetchClusterComponentVersionsCmd's
+// result back into Update - same "runs as a tea.Cmd, never synchronously"
+// reasoning as k3sVersionsFetchedMsg and stabilizerDetectedMsg.
+type clusterComponentVersionsMsg struct {
+	versions map[string]string
+}
+
+// clusterComponentVersionsByFieldKey maps internal/status's probe result onto
+// config.SettingField keys, which is the form config.VersionCache carries and
+// every picker/display path looks a version up by.
+//
+// The mapping lives here, in package main's wiring layer, on purpose:
+// internal/status knows how to ask the cluster and internal/config owns the
+// field keys, and neither needs to learn the other's vocabulary to do its own
+// job. Entries are omitted rather than set empty - an absent key means
+// "unknown" to clusterVersionFloor, while an empty string would still be a
+// value it has to special-case.
+func clusterComponentVersionsByFieldKey(v status.ClusterComponentVersions) map[string]string {
+	out := map[string]string{}
+	for key, version := range map[string]string{
+		"versions.kubeovn":  v.KubeOVN,
+		"versions.multus":   v.Multus,
+		"versions.kubevirt": v.KubeVirt,
+		"versions.cdi":      v.CDI,
+		"versions.aileron":  v.Aileron,
+	} {
+		if version != "" {
+			out[key] = version
+		}
+	}
+	return out
+}
+
+// fetchClusterComponentVersionsCmd reads every cluster-wide component's
+// running version off the live cluster. Best-effort and fired from Init(),
+// same as detectStabilizerCmd: an unreachable API just leaves the map empty,
+// which every consumer already treats as "fall back to this node's
+// configured value".
+func fetchClusterComponentVersionsCmd() tea.Cmd {
+	return func() tea.Msg {
+		return clusterComponentVersionsMsg{
+			versions: clusterComponentVersionsByFieldKey(status.FetchClusterComponentVersions(kubectlBinPath)),
+		}
+	}
+}
+
+// clusterVersionsReconciledMsg closes the loop on reconcileClusterVersionsCmd
+// without carrying a result - see that function.
+type clusterVersionsReconciledMsg struct{}
+
+// reconcileClusterVersionsCmd persists cfg after config.ReconcileClusterVersions
+// raised a stale cluster-scoped version to what the cluster actually runs.
+//
+// Deliberately not saveSettingCmd: that one's settingsSavedMsg sets or clears
+// the feedback line the Settings and Update screens share, and this save
+// happens in the background with nobody waiting on it - it must never wipe an
+// error the operator is reading, or raise one they have no way to explain.
+//
+// The save error is dropped on purpose. The reconciliation already took effect
+// in memory, so this session applies the right versions either way, and the
+// next start probes the cluster and tries again. A read-only /etc would
+// otherwise produce a mystery error on every boot.
+func reconcileClusterVersionsCmd(cfg config.Config) tea.Cmd {
+	return func() tea.Msg {
+		_ = config.SaveConfig(cfg, config.ConfigPath)
+		return clusterVersionsReconciledMsg{}
+	}
+}

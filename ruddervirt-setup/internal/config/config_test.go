@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	versionspkg "ruddervirt-setup/internal/versions"
@@ -183,70 +182,195 @@ func TestLoadConfig(t *testing.T) {
 	})
 }
 
-// TestClusterScopedFieldsLockOnAJoiningNode: every component applied by
-// prepareK3sStep/ApplyKubeOvnStep is cluster-wide, and a joining node skips
-// those steps - so offering an upgrade there would persist a version this
-// node will never apply, and render it as though it had. k3s is the
-// exception: its binary is per-node.
-func TestClusterScopedFieldsLockOnAJoiningNode(t *testing.T) {
-	clusterScoped := map[string]bool{
+// TestClusterScopedFieldsStayEditableOnAJoiningNode: every component applied
+// by prepareK3sStep/ApplyKubeOvnStep is one cluster-wide object, so upgrading
+// it is legitimate from any control-plane node. What used to make that unsafe
+// was each node reading "the current version" out of its own
+// ruddervirt-setup.yaml; now that the running version is read back off the
+// cluster (VersionCache.ClusterVersions), these fields must NOT lock on a
+// joining node. The two per-node fields must stay editable too.
+func TestClusterScopedFieldsStayEditableOnAJoiningNode(t *testing.T) {
+	editable := map[string]bool{
 		"versions.kubeovn":          true,
 		"versions.multus":           true,
 		"versions.kubevirt":         true,
 		"versions.cdi":              true,
 		"versions.aileron":          true,
 		"system.aileron_ui_enabled": true,
-	}
-	nodeScoped := map[string]bool{
-		"versions.k3s":       true,
-		"system.auto_update": true,
+		"versions.k3s":              true,
+		"system.auto_update":        true,
 	}
 
 	joining := VersionCache{ClusterJoinTarget: "https://10.0.0.5:6443"}
-	standalone := VersionCache{}
 	cfg := DefaultConfig()
 
 	seen := map[string]bool{}
 	for _, f := range SettingFields {
-		locked := false
-		reason := ""
-		if f.Locked != nil {
-			locked, reason = f.Locked(&cfg, joining)
+		if !editable[f.Key] {
+			continue
 		}
-		switch {
-		case clusterScoped[f.Key]:
-			seen[f.Key] = true
-			if !locked {
-				t.Errorf("%s: Locked() = false on a joining node, want it locked as cluster-wide", f.Key)
-			}
-			if !strings.Contains(reason, "first node") {
-				t.Errorf("%s: Locked() reason = %q, want it to point at the cluster's first node", f.Key, reason)
-			}
-		case nodeScoped[f.Key]:
-			seen[f.Key] = true
-			if locked {
-				t.Errorf("%s: Locked() = true (%q) on a joining node, want a per-node field to stay editable", f.Key, reason)
-			}
+		seen[f.Key] = true
+		if f.Locked == nil {
+			continue
 		}
-
-		// Nothing may lock on a node that bootstrapped its own cluster, which
-		// is every install that predates join support. storage.engine is
-		// excluded: it locks on its own on-disk marker, not on cfg.
-		if f.Locked != nil && f.Key != "storage.engine" {
-			if locked, reason := f.Locked(&cfg, standalone); locked {
-				t.Errorf("%s: Locked() = true (%q) on a standalone node, want it editable", f.Key, reason)
-			}
+		if locked, reason := f.Locked(&cfg, joining); locked {
+			t.Errorf("%s: Locked() = true (%q) on a joining node, want it editable - a cluster-wide component can be upgraded from any control-plane node", f.Key, reason)
 		}
 	}
-
-	for key := range clusterScoped {
+	for key := range editable {
 		if !seen[key] {
-			t.Errorf("%s is no longer a SettingField - this test's cluster-scoped list is stale", key)
+			t.Errorf("%s is no longer a SettingField - this test's list is stale", key)
 		}
 	}
-	for key := range nodeScoped {
-		if !seen[key] {
-			t.Errorf("%s is no longer a SettingField - this test's node-scoped list is stale", key)
+}
+
+// TestClusterScopedVersionFieldsMatchSettingFields guards the hand-written
+// list against a new cluster-scoped version field being added without being
+// reconciled against the cluster - the exact omission that would reintroduce
+// the stale-config downgrade.
+func TestClusterScopedVersionFieldsMatchSettingFields(t *testing.T) {
+	byKey := map[string]SettingField{}
+	for _, f := range SettingFields {
+		byKey[f.Key] = f
+	}
+	for _, key := range ClusterScopedVersionFields {
+		f, ok := byKey[key]
+		if !ok {
+			t.Errorf("ClusterScopedVersionFields names %q, which is not a SettingField", key)
+			continue
+		}
+		if f.Get == nil || f.Set == nil {
+			t.Errorf("%s: needs both Get and Set for ReconcileClusterVersions to work", key)
 		}
 	}
+	if len(ClusterScopedVersionFields) != 5 {
+		t.Errorf("ClusterScopedVersionFields has %d entries, want 5 (kubeovn, multus, kubevirt, cdi, aileron)", len(ClusterScopedVersionFields))
+	}
+}
+
+// TestEffectiveVersionPrefersTheNewerOfConfigAndCluster: the Update screen's
+// value column and its upgrade arrow both read through this, so it has to
+// resolve both directions - a stale node config loses to the cluster, and an
+// operator's freshly picked (not yet applied) version wins over it.
+func TestEffectiveVersionPrefersTheNewerOfConfigAndCluster(t *testing.T) {
+	var kubevirt SettingField
+	for _, f := range SettingFields {
+		if f.Key == "versions.kubevirt" {
+			kubevirt = f
+		}
+	}
+	if kubevirt.Get == nil {
+		t.Fatal("versions.kubevirt is no longer a SettingField")
+	}
+
+	cases := []struct {
+		name       string
+		configured string
+		cluster    string
+		want       string
+	}{
+		{"cluster ahead of a stale node config", "v1.9.0", "v1.9.1", "v1.9.1"},
+		{"operator picked an upgrade not yet applied", "v1.10.0", "v1.9.1", "v1.10.0"},
+		{"agreement", "v1.9.1", "v1.9.1", "v1.9.1"},
+		{"cluster unknown falls back to config", "v1.9.1", "", "v1.9.1"},
+		{"unparseable cluster value never wins", "v1.9.1", "vnot-semver", "v1.9.1"},
+	}
+	for _, c := range cases {
+		cfg := DefaultConfig()
+		cfg.Versions.KubeVirt = c.configured
+		versions := VersionCache{ClusterVersions: map[string]string{"versions.kubevirt": c.cluster}}
+		if got := EffectiveVersion(kubevirt, &cfg, versions); got != c.want {
+			t.Errorf("%s: EffectiveVersion(configured=%q, cluster=%q) = %q, want %q", c.name, c.configured, c.cluster, got, c.want)
+		}
+	}
+
+	// A field with no cluster-reported version is untouched - the map is
+	// keyed by SettingField.Key, and per-node fields are never in it.
+	cfg := DefaultConfig()
+	cfg.Versions.KubeVirt = "v1.9.1"
+	if got := EffectiveVersion(kubevirt, &cfg, VersionCache{}); got != "v1.9.1" {
+		t.Errorf("EffectiveVersion with an empty cache = %q, want the configured %q", got, "v1.9.1")
+	}
+}
+
+// TestEffectiveVersionFloorsThePickerAtTheClusterVersion: the pickers for
+// cluster-scoped fields must offer no option older than what the cluster
+// runs, or the Update screen would present a downgrade as an upgrade on a
+// node whose config predates someone else's upgrade.
+func TestEffectiveVersionFloorsThePickerAtTheClusterVersion(t *testing.T) {
+	var kubeovn SettingField
+	for _, f := range SettingFields {
+		if f.Key == "versions.kubeovn" {
+			kubeovn = f
+		}
+	}
+	if kubeovn.Options == nil {
+		t.Fatal("versions.kubeovn has no Options func")
+	}
+
+	cfg := DefaultConfig()
+	all := kubeovn.Options(&cfg, VersionCache{})
+	if len(all) == 0 {
+		t.Skip("no supported kube-ovn versions at or above the default - nothing to floor")
+	}
+	newest := all[0] // SupportedVersionsAtLeast sorts newest-first.
+
+	// With the cluster already on the newest supported version, the only
+	// option left is that version itself: no downgrade is offerable.
+	versions := VersionCache{ClusterVersions: map[string]string{"versions.kubeovn": newest}}
+	floored := kubeovn.Options(&cfg, versions)
+	for _, o := range floored {
+		if cmp, ok := versionspkg.CompareSemver(o, newest); ok && cmp < 0 {
+			t.Errorf("versions.kubeovn offers %q while the cluster runs %q - that is a downgrade", o, newest)
+		}
+	}
+}
+
+// TestReconcileClusterVersionsIsUpwardOnly is the safety property the whole
+// read-from-the-cluster design rests on: a cluster probe can land at any
+// moment, including right after an operator picked an upgrade, so it must
+// only ever raise a stale value and never lower a picked one.
+func TestReconcileClusterVersionsIsUpwardOnly(t *testing.T) {
+	t.Run("raises a stale node config to what the cluster runs", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Versions.KubeVirt = "v1.9.0"
+		cfg.Versions.CDI = "v1.65.0"
+		versions := VersionCache{ClusterVersions: map[string]string{
+			"versions.kubevirt": "v1.9.1",
+			"versions.cdi":      "v1.65.0",
+		}}
+		changed := ReconcileClusterVersions(&cfg, versions)
+		if len(changed) != 1 || changed[0] != "versions.kubevirt" {
+			t.Fatalf("ReconcileClusterVersions changed %v, want only versions.kubevirt", changed)
+		}
+		if cfg.Versions.KubeVirt != "v1.9.1" {
+			t.Errorf("cfg.Versions.KubeVirt = %q, want the cluster's %q", cfg.Versions.KubeVirt, "v1.9.1")
+		}
+		if cfg.Versions.CDI != "v1.65.0" {
+			t.Errorf("cfg.Versions.CDI = %q, want it untouched", cfg.Versions.CDI)
+		}
+	})
+
+	t.Run("never lowers a version the operator just picked", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Versions.KubeVirt = "v1.10.0"
+		versions := VersionCache{ClusterVersions: map[string]string{"versions.kubevirt": "v1.9.1"}}
+		if changed := ReconcileClusterVersions(&cfg, versions); len(changed) != 0 {
+			t.Errorf("ReconcileClusterVersions changed %v, want nothing - the pick is newer than the cluster", changed)
+		}
+		if cfg.Versions.KubeVirt != "v1.10.0" {
+			t.Errorf("cfg.Versions.KubeVirt = %q, want the operator's pick %q to survive", cfg.Versions.KubeVirt, "v1.10.0")
+		}
+	})
+
+	t.Run("an empty cache is a no-op", func(t *testing.T) {
+		cfg := DefaultConfig()
+		before := cfg
+		if changed := ReconcileClusterVersions(&cfg, VersionCache{}); len(changed) != 0 {
+			t.Errorf("ReconcileClusterVersions changed %v on an unreachable cluster, want nothing", changed)
+		}
+		if !reflect.DeepEqual(cfg, before) {
+			t.Error("ReconcileClusterVersions mutated cfg with no cluster information")
+		}
+	})
 }

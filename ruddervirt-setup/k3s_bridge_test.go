@@ -65,7 +65,7 @@ func TestJoinPlanHelpersOnANodeWithNoK3sConfig(t *testing.T) {
 	if line, ok := planConfigReadProblem(); ok {
 		t.Errorf("planConfigReadProblem() = (%q, true), want no problem reported for an absent config", line)
 	}
-	if line, ok := planJoinSkip(); ok {
+	if line, ok := planJoinSkip(config.Config{}, prepareK3sStepKeys...); ok {
 		t.Errorf("planJoinSkip() = (%q, true), want a node with no k3s config to preview its steps normally", line)
 	}
 	if got := planRenderK3sConfig(config.Config{}); !strings.Contains(got, "will render") {
@@ -83,7 +83,7 @@ func TestSkipWhenJoiningIsANoOpWithoutAJoinTarget(t *testing.T) {
 		t.Skipf("%s exists on this host: the no-config branch isn't reachable", k3s.ClusterConfigPath)
 	}
 	ch := make(chan installsteps.StepMsg, 8)
-	if skipWhenJoining("Applying kube-ovn", ch) {
+	if skipWhenJoining("Applying manifests", prepareK3sStepKeys, config.Config{}, ch) {
 		t.Fatal("skipWhenJoining() = true, want false with no cluster to join")
 	}
 	if lines := drainStrings(ch); len(lines) != 0 {
@@ -102,7 +102,7 @@ func TestJoinPlanHelpersOnAJoiningNode(t *testing.T) {
 		t.Skip("this host isn't configured to join a cluster")
 	}
 
-	line, ok := planJoinSkip()
+	line, ok := planJoinSkip(config.Config{}, prepareK3sStepKeys...)
 	if !ok {
 		t.Fatalf("planJoinSkip() = (%q, false), want the cluster-wide steps previewed as skipped", line)
 	}
@@ -116,8 +116,16 @@ func TestJoinPlanHelpersOnAJoiningNode(t *testing.T) {
 		t.Errorf("planApplyManifests() = %q, want a skip line", got)
 	}
 
+	// "Applying kube-ovn" is the one cluster-wide step with no join skip -
+	// it is what labels this node kube-ovn/role=master and puts it in
+	// ovn-central's NODE_IPS, so it must be previewed as running even on a
+	// joining node with nothing to upgrade.
+	if got := planApplyKubeOvn(config.Config{}); !strings.Contains(got, "will run") || !strings.Contains(got, "ovn-central") {
+		t.Errorf("planApplyKubeOvn() = %q, want it to say kube-ovn runs and joins ovn-central", got)
+	}
+
 	ch := make(chan installsteps.StepMsg, 8)
-	if !skipWhenJoining("Applying kube-ovn", ch) {
+	if !skipWhenJoining("Applying manifests", prepareK3sStepKeys, config.Config{}, ch) {
 		t.Fatal("skipWhenJoining() = false, want true on a joining node")
 	}
 	lines := drainStrings(ch)
@@ -319,5 +327,132 @@ func TestPrepareStorageStepAcceptsALabelledNode(t *testing.T) {
 	// disk commands - the point is that it got PAST both cluster guards.
 	if done.Err != nil && strings.Contains(done.Err.Error(), "ruddervirt=metal") {
 		t.Errorf("prepareStorageStep err = %q, want it past the label guard", done.Err)
+	}
+}
+
+// TestClusterUpgradePending is the gate that decides whether a joining node
+// skips a cluster-wide step or runs it to apply an upgrade. Two properties
+// matter and pull in opposite directions: a real version difference has to
+// be detected (or an upgrade driven from this node silently does nothing),
+// and an unknown must never count as a difference (or a failed probe
+// re-applies the CNI / KubeVirt CR to a live production cluster).
+func TestClusterUpgradePending(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Versions.KubeOVN = "v1.15.32"
+	cfg.Versions.Multus = "v4.3.118"
+	cfg.Versions.KubeVirt = "v1.9.1"
+	cfg.Versions.CDI = "v1.65.0"
+	cfg.Versions.Aileron = "v0.0.55"
+
+	cases := []struct {
+		name     string
+		live     map[string]string
+		keys     []string
+		want     bool
+		wantName string
+	}{
+		{
+			name: "cluster agrees - nothing to do",
+			live: map[string]string{"versions.multus": "v4.3.118"},
+			keys: prepareK3sStepKeys,
+			want: false,
+		},
+		{
+			name:     "cluster is behind this node's desired version",
+			live:     map[string]string{"versions.multus": "v4.3.117"},
+			keys:     prepareK3sStepKeys,
+			want:     true,
+			wantName: "multus",
+		},
+		{
+			name: "unknown is never pending - a failed probe must not re-apply",
+			live: map[string]string{},
+			keys: prepareK3sStepKeys,
+			want: false,
+		},
+		{
+			name: "empty string is unknown, not a version",
+			live: map[string]string{"versions.multus": ""},
+			keys: prepareK3sStepKeys,
+			want: false,
+		},
+		{
+			name: "one component of a multi-component step differing is enough",
+			live: map[string]string{
+				"versions.multus":   "v4.3.118",
+				"versions.kubevirt": "v1.9.1",
+				"versions.cdi":      "v1.64.0",
+				"versions.aileron":  "v0.0.55",
+			},
+			keys:     prepareK3sStepKeys,
+			want:     true,
+			wantName: "cdi",
+		},
+		{
+			name: "a whole step's worth of agreement",
+			live: map[string]string{
+				"versions.multus":   "v4.3.118",
+				"versions.kubevirt": "v1.9.1",
+				"versions.cdi":      "v1.65.0",
+				"versions.aileron":  "v0.0.55",
+			},
+			keys: prepareK3sStepKeys,
+			want: false,
+		},
+		{
+			name: "kube-ovn's own key is not consulted by the manifests step",
+			live: map[string]string{"versions.kubeovn": "v1.0.0"},
+			keys: prepareK3sStepKeys,
+			want: false,
+		},
+	}
+
+	for _, c := range cases {
+		desc, ok := clusterUpgradePending(cfg, c.live, c.keys...)
+		if ok != c.want {
+			t.Errorf("%s: clusterUpgradePending() = (%q, %v), want ok=%v", c.name, desc, ok, c.want)
+			continue
+		}
+		if ok && !strings.Contains(desc, c.wantName) {
+			t.Errorf("%s: clusterUpgradePending() = %q, want it to name %q", c.name, desc, c.wantName)
+		}
+	}
+}
+
+// TestDesiredClusterVersionMatchesWhatTheStepsApply: clusterUpgradePending's
+// answer is only meaningful if "desired" is the same string the step will
+// actually hand to the apply functions. A fallback that drifted from a step's
+// own resolution would make a joining node either skip a real upgrade or
+// re-apply forever.
+func TestDesiredClusterVersionMatchesWhatTheStepsApply(t *testing.T) {
+	empty := config.Config{}
+	cases := map[string]string{
+		"versions.kubeovn":  versionspkg.DefaultKubeOVNVersion,
+		"versions.multus":   versionspkg.DefaultMultusVersion,
+		"versions.kubevirt": versionspkg.DefaultKubeVirtVersion,
+		"versions.cdi":      versionspkg.DefaultCDIVersion,
+		"versions.aileron":  versionspkg.DefaultAileronVersion,
+	}
+	for key, want := range cases {
+		if got := desiredClusterVersion(empty, key); got != want {
+			t.Errorf("desiredClusterVersion(empty cfg, %q) = %q, want the build default %q", key, got, want)
+		}
+	}
+
+	// Every key the step checks must resolve to something, or
+	// clusterUpgradePending would silently ignore that component.
+	for _, key := range prepareK3sStepKeys {
+		if desiredClusterVersion(config.DefaultConfig(), key) == "" {
+			t.Errorf("desiredClusterVersion(%q) = \"\", so clusterUpgradePending can never see it change", key)
+		}
+	}
+
+	// And every cluster-scoped field internal/config reconciles must be
+	// covered here too - otherwise a version could be reconciled into config
+	// that no step's pending-check ever looks at.
+	for _, key := range config.ClusterScopedVersionFields {
+		if desiredClusterVersion(config.DefaultConfig(), key) == "" {
+			t.Errorf("config.ClusterScopedVersionFields names %q but desiredClusterVersion has no case for it", key)
+		}
 	}
 }

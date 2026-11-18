@@ -13,6 +13,7 @@ import (
 	"ruddervirt-setup/internal/installsteps"
 	"ruddervirt-setup/internal/k3s"
 	"ruddervirt-setup/internal/kubevirt"
+	"ruddervirt-setup/internal/status"
 	versionspkg "ruddervirt-setup/internal/versions"
 )
 
@@ -95,73 +96,196 @@ func joiningCluster() string {
 	return k3s.NodeMembership(execpkg.ReadFilePrivileged).JoinServer
 }
 
+// resolveKubeOvnVersion/resolveMultusVersion/resolveAileronVersion mirror
+// resolveK3sVersion for the other cluster-wide components, extracted from
+// applyKubeOvnStep/prepareK3sStep below so clusterUpgradePending can ask
+// "what would this step apply?" and get exactly the answer the step itself
+// will use. Same reason planK3sInstall shares resolveK3sVersion.
+func resolveKubeOvnVersion(cfg config.Config) string {
+	if v := strings.TrimSpace(cfg.Versions.KubeOVN); v != "" {
+		return v
+	}
+	return versionspkg.DefaultKubeOVNVersion
+}
+
+func resolveMultusVersion(cfg config.Config) string {
+	if v := strings.TrimSpace(cfg.Versions.Multus); v != "" {
+		return v
+	}
+	return versionspkg.DefaultMultusVersion
+}
+
+func resolveAileronVersion(cfg config.Config) string {
+	if v := strings.TrimSpace(cfg.Versions.Aileron); v != "" {
+		return v
+	}
+	return versionspkg.DefaultAileronVersion
+}
+
+// desiredClusterVersion returns the version this node would apply for one
+// cluster-scoped config.SettingField key.
+func desiredClusterVersion(cfg config.Config, key string) string {
+	switch key {
+	case "versions.kubeovn":
+		return resolveKubeOvnVersion(cfg)
+	case "versions.multus":
+		return resolveMultusVersion(cfg)
+	case "versions.kubevirt":
+		return resolveKubeVirtVersion(cfg)
+	case "versions.cdi":
+		return resolveCDIVersion(cfg)
+	case "versions.aileron":
+		return resolveAileronVersion(cfg)
+	}
+	return ""
+}
+
+// clusterUpgradePending reports whether the live cluster runs a different
+// version than this node would apply for any of keys, naming the first
+// component that differs.
+//
+// This is what lets a cluster-wide upgrade be driven from any control-plane
+// node while a plain join install still skips the cluster-wide steps: those
+// steps are skipped on a joining node because the cluster already has what
+// they would apply, not because of which node is running them. Once a
+// component's desired version actually differs, the step has real work to do
+// and runs - from whichever node the operator drove the upgrade on.
+//
+// Deliberately conservative about unknowns: a component the probe couldn't
+// read (empty string - API unreachable, or k3s not up yet) is never counted
+// as pending. On a joining node every one of these components is already
+// installed by definition, so an empty answer means the probe failed, and
+// re-applying the CNI or the KubeVirt CR to a live production cluster on the
+// strength of a failed probe is exactly the wrong call. Positive evidence of
+// a difference only.
+func clusterUpgradePending(cfg config.Config, live map[string]string, keys ...string) (string, bool) {
+	for _, key := range keys {
+		running := live[key]
+		if running == "" {
+			continue
+		}
+		if desired := desiredClusterVersion(cfg, key); desired != "" && desired != running {
+			return fmt.Sprintf("%s %s -> %s", strings.TrimPrefix(key, "versions."), running, desired), true
+		}
+	}
+	return "", false
+}
+
 // skipWhenJoining announces and completes label's step when this node is
-// joining an existing cluster, reporting true so the caller returns early.
-// The steps that use it apply cluster-singleton resources that the cluster's
-// first node already owns - re-applying them from a joining node would at
-// best be redundant and at worst fight the existing cluster over resource
-// ownership and versions.
-func skipWhenJoining(label string, ch chan<- installsteps.StepMsg) bool {
+// joining an existing cluster AND the cluster already runs every version the
+// step would apply, reporting true so the caller returns early.
+//
+// keys are the cluster-scoped components the step applies (see
+// clusterUpgradePending). Re-applying them with nothing to change would at
+// best be redundant and at worst restart the CNI or the KubeVirt operator on
+// a live cluster for no reason; re-applying them when a version really does
+// differ is the upgrade the operator asked for, and is legitimate from any
+// control-plane node.
+func skipWhenJoining(label string, keys []string, cfg config.Config, ch chan<- installsteps.StepMsg) bool {
 	server := joiningCluster()
 	if server == "" {
 		return false
 	}
+	live := clusterComponentVersionsByFieldKey(status.FetchClusterComponentVersions(kubectlBinPath))
+	if pending, ok := clusterUpgradePending(cfg, live, keys...); ok {
+		ch <- stepOutputMsg(fmt.Sprintf(
+			"Joining the existing cluster at %s, but %s is a cluster-wide upgrade - applying it from this node", server, pending))
+		return false
+	}
 	ch <- stepOutputMsg(fmt.Sprintf(
-		"Joining the existing cluster at %s - %q belongs to the cluster's first node, skipping", server, label))
+		"Joining the existing cluster at %s - the cluster already runs what %q applies, skipping", server, label))
 	ch <- stepDoneMsg{Label: label}
 	return true
 }
 
-// planJoinSkip returns the plan line for a cluster-singleton step, and
-// whether it applies - true on a joining node (the step is skipped) or when
-// the k3s config can't be read at all (nothing about this node's role can be
-// previewed until that's fixed). False means preview the step normally.
-func planJoinSkip() (string, bool) {
+// planJoinSkip returns the plan line for a cluster-wide step on a joining
+// node, and whether it has one. True covers all three join cases - the step
+// will be skipped, it will run to apply a cluster-wide upgrade, or the k3s
+// config can't be read at all (nothing about this node's role can be
+// previewed until that's fixed). False means this node owns its own cluster,
+// so the caller previews the step normally.
+//
+// Reads with plain os.ReadFile and a non-interactive cluster probe, never a
+// privileged command - same Step.Plan contract as planConfigReadProblem.
+func planJoinSkip(cfg config.Config, keys ...string) (string, bool) {
 	if line, ok := planConfigReadProblem(); ok {
 		return line, true
 	}
-	if server := k3s.NodeMembership(os.ReadFile).JoinServer; server != "" {
-		return "skip - joining the existing cluster at " + server, true
+	server := k3s.NodeMembership(os.ReadFile).JoinServer
+	if server == "" {
+		return "", false
 	}
-	return "", false
+	live := clusterComponentVersionsByFieldKey(status.FetchClusterComponentVersions(kubectlBinPath))
+	if pending, ok := clusterUpgradePending(cfg, live, keys...); ok {
+		return "will run - cluster-wide upgrade (" + pending + ") applied from this node", true
+	}
+	return "skip - joining the existing cluster at " + server + ", which already runs these versions", true
 }
 
 // planApplyKubeOvn deliberately never touches a live cluster, same
 // reasoning as planApplyManifests below.
 func planApplyKubeOvn(cfg config.Config) string {
-	if line, ok := planJoinSkip(); ok {
+	if line, ok := planConfigReadProblem(); ok {
 		return line
+	}
+	if server := k3s.NodeMembership(os.ReadFile).JoinServer; server != "" {
+		return "will run - labels this node kube-ovn/role=master and adds it to ovn-central (cluster at " + server + ")"
 	}
 	return "will run - applies kube-ovn CNI and waits for it to become healthy"
 }
 
+// prepareK3sStepKeys are the cluster-scoped components "Applying manifests"
+// applies, for skipWhenJoining/planJoinSkip's "is there actually an upgrade
+// here?" check. The storage engine isn't among them: it has no version of
+// its own, and switching engines is already blocked outright on a node with
+// a prepared disk (storage.engine's Locked) and refused against a mismatched
+// cluster (prepareStorageStep, storage.go).
+//
+// There is deliberately no equivalent for "Applying kube-ovn": that step is
+// never skipped on a joining node - see applyKubeOvnStep.
+var prepareK3sStepKeys = []string{"versions.multus", "versions.kubevirt", "versions.cdi", "versions.aileron"}
+
+// applyKubeOvnStep runs on EVERY node, joining or not - the one cluster-wide
+// step with no join skip.
+//
+// It is the only thing that makes a new node part of kube-ovn's control
+// plane, and it has two node-local effects that nothing else performs:
+// it labels this node kube-ovn/role=master (k3s applies a config file's
+// node-label only at a node's first registration, so a node that joined
+// without it never gets it any other way), and it re-renders the chart's
+// masterNodes value from the live control-plane node list, which is what
+// drives ovn-central's replica count and NODE_IPS raft addresses.
+//
+// Skipping it was wrong in the worst direction: the joining node would end
+// up labeled master by the first node's next apply while absent from
+// NODE_IPS, making it eligible to host an ovn-central replica that is not a
+// raft member.
+//
+// Re-applying is self-limiting rather than disruptive. The rendered
+// HelmChart is byte-identical when neither the version nor the node set
+// changed, so kubectl apply reports "unchanged", the resource's generation
+// doesn't move, and k3s's helm-controller starts no job. The OVN rollout
+// happens exactly when the OVN membership really did change - which is
+// precisely when it has to.
 func applyKubeOvnStep(cfg config.Config, ch chan<- installsteps.StepMsg) {
 	const label = "Applying kube-ovn"
-	if skipWhenJoining(label, ch) {
-		return
+	if server := joiningCluster(); server != "" {
+		ch <- stepOutputMsg(fmt.Sprintf(
+			"Joining the existing cluster at %s - applying kube-ovn so this node is labeled kube-ovn/role=master and joins ovn-central's raft", server))
 	}
-	kubeOvnVersion := strings.TrimSpace(cfg.Versions.KubeOVN)
-	if kubeOvnVersion == "" {
-		kubeOvnVersion = versionspkg.DefaultKubeOVNVersion
-	}
+	kubeOvnVersion := resolveKubeOvnVersion(cfg)
 	err := k3s.ApplyKubeOvnStep(ch, wrapStepOutput, config.WritePrivileged, cfg.Network.PodCIDR, cfg.Network.SvcCIDR, kubeOvnVersion)
 	ch <- stepDoneMsg{Label: label, Err: err}
 }
 
 func prepareK3sStep(cfg config.Config, ch chan<- installsteps.StepMsg) {
 	const label = "Applying manifests"
-	if skipWhenJoining(label, ch) {
+	if skipWhenJoining(label, prepareK3sStepKeys, cfg, ch) {
 		return
 	}
 
-	aileronVersion := strings.TrimSpace(cfg.Versions.Aileron)
-	if aileronVersion == "" {
-		aileronVersion = versionspkg.DefaultAileronVersion
-	}
-	multusVersion := strings.TrimSpace(cfg.Versions.Multus)
-	if multusVersion == "" {
-		multusVersion = versionspkg.DefaultMultusVersion
-	}
+	aileronVersion := resolveAileronVersion(cfg)
+	multusVersion := resolveMultusVersion(cfg)
 	kubevirtVersion := resolveKubeVirtVersion(cfg)
 	cdiVersion := resolveCDIVersion(cfg)
 
@@ -182,7 +306,7 @@ func prepareK3sStep(cfg config.Config, ch chan<- installsteps.StepMsg) {
 // decision, unlike those, is predictable from local markers alone (same as
 // planKubeVirtCDIDownload), so it's called out explicitly here.
 func planApplyManifests(cfg config.Config) string {
-	if line, ok := planJoinSkip(); ok {
+	if line, ok := planJoinSkip(cfg, prepareK3sStepKeys...); ok {
 		return line
 	}
 	kubevirtVersion := resolveKubeVirtVersion(cfg)

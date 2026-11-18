@@ -214,6 +214,19 @@ type model struct {
 	// render path must never use - see k3s_bridge.go's joiningCluster.
 	cachedClusterJoinTarget string
 
+	// cachedClusterVersions maps a cluster-scoped config.SettingField key to
+	// the version the live cluster runs for that component, from Init's
+	// fetchClusterComponentVersionsCmd. The cluster, not this node's
+	// ruddervirt-setup.yaml, is the source of truth for every component in
+	// it - see config.VersionCache.ClusterVersions for why, and app.go's
+	// clusterComponentVersionsMsg case for the upward-only reconciliation
+	// that writes the answer back into m.cfg.
+	//
+	// Fetched once, like cachedStabilizerDetected: these only change when
+	// some node applies an upgrade, and the apply path re-probes the cluster
+	// itself rather than trusting this cache.
+	cachedClusterVersions map[string]string
+
 	// stabilizerAdopt is the "Adopt to ruddervirt.com" wizard's sub-model
 	// (screenStabilizerAileronCheck through screenStabilizerAdopt, Settings
 	// -> Advanced -> new action row, see
@@ -357,11 +370,12 @@ func (m model) versionCache() config.VersionCache {
 		Aileron:            m.cachedAileronVersions,
 		StabilizerDetected: m.cachedStabilizerDetected,
 		ClusterJoinTarget:  m.cachedClusterJoinTarget,
+		ClusterVersions:    m.cachedClusterVersions,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink, fetchK3sVersionsCmd(), fetchAileronVersionsCmd(), detectStabilizerCmd(), fetchServiceStatusesCmd(m.cfg), fetchHostStatsCmd(m.cfg, m.prevCPUSample), tickServiceStatusCmd(), tickServiceStatusRenderCmd(), checkSelfUpdateAvailableCmd(), checkOSUpdateAvailableCmd()}
+	cmds := []tea.Cmd{textinput.Blink, fetchK3sVersionsCmd(), fetchAileronVersionsCmd(), detectStabilizerCmd(), fetchServiceStatusesCmd(m.cfg), fetchHostStatsCmd(m.cfg, m.prevCPUSample), tickServiceStatusCmd(), tickServiceStatusRenderCmd(), checkSelfUpdateAvailableCmd(), checkOSUpdateAvailableCmd(), fetchClusterComponentVersionsCmd()}
 	if m.current == screenPasswordCheck {
 		// initialModel() starts here on first boot - same command the menu's
 		// "configure" selection fires manually.
