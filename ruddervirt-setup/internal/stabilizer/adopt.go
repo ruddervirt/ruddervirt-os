@@ -208,12 +208,28 @@ func parseObjectRef(doc string) (k8sObjectRef, error) {
 	}, nil
 }
 
+// kubectlResourceArg returns the resource argument for `kubectl get` that
+// identifies ref's type unambiguously: "Kind.group" for anything outside
+// the core API group, plain "Kind" for core ("v1") objects. A bare Kind is
+// NOT enough for CRDs whose singular resource name isn't just the
+// lowercased Kind - e.g. `kubectl get NetworkAttachmentDefinition` fails
+// with "the server doesn't have a resource type" even when the CRD is
+// installed (its singular is "network-attachment-definition"), while
+// `kubectl get NetworkAttachmentDefinition.k8s.cni.cncf.io` resolves.
+func kubectlResourceArg(ref k8sObjectRef) string {
+	group, _, hasGroup := strings.Cut(ref.APIVersion, "/")
+	if !hasGroup || group == "" {
+		return ref.Kind
+	}
+	return ref.Kind + "." + group
+}
+
 // objectExists reports whether ref actually exists on the cluster. Uses
 // CombinedOutput (not Output) so a NotFound response's text ends up in out,
 // distinguishable from any other failure - same "abort loudly on anything
 // but NotFound" requirement as adopt-aileron.sh's live-object filtering.
 func objectExists(kubectlBin string, ref k8sObjectRef) (bool, error) {
-	args := []string{"get", ref.Kind, ref.Name, "-o", "name"}
+	args := []string{"get", kubectlResourceArg(ref), ref.Name, "-o", "name"}
 	if ref.Namespace != "" {
 		args = append(args, "-n", ref.Namespace)
 	}

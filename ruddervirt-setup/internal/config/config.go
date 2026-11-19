@@ -36,6 +36,14 @@ type SystemConfig struct {
 	// checkPasswordChangedCmd in password.go). Once true, "configure" skips
 	// re-checking /etc/shadow every time.
 	PasswordChanged bool `yaml:"password_changed"`
+	// RootLocked records that root's password has been locked (see
+	// internal/password.LockRootAccount). Current images never provision a
+	// root password at all, but nodes installed from an earlier image got the
+	// same well-known default hash as admin, so "configure" re-checks
+	// /etc/shadow until this is true - otherwise a node whose admin password
+	// was already changed (PasswordChanged=true) would never pass through the
+	// lock step.
+	RootLocked bool `yaml:"root_locked"`
 	// HostnameDeclared records that the operator has confirmed/set the
 	// hostname away from (or explicitly kept) server.bu's default (see
 	// internal/hostname.HostnameIsDefault). Once true, "configure" skips

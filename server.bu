@@ -3,10 +3,17 @@ variant: fcos
 version: 1.6.0
 passwd:
   users:
-    # Default password is "ruddervirt" for both root and admin. This is a
-    # well-known default meant to be changed by the post-install setup script.
-    - name: root
-      password_hash: "$6$ruddervirt0$hVyBGZxUjDrV7kW.cEWoJxBLIWzCDxPDRjE3NgDEmeAMoNEpXoJa2fR6PGEKu5dnI78I22zK5z1cC.IEDOnAZ/"
+    # root is deliberately absent here, which leaves Fedora CoreOS's own
+    # locked root account (shadow field "*") in place: direct root login is
+    # impossible on console, serial and SSH alike. admin is in wheel/sudo, so
+    # "sudo -i" remains the way to get a root shell - authenticating as admin
+    # rather than against a second, separately-managed root password.
+    # ruddervirt-setup also locks root explicitly (see
+    # internal/password.LockRootAccount) to fix up nodes installed by an
+    # earlier image that did provision a root password.
+    #
+    # admin's default password is "ruddervirt" - a well-known default the
+    # post-install setup flow forces the operator to change on first run.
     - name: admin
       groups: ["wheel", "sudo"]
       password_hash: "$6$ruddervirt0$hVyBGZxUjDrV7kW.cEWoJxBLIWzCDxPDRjE3NgDEmeAMoNEpXoJa2fR6PGEKu5dnI78I22zK5z1cC.IEDOnAZ/"
@@ -223,12 +230,20 @@ storage:
         inline: |
           [Journal]
           SystemMaxUse=1024M
+    # Sorts before Fedora CoreOS's own 40-disable-passwords.conf, and sshd
+    # keeps the first value it sees for a keyword, so this is what wins.
     - path: /etc/ssh/sshd_config.d/01-allow-password.conf
       mode: 0644
       overwrite: true
       contents:
         inline: |
           PasswordAuthentication yes
+          # Upstream's default is "prohibit-password", which still permits
+          # root login by SSH key. Nothing provisions a key for root, so that
+          # is unreachable today - but deny it outright rather than rely on
+          # root having no keys, since afterburn/Ignition can inject them from
+          # platform metadata. admin + sudo is the only intended way in.
+          PermitRootLogin no
     - path: /etc/sysctl.d/99-nebula.conf
       mode: 0644
       contents:

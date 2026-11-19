@@ -310,8 +310,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.password.Error = msg.err.Error()
 			return m, nil
 		}
-		if msg.unchanged {
+		if msg.state.NeedsChange() {
 			m.current = screenPasswordChange
+			m.password.State = msg.state
 			m.password.NewInput.SetValue("")
 			m.password.ConfirmInput.SetValue("")
 			m.password.ConfirmFocus = false
@@ -320,8 +321,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.password.Error = ""
 			return m, nil
 		}
-		// Already changed outside this flow (e.g. upgraded from a version
-		// that predates this check) - just record it, no need to force anything.
+		// Already set to something of the operator's own outside this flow
+		// (e.g. upgraded from a version that predates this check, or an
+		// SSH-key-only node with admin locked) - just record it and lock
+		// root, no need to force anything.
 		m.password.Saving = true
 		return m, finalizePasswordChangeCmd(m.cfg)
 
@@ -382,7 +385,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.settingsError = ""
 			return m, nil
 		}
-		if !m.cfg.System.PasswordChanged {
+		if !m.cfg.System.PasswordChanged || !m.cfg.System.RootLocked {
 			m.current = screenPasswordCheck
 			m.password.Error = ""
 			return m, checkPasswordChangedCmd()
@@ -664,7 +667,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.hostname.Input.Focus()
 							return m, nil
 						}
-						if m.cfg.System.PasswordChanged {
+						if m.cfg.System.PasswordChanged && m.cfg.System.RootLocked {
 							m.current = screenSettings
 							// Land on the first real field row - Apply lives in
 							// its own fixed footer below the table (see
@@ -673,8 +676,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.settingsError = ""
 							return m, nil
 						}
-						// Not yet confirmed changed from the default - verify
-						// (and force a change if still default) before Settings.
+						// Not yet confirmed changed from the default, or root
+						// is still unlocked on a node from an older image -
+						// verify (and force a change if still default, then
+						// lock root) before Settings.
 						m.current = screenPasswordCheck
 						m.password.Error = ""
 						return m, checkPasswordChangedCmd()

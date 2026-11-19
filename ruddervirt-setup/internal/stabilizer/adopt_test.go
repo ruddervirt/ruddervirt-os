@@ -154,6 +154,37 @@ func TestFilterLiveManifest(t *testing.T) {
 		}
 	})
 
+	t.Run("CRD-backed objects are looked up as Kind.group", func(t *testing.T) {
+		nad := "apiVersion: k8s.cni.cncf.io/v1\nkind: NetworkAttachmentDefinition\nmetadata:\n  name: egress-external\n  namespace: kube-system\n"
+		var gets []string
+		r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
+			line := strings.Join(args, " ")
+			gets = append(gets, line)
+			// Mirror real kubectl: a bare CRD Kind doesn't resolve.
+			if strings.Contains(line, "get NetworkAttachmentDefinition ") {
+				return exectest.Outcome{Out: []byte(`error: the server doesn't have a resource type "NetworkAttachmentDefinition"`), Err: exectest.ErrFake}
+			}
+			return exectest.Outcome{Out: []byte("ok")}
+		}}
+		ch := make(chan installsteps.StepMsg, 100)
+		var live string
+		var err error
+		exectest.WithFakeRunner(r, func() { live, err = filterLiveManifest(ch, "/usr/local/bin/kubectl", []string{docA, nad}) })
+		if err != nil {
+			t.Fatalf("filterLiveManifest err = %v, want nil (calls: %v)", err, gets)
+		}
+		if !strings.Contains(live, "name: egress-external") {
+			t.Errorf("live manifest = %q, want the NAD kept", live)
+		}
+		joined := strings.Join(gets, "\n")
+		if !strings.Contains(joined, "get NetworkAttachmentDefinition.k8s.cni.cncf.io egress-external") {
+			t.Errorf("kubectl calls = %v, want a Kind.group lookup for the NAD", gets)
+		}
+		if !strings.Contains(joined, "get ConfigMap exists") {
+			t.Errorf("kubectl calls = %v, want core objects looked up by bare Kind", gets)
+		}
+	})
+
 	t.Run("a non-NotFound error aborts the whole run", func(t *testing.T) {
 		r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
 			return exectest.Outcome{Out: []byte("Error from server: internal error"), Err: exectest.ErrFake}

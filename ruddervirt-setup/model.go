@@ -316,6 +316,11 @@ func initialModel() model {
 	// on the password-check -> Settings flow instead of making the operator
 	// find "configure" themselves.
 	//
+	// RootLocked gates the same flow, so a node installed from an image that
+	// provisioned a default root password passes through the lock step once
+	// even if its admin password was changed long ago (the check short-circuits
+	// to finalizePasswordChangeCmd in that case - no prompt, just the lock).
+	//
 	// The hostname check takes priority - see hostname.go - so a fresh node
 	// declares a hostname first, then the password, then Settings.
 	// hostnameLocked() guards it too: once install has proceeded there's
@@ -326,7 +331,7 @@ func initialModel() model {
 	case !cfg.System.HostnameDeclared && hostname.HostnameIsDefault() && !hostnameLocked():
 		current = screenHostnameChange
 		hostnameInput.Focus()
-	case !cfg.System.PasswordChanged:
+	case !cfg.System.PasswordChanged || !cfg.System.RootLocked:
 		current = screenPasswordCheck
 	}
 

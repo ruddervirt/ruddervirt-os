@@ -28,6 +28,10 @@ type PasswordModel struct {
 	ConfirmFocus bool
 	Saving       bool
 	Error        string
+	// State is why this screen is being shown - the default password still in
+	// place, or no password at all (see password.AdminPasswordState). Only
+	// ViewChange reads it, to say which of the two it is.
+	State password.AdminPasswordState
 }
 
 // PasswordSetMsg carries setAdminPasswordCmd's result back into Update -
@@ -112,6 +116,7 @@ func (m PasswordModel) Reset() PasswordModel {
 	m.Saving = false
 	m.Error = ""
 	m.ConfirmFocus = false
+	m.State = password.AdminPasswordOK
 	return m
 }
 
@@ -130,8 +135,13 @@ func (m PasswordModel) ViewCheck() string {
 // own case.
 func (m PasswordModel) ViewChange() string {
 	s := "\n" + tui.TitleStyle.Render("Change Admin Password") + "\n\n"
-	s += "This node is still using the well-known default password. Set a\n"
-	s += "new admin password before continuing to configure.\n\n"
+	if m.State == password.AdminPasswordUnset {
+		s += "The admin account currently has no password at all, so anyone at\n"
+		s += "the console can log in. Set one before continuing to configure.\n\n"
+	} else {
+		s += "This node is still using the well-known default password. Set a\n"
+		s += "new admin password before continuing to configure.\n\n"
+	}
 	if !m.ConfirmFocus {
 		s += fmt.Sprintf("New password:      %s\n", m.NewInput.View())
 		s += "Confirm password:\n"

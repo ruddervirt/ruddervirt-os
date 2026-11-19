@@ -3,12 +3,14 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"ruddervirt-setup/internal/config"
 	"ruddervirt-setup/internal/exec/exectest"
+	"ruddervirt-setup/internal/password"
 	"ruddervirt-setup/internal/power"
 	"ruddervirt-setup/internal/stabilizer/settings"
 	"ruddervirt-setup/internal/tui/pipeline"
@@ -548,5 +550,200 @@ func TestOSUpdateRebootShortcut(t *testing.T) {
 	got = next.(model)
 	if got.current != screenOSUpdate {
 		t.Fatalf("current = %v, want screenOSUpdate (where the shortcut was pressed), not screenPowerOptions", got.current)
+	}
+}
+
+// TestPasswordCheckForcesChangeWhenAdminHasNoPassword is a regression test
+// for an operator who ran `passwd -d admin`: the empty shadow hash used to
+// surface as `unexpected shadow entry: "admin::20775:0:99999:7:::"` and dead-
+// end the configure flow. A missing password is now treated like the
+// well-known default - force a new one - rather than as a parse failure or,
+// worse, as "not the default hash, so fine".
+func TestPasswordCheckForcesChangeWhenAdminHasNoPassword(t *testing.T) {
+	for _, state := range []password.AdminPasswordState{password.AdminPasswordUnset, password.AdminPasswordDefault} {
+		m := passwordChangeModel()
+		m.current = screenPasswordCheck
+		m.cfg = config.DefaultConfig()
+
+		next, _ := m.Update(passwordCheckMsg{state: state})
+		got := next.(model)
+
+		if got.current != screenPasswordChange {
+			t.Fatalf("state %v: current = %v, want screenPasswordChange", state, got.current)
+		}
+		if got.password.State != state {
+			t.Errorf("state %v: password.State = %v, want it carried through for ViewChange's copy", state, got.password.State)
+		}
+		if got.password.Error != "" {
+			t.Errorf("state %v: password.Error = %q, want empty - this is a prompt, not a failure", state, got.password.Error)
+		}
+	}
+}
+
+// TestPasswordCheckOKDoesNotPrompt confirms an admin password the operator
+// already chose (or an SSH-key-only node with admin locked) skips the forced
+// change screen and goes straight to finalizing.
+func TestPasswordCheckOKDoesNotPrompt(t *testing.T) {
+	m := passwordChangeModel()
+	m.current = screenPasswordCheck
+	m.cfg = config.DefaultConfig()
+
+	next, cmd := m.Update(passwordCheckMsg{state: password.AdminPasswordOK})
+	got := next.(model)
+
+	if got.current == screenPasswordChange {
+		t.Fatal("current = screenPasswordChange, want the check to fall through to finalize")
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil, want finalizePasswordChangeCmd - root still needs locking")
+	}
+}
+
+// TestFinalizePasswordChangeLocksRoot is the regression test for images that
+// baked the same well-known default password hash into root as into admin:
+// confirming the admin password must also lock root, since sudo (which
+// authenticates as admin) is the only root access the node needs.
+func TestFinalizePasswordChangeLocksRoot(t *testing.T) {
+	r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
+		line := strings.Join(args, " ")
+		switch {
+		case strings.Contains(line, "^root:"):
+			// passwd -l has run by this point, so root reads back locked.
+			return exectest.Outcome{Out: []byte("root:!:19000:0:99999:7:::\n")}
+		case strings.Contains(line, "^admin:"):
+			// A password of the operator's own, i.e. admin can still get in -
+			// the AdminCanLogIn precondition for locking root.
+			return exectest.Outcome{Out: []byte("admin:$6$somethingelse$abc:19000:0:99999:7:::\n")}
+		}
+		return exectest.Outcome{}
+	}}
+	var msg tea.Msg
+	exectest.WithFakeRunner(r, func() {
+		msg = finalizePasswordChangeCmd(config.DefaultConfig())()
+	})
+
+	done, ok := msg.(passwordFinalizedMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want passwordFinalizedMsg", msg)
+	}
+	if done.err != nil {
+		t.Fatalf("passwordFinalizedMsg.err = %v, want nil", done.err)
+	}
+	if !done.cfg.System.RootLocked {
+		t.Error("cfg.System.RootLocked = false, want true so configure stops re-checking /etc/shadow")
+	}
+	if !done.cfg.System.PasswordChanged {
+		t.Error("cfg.System.PasswordChanged = false, want true")
+	}
+	found := false
+	for _, c := range r.Calls {
+		if exectest.CmdContains("", strings.Fields(c), "passwd", "-l", "root") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a passwd -l root call, calls = %v", r.Calls)
+	}
+}
+
+// TestFinalizePasswordChangeFailsLoudlyIfRootStaysUnlocked pins the
+// deliberate choice to treat a failed root lock as fatal: reaching Settings
+// with cfg saying RootLocked while root still answers to a known password is
+// the exact state this flow exists to prevent.
+func TestFinalizePasswordChangeFailsLoudlyIfRootStaysUnlocked(t *testing.T) {
+	r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
+		line := strings.Join(args, " ")
+		switch {
+		case strings.Contains(line, "passwd -l"):
+			return exectest.Outcome{Out: []byte("passwd: Permission denied"), Err: exectest.ErrFake}
+		case strings.Contains(line, "^admin:"):
+			return exectest.Outcome{Out: []byte("admin:$6$somethingelse$abc:19000:0:99999:7:::\n")}
+		}
+		return exectest.Outcome{}
+	}}
+	var msg tea.Msg
+	exectest.WithFakeRunner(r, func() {
+		msg = finalizePasswordChangeCmd(config.DefaultConfig())()
+	})
+
+	done, ok := msg.(passwordFinalizedMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want passwordFinalizedMsg", msg)
+	}
+	if done.err == nil {
+		t.Fatal("passwordFinalizedMsg.err = nil, want the lock failure surfaced")
+	}
+	if done.cfg.System.RootLocked {
+		t.Error("cfg.System.RootLocked = true after a failed lock, want false")
+	}
+}
+
+// TestFinalizePasswordChangeRefusesToStrandANodeWithNoLogin covers the
+// operator who ran `passwd -l admin` (or `passwd -d admin`) on an image that
+// provisions no SSH keys: root's password is then the only remaining way in,
+// so the flow must refuse to lock it rather than leave the node recoverable
+// only from the bootloader.
+func TestFinalizePasswordChangeRefusesToStrandANodeWithNoLogin(t *testing.T) {
+	r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
+		line := strings.Join(args, " ")
+		switch {
+		case strings.Contains(line, "authorized_keys"):
+			return exectest.Outcome{Err: exectest.ErrFake} // no keys
+		case strings.Contains(line, "getent"):
+			return exectest.Outcome{Out: []byte("admin:x:1000:1000::/var/home/admin:/bin/bash\n")}
+		case strings.Contains(line, "^admin:"):
+			return exectest.Outcome{Out: []byte("admin:!:19000:0:99999:7:::\n")} // locked
+		}
+		return exectest.Outcome{}
+	}}
+	var msg tea.Msg
+	exectest.WithFakeRunner(r, func() {
+		msg = finalizePasswordChangeCmd(config.DefaultConfig())()
+	})
+
+	done, ok := msg.(passwordFinalizedMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want passwordFinalizedMsg", msg)
+	}
+	if done.err == nil {
+		t.Fatal("passwordFinalizedMsg.err = nil, want a refusal to lock root")
+	}
+	for _, c := range r.Calls {
+		if exectest.CmdContains("", strings.Fields(c), "passwd", "-l") {
+			t.Errorf("root was locked anyway, calls = %v", r.Calls)
+		}
+	}
+}
+
+// TestFinalizePasswordChangeRejectsALockThatDidNotTake guards the promise
+// that RootLocked is only ever recorded for a node where root really is
+// locked - a passwd that exits 0 without changing the hash must not be
+// taken at its word, since nothing re-checks once the flag is set.
+func TestFinalizePasswordChangeRejectsALockThatDidNotTake(t *testing.T) {
+	r := &exectest.FakeRunner{Respond: func(name string, args []string) exectest.Outcome {
+		line := strings.Join(args, " ")
+		switch {
+		case strings.Contains(line, "^root:"):
+			// passwd -l claimed success, but root still has the old hash.
+			return exectest.Outcome{Out: []byte("root:" + "$6$ruddervirt0$hVyB:19000:0:99999:7:::\n")}
+		case strings.Contains(line, "^admin:"):
+			return exectest.Outcome{Out: []byte("admin:$6$somethingelse$abc:19000:0:99999:7:::\n")}
+		}
+		return exectest.Outcome{}
+	}}
+	var msg tea.Msg
+	exectest.WithFakeRunner(r, func() {
+		msg = finalizePasswordChangeCmd(config.DefaultConfig())()
+	})
+
+	done, ok := msg.(passwordFinalizedMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want passwordFinalizedMsg", msg)
+	}
+	if done.err == nil {
+		t.Fatal("passwordFinalizedMsg.err = nil, want the unverified lock reported")
+	}
+	if done.cfg.System.RootLocked {
+		t.Error("cfg.System.RootLocked = true for a lock that did not take, want false")
 	}
 }
