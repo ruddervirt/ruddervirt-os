@@ -163,3 +163,19 @@ func TestManifestVersionPlaceholders(t *testing.T) {
 		}
 	}
 }
+
+// TestStabilizerHelmChartPlaceholders guards the stabilizer HelmChart's
+// valuesContent: every placeholder applyStabilizer substitutes must be
+// present, including the vncAuthProxy ingress host, which the chart
+// `required`s and has no default for (the install aborts without it).
+func TestStabilizerHelmChartPlaceholders(t *testing.T) {
+	data, err := manifestsFS.ReadFile("manifests/stabilizer-helmchart.yaml")
+	if err != nil {
+		t.Fatalf("reading stabilizer-helmchart.yaml: %v", err)
+	}
+	for _, p := range []string{"__STABILIZER_VERSION__", "__STABILIZER_ZONE__", "__NATS_URL__", "__VNC_INGRESS_HOST__"} {
+		if !strings.Contains(string(data), p) {
+			t.Errorf("stabilizer-helmchart.yaml doesn't contain %s", p)
+		}
+	}
+}

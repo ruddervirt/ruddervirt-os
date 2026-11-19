@@ -22,3 +22,6 @@ spec:
       enabled: true
       configSecret: stabilizer-nebula
       configKey: config.yml
+    vncAuthProxy:
+      ingress:
+        host: "__VNC_INGRESS_HOST__"

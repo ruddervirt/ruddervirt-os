@@ -241,3 +241,9 @@ func TestAdoptStepsNonEmpty(t *testing.T) {
 		t.Fatal("AdoptSteps is empty")
 	}
 }
+
+func TestVncIngressHost(t *testing.T) {
+	if got, want := VncIngressHost("mid-del"), "mid-del.vm.ruddervirt.com"; got != want {
+		t.Errorf("VncIngressHost = %q, want %q", got, want)
+	}
+}

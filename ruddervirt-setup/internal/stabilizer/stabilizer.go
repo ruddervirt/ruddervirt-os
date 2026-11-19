@@ -65,6 +65,17 @@ const (
 	DefaultStabilizerNatsURL = "nats://172.16.100.40:4222,nats://172.16.100.41:4222,nats://172.16.100.42:4222"
 )
 
+// VncIngressHost is the vncAuthProxy Ingress host for zone. The chart has
+// no default and aborts the install without one (templates/
+// vncauthproxy.yaml's `required`). It is needed even for zones reached via
+// the ruddervirt.com tunnel and no public address: the hub's tunnel proxy
+// forwards over the Nebula mesh to the meshIngress relay with Host
+// <zone>.vm.ruddervirt.com, and that Ingress rule is what routes it to
+// vncauthproxy. Same derivation as the stabilizer repo's install.sh --zone.
+func VncIngressHost(zone string) string {
+	return zone + ".vm.ruddervirt.com"
+}
+
 // applyStabilizer renders manifests/stabilizer-helmchart.yaml's
 // placeholders, applies the resulting HelmChart object, and waits for the
 // controller's asynchronously-created install Job to complete - via
@@ -82,6 +93,7 @@ func applyStabilizer(ch chan<- installsteps.StepMsg, kubectlBin, version, zone, 
 		{Token: "__STABILIZER_VERSION__", Value: chartVersion},
 		{Token: "__STABILIZER_ZONE__", Value: zone},
 		{Token: "__NATS_URL__", Value: natsURL},
+		{Token: "__VNC_INGRESS_HOST__", Value: VncIngressHost(zone)},
 	}); err != nil {
 		return err
 	}
