@@ -157,6 +157,17 @@ func SetPending(version, binaryURL, checksumHex string) {
 	pendingUpdateChecksum = checksumHex
 }
 
+// InstalledBinaryPath is where ruddervirt-setup lives on an installed host -
+// both the TUI's Update flow and the --update-ruddervirt-setup CLI flag
+// replace this file, and main.go re-execs into it after a TUI update.
+const InstalledBinaryPath = "/usr/local/bin/ruddervirt-setup"
+
+// Install downloads binaryURL, verifies it against checksumHex, and moves it
+// into InstalledBinaryPath. Shared by UpdateSteps (TUI) and RunUpdateCLI.
+func Install(binaryURL, checksumHex string) error {
+	return downloadVerifiedToPrivilegedPath(binaryURL, checksumHex, InstalledBinaryPath, 0755)
+}
+
 const UpdateStepLabel = "Downloading and verifying ruddervirt-setup"
 
 var UpdateSteps = []installsteps.Step{
@@ -164,10 +175,7 @@ var UpdateSteps = []installsteps.Step{
 		Label: UpdateStepLabel,
 		Run: func(cfg config.Config, ch chan<- installsteps.StepMsg) {
 			ch <- installsteps.StepOutputMsg(fmt.Sprintf("Downloading ruddervirt-setup %s...", pendingUpdateVersion))
-			if err := downloadVerifiedToPrivilegedPath(
-				pendingUpdateBinaryURL, pendingUpdateChecksum,
-				"/usr/local/bin/ruddervirt-setup", 0755,
-			); err != nil {
+			if err := Install(pendingUpdateBinaryURL, pendingUpdateChecksum); err != nil {
 				ch <- installsteps.StepDoneMsg{Label: UpdateStepLabel, Err: err}
 				return
 			}

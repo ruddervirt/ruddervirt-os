@@ -12,6 +12,7 @@ import (
 
 	"ruddervirt-setup/internal/config"
 	execpkg "ruddervirt-setup/internal/exec"
+	"ruddervirt-setup/internal/selfupdate"
 	"ruddervirt-setup/internal/stabilizer/settings"
 	"ruddervirt-setup/internal/tui"
 )
@@ -23,6 +24,11 @@ func main() {
 	// no TUI, no RUDDERVIRT_SHELL, no self-update loop needed for it.
 	if len(os.Args) > 1 && os.Args[1] == "settings" {
 		os.Exit(settings.RunSettingsCLI(os.Args[2:]))
+	}
+	// Same idea for the non-interactive self-update (Ansible etc.) - see
+	// internal/selfupdate/cli.go.
+	if len(os.Args) > 1 && os.Args[1] == selfupdate.UpdateFlag {
+		os.Exit(selfupdate.RunUpdateCLI(os.Args[2:]))
 	}
 
 	// RUDDERVIRT_SHELL tells ruddervirt-shell.sh not to re-launch this menu
@@ -60,7 +66,7 @@ func main() {
 			// main() ignores os.Args, so re-execing with the same argv is safe -
 			// hands control straight to the new binary instead of making the
 			// admin log back in to pick it up.
-			exe := "/usr/local/bin/ruddervirt-setup"
+			exe := selfupdate.InstalledBinaryPath
 			fmt.Println("\nUpdate installed. Restarting into the new version...")
 			if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
 				fmt.Printf("Could not restart %s: %v\n", exe, err)
